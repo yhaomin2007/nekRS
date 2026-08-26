@@ -64,11 +64,10 @@ function(add target num_processes par_file cimodes fp32 working_directory build_
                COMMAND ${LAUNCHER} ${par_file} ${num_processes} --cimode ${cimode})
     endif()
 
-    if("${name}" STREQUAL "ethier_14") 
-      set_tests_properties(${name} PROPERTIES ENVIRONMENT "NEKRS_MPI_THREAD_MULTIPLE=1")
-    endif()
-
     set_tests_properties(${name} PROPERTIES ENVIRONMENT "FP32=${fp32_value}")
+    if("${name}" STREQUAL "ethier_14")
+      set_property(TEST ${name} APPEND PROPERTY ENVIRONMENT "NEKRS_MPI_THREAD_MULTIPLE=1")
+    endif()
     set_tests_properties(${name} PROPERTIES RESOURCE_LOCK ${working_directory})
   endforeach()
 endfunction()
