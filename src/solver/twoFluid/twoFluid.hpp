@@ -25,7 +25,7 @@ public:
   void updateAdvectionCoordinates();
   void makeExplicit(double time);
   void solvePressure(double time, int stage);
-  void reportContinuity() const;
+  void reportContinuity();
 
   fluidSolver_t *liquid = nullptr;
   fluidSolver_t *gas = nullptr;

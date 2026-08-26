@@ -24,10 +24,12 @@ void twoFluid_t::setup()
 
   nekrsCheck(alphaG <= 0 || alphaG >= 1,
              platform->comm.mpiComm(), EXIT_FAILURE,
-             "TWO FLUID gasVolumeFraction must lie strictly between zero and one\n");
+             "TWO FLUID gasVolumeFraction must lie strictly between zero and one: %g\n",
+             alphaG);
   nekrsCheck(bubbleDiameter <= 0,
              platform->comm.mpiComm(), EXIT_FAILURE,
-             "TWO FLUID bubbleDiameter must be positive\n");
+             "TWO FLUID bubbleDiameter must be positive: %g\n",
+             bubbleDiameter);
 
   alphaL = 1 - alphaG;
   const auto N = liquid->fieldOffset;
@@ -160,7 +162,7 @@ void twoFluid_t::solvePressure(double time, int stage)
   platform->timer.toc("mixture pressureSolve");
 }
 
-void twoFluid_t::reportContinuity() const
+void twoFluid_t::reportContinuity()
 {
   auto mesh = liquid->mesh;
   launchKernel("twoFluid::mixtureVelocity",
