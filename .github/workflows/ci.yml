@@ -4,6 +4,11 @@ on:
   # allows us to run workflows manually
   workflow_dispatch:
 
+  # Validate feature branches through pull requests without modifying master.
+  pull_request:
+    branches:
+      - master
+
   push:
     branches:
       - master 
