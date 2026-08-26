@@ -11,8 +11,7 @@ on:
 
   push:
     branches:
-      - master 
-      - feature/eulerian-eulerian-minimal
+      - master
 
 env:
   GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"

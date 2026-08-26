@@ -161,12 +161,14 @@ void nrs_t::init()
                    platform->options.compareArgs("FLUID STRESSFORMULATION", "TRUE") ||
                    platform->options.compareArgs("FLUID PRESSURE RHO SPLITTING", "TRUE"),
                platform->comm.mpiComm(), EXIT_FAILURE,
+               "%s\n",
                "The minimal TWO FLUID branch does not support moving mesh, lowMach, "
-               "constant-flow control, stress formulation, or pressure rho splitting.\n");
+               "constant-flow control, stress formulation, or pressure rho splitting.");
     int twoFluidSubsteps = 0;
     platform->options.getArgs("SUBCYCLING STEPS", twoFluidSubsteps);
     nekrsCheck(twoFluidSubsteps != 0, platform->comm.mpiComm(), EXIT_FAILURE,
-               "The minimal TWO FLUID branch does not support advection subcycling.\n");
+               "%s\n",
+               "The minimal TWO FLUID branch does not support advection subcycling.");
   }
   if (platform->options.compareArgs("FLUID STRESSFORMULATION", "TRUE")) {
     nekrsCheck(!platform->options.compareArgs("FLUID VELOCITY SOLVER", "BLOCK"),
