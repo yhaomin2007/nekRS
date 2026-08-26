@@ -4,6 +4,7 @@
 #include "advectionSubCycling.hpp"
 #include "registerKernels.hpp"
 #include "nekInterfaceAdapter.hpp"
+#include "twoFluid.hpp"
 
 fluidSolver_t::fluidSolver_t(const fluidSolverCfg_t &cfg, const std::unique_ptr<geomSolver_t> &_geom)
     : geom(_geom)
@@ -19,6 +20,7 @@ fluidSolver_t::fluidSolver_t(const fluidSolverCfg_t &cfg, const std::unique_ptr<
   fieldOffset = cfg.fieldOffset;
   fieldOffsetSum = mesh->dim * fieldOffset;
   cubatureOffset = cfg.cubatureOffset;
+  createPressureSolver = cfg.createPressureSolver;
 
   const char nullChar[] = {'\0'};
 
@@ -124,6 +126,10 @@ fluidSolver_t::fluidSolver_t(const fluidSolverCfg_t &cfg, const std::unique_ptr<
 
 void fluidSolver_t::solvePressure(double time, int stage)
 {
+  if (twoFluid) {
+    twoFluid->solvePressure(time, stage);
+    return;
+  }
   if (!ellipticSolverP) {
     return;
   }
@@ -522,7 +528,7 @@ void fluidSolver_t::setupEllipticSolver()
     ellipticSolver.push_back(new elliptic(velocityName, mesh, fieldOffset, EToBz, o_lambda0, o_lambda1));
   }
 
-  {
+  if (createPressureSolver) {
     const auto o_lambda0 = [&]() {
       auto o_lambda = platform->deviceMemoryPool.reserve<dfloat>(mesh->Nlocal);
       if (platform->options.compareArgs(upperCase(pressureName) + " RHO SPLITTING", "TRUE")) {
@@ -629,7 +635,7 @@ void fluidSolver_t::applyDirichlet(double time)
                       mesh->oogs3);
   }
 
-  if (ellipticSolverP->Nmasked()) {
+  if (ellipticSolverP && ellipticSolverP->Nmasked()) {
     auto o_dirichletValues = o_tmp.slice(0, fieldOffset);
     launchKernel("core-maskCopy",
                  ellipticSolverP->Nmasked(),

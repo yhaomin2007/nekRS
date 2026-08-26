@@ -21,6 +21,7 @@ void registerScalarKernels(occa::properties kernelInfoBC);
 void registerEllipticKernels(std::string section, bool stressForm = false);
 void registerEllipticPreconditionerKernels(std::string section);
 void registerFluidSolverKernels(occa::properties kernelInfoBC);
+void registerTwoFluidKernels();
 void registerGeomSolverKernels(occa::properties kernelInfoBC);
 
 std::string createOptionsPrefix(std::string section);

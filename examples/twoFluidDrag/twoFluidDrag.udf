@@ -1,0 +1,23 @@
+void UDF_Setup()
+{
+  auto mesh = nrs->meshV;
+  std::vector<dfloat> ul(3*nrs->fieldOffset, 0.0);
+  std::vector<dfloat> ug(3*nrs->fieldOffset, 0.0);
+  for (dlong n = 0; n < mesh->Nlocal; ++n) ug[n] = 1.0;
+  nrs->fluid->o_U.copyFrom(ul.data(), ul.size());
+  nrs->gas->o_U.copyFrom(ug.data(), ug.size());
+}
+
+void UDF_ExecuteStep(double time, int tstep)
+{
+  if (tstep % 10) return;
+  auto mesh = nrs->meshV;
+  const dfloat uL = platform->linAlg->innerProd(mesh->Nlocal, mesh->o_LMM,
+      nrs->fluid->o_U.slice(0, mesh->Nlocal), platform->comm.mpiComm()) / mesh->volume;
+  const dfloat uG = platform->linAlg->innerProd(mesh->Nlocal, mesh->o_LMM,
+      nrs->gas->o_U.slice(0, mesh->Nlocal), platform->comm.mpiComm()) / mesh->volume;
+  const dfloat mixtureMomentum = 0.9*1000.0*uL + 0.1*1.0*uG;
+  if (platform->comm.mpiRank() == 0)
+    printf("dragRelaxation t=%g uL=%+.8e uG=%+.8e slip=%+.8e mixtureMomentum=%+.8e\n",
+           time, uL, uG, uG-uL, mixtureMomentum);
+}

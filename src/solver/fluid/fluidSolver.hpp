@@ -11,14 +11,14 @@ public:
   std::string pressureName;
   dlong fieldOffset;
   dlong cubatureOffset;
+  bool createPressureSolver = true;
 };
+
+class twoFluid_t;
 
 class fluidSolver_t : public solver_t
 {
 private:
-  void solvePressure(double time, int stage);
-  void solveVelocity(double time, int stage);
-
   void advectionSubcycling(int nEXT, double time);
 
   occa::memory o_zeroNormalMask;
@@ -37,6 +37,8 @@ private:
 
 public:
   fluidSolver_t(const fluidSolverCfg_t &cfg, const std::unique_ptr<geomSolver_t> &geom);
+  void solvePressure(double time, int stage);
+  void solveVelocity(double time, int stage);
 
   deviceMemory<dfloat> o_solution(std::string key = "") override
   {
@@ -91,7 +93,7 @@ public:
 
   void solve(double time, int stage) override
   {
-    solvePressure(time, stage);
+    if (createPressureSolver) solvePressure(time, stage);
     solveVelocity(time, stage);
   };
 
@@ -121,6 +123,12 @@ public:
 
   std::function<occa::memory(double)> userImplicitLinearTerm = nullptr;
   std::function<occa::memory(double, int)> userAdvectionTerm = nullptr;
+
+  // Set by the experimental Eulerian--Eulerian coordinator.  The primary
+  // phase delegates its pressure equation to this object, while the secondary
+  // phase only executes its momentum solve.
+  twoFluid_t *twoFluid = nullptr;
+  bool createPressureSolver = true;
 
   occa::memory o_U;
   occa::memory o_Ue;

@@ -555,6 +555,7 @@ void parseCheckpointing(const int rank, setupAide &options, inipp::Ini *ini, std
 #include "parseProblemType.hpp"
 #include "parseNeknek.hpp"
 #include "parseFluid.hpp"
+#include "parseTwoFluid.hpp"
 #include "parseElliptic.hpp"
 
 #include "parseGeneral.hpp"
@@ -713,6 +714,8 @@ void Par::parse(setupAide &options)
   } else {
     options.setArgs("FLUID", "FALSE");
   }
+
+  parseTwoFluidSection(rank, options, ini);
 
   parseScalarSections(rank, options, ini);
 

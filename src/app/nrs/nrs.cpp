@@ -154,6 +154,20 @@ nrs_t::nrs_t()
 
 void nrs_t::init()
 {
+  if (platform->options.compareArgs("TWO FLUID ENABLED", "TRUE")) {
+    nekrsCheck(platform->options.compareArgs("MOVING MESH", "TRUE") ||
+                   platform->options.compareArgs("LOWMACH", "TRUE") ||
+                   platform->options.compareArgs("CONSTANT FLOW RATE", "TRUE") ||
+                   platform->options.compareArgs("FLUID STRESSFORMULATION", "TRUE") ||
+                   platform->options.compareArgs("FLUID PRESSURE RHO SPLITTING", "TRUE"),
+               platform->comm.mpiComm(), EXIT_FAILURE,
+               "The minimal TWO FLUID branch does not support moving mesh, lowMach, "
+               "constant-flow control, stress formulation, or pressure rho splitting.\n");
+    int twoFluidSubsteps = 0;
+    platform->options.getArgs("SUBCYCLING STEPS", twoFluidSubsteps);
+    nekrsCheck(twoFluidSubsteps != 0, platform->comm.mpiComm(), EXIT_FAILURE,
+               "The minimal TWO FLUID branch does not support advection subcycling.\n");
+  }
   if (platform->options.compareArgs("FLUID STRESSFORMULATION", "TRUE")) {
     nekrsCheck(!platform->options.compareArgs("FLUID VELOCITY SOLVER", "BLOCK"),
                platform->comm.mpiComm(),
@@ -285,6 +299,25 @@ void nrs_t::init()
     }();
   }
 
+  if (fluid && platform->options.compareArgs("TWO FLUID ENABLED", "TRUE")) {
+    gas = [&]() {
+      fluidSolverCfg_t cfg;
+      cfg.name = "gas";
+      cfg.velocityName = "gas velocity";
+      cfg.pressureName = "fluid pressure";
+      cfg.mesh = meshV;
+      cfg.fieldOffset = fieldOffset;
+      cfg.cubatureOffset = cubatureOffset;
+      cfg.g0 = &g0;
+      cfg.dt = dt;
+      cfg.o_coeffEXT = o_coeffEXT;
+      cfg.o_coeffBDF = o_coeffBDF;
+      cfg.createPressureSolver = false;
+      return std::make_unique<fluidSolver_t>(cfg, geom);
+    }();
+    twoFluid = std::make_unique<twoFluid_t>(fluid.get(), gas.get(), geom);
+  }
+
   if (fluid && geom) {
     geom->o_Ufluid = fluid->o_U;
   }
@@ -353,6 +386,10 @@ void nrs_t::init()
   // rho, g0 * dt required for Helmholtz coefficients (eigenvalues for Chebyshev in ellipticSetup)
   if (fluid) {
     fluid->setupEllipticSolver();
+  }
+  if (gas) {
+    gas->setupEllipticSolver();
+    twoFluid->setup();
   }
   if (scalar) {
     scalar->setupEllipticSolver();
@@ -625,6 +662,14 @@ void nrs_t::restartFromFiles(const std::vector<std::string> &fileList)
       iofld->addVariable("velocity", o_iofldU);
     }
 
+    if (gas && isAvailable("gas_velocity")) {
+      std::vector<occa::memory> o_iofldUg;
+      o_iofldUg.push_back(gas->o_U.slice(0 * gas->fieldOffset, gas->mesh->Nlocal));
+      o_iofldUg.push_back(gas->o_U.slice(1 * gas->fieldOffset, gas->mesh->Nlocal));
+      o_iofldUg.push_back(gas->o_U.slice(2 * gas->fieldOffset, gas->mesh->Nlocal));
+      iofld->addVariable("gas_velocity", o_iofldUg);
+    }
+
     if (checkOption("p") && isAvailable("pressure")) {
       std::vector<occa::memory> o_iofldP = {fluid->o_P.slice(0, meshV->Nlocal)};
       iofld->addVariable("pressure", o_iofldP);
@@ -712,6 +757,9 @@ void nrs_t::setIC()
   if (fluid) {
     projC0(fluid->mesh, fluid->mesh->dim, fluid->fieldOffset, fluid->o_U);
     projC0(fluid->mesh, 1, fluid->fieldOffset, fluid->o_P);
+  }
+  if (gas) {
+    projC0(gas->mesh, gas->mesh->dim, gas->fieldOffset, gas->o_U);
   }
 
   if (Nscalar) {
@@ -1021,6 +1069,11 @@ void nrs_t::printRunStat(int step)
 
 void nrs_t::finalize()
 {
+  twoFluid.reset();
+  if (gas) {
+    gas->finalize();
+    gas.reset();
+  }
   if (fluid) {
     fluid->finalize();
     fluid.reset();
@@ -1232,6 +1285,15 @@ void nrs_t::writeCheckpoint(double t, bool enforceOutXYZ, bool enforceFP64, int 
         auto o_p = std::vector<occa::memory>{fluid->o_P.slice(0, visMesh->Nlocal)};
         checkpointWriter->addVariable("pressure", o_p);
       }
+    }
+
+    if (gas) {
+      std::vector<occa::memory> o_Vg;
+      for (int i = 0; i < meshV->dim; i++)
+        o_Vg.push_back(gas->o_U.slice(i * gas->fieldOffset, visMesh->Nlocal));
+      checkpointWriter->addVariable("gas_velocity", o_Vg);
+      checkpointWriter->addVariable("gas_volume_fraction",
+                                    std::vector<occa::memory>{twoFluid->o_alphaG.slice(0, visMesh->Nlocal)});
     }
 
     for (int i = 0; i < Nscalar; i++) {
@@ -1641,6 +1703,10 @@ void nrs_t::initInnerStep(double time, dfloat _dt, int _tstep)
     fluid->setTimeIntegrationCoeffs(tstep);
     fluid->extrapolateSolution();
   }
+  if (gas) {
+    gas->setTimeIntegrationCoeffs(tstep);
+    gas->extrapolateSolution();
+  }
 
   if (geom) {
     geom->setTimeIntegrationCoeffs(tstep);
@@ -1652,6 +1718,7 @@ void nrs_t::initInnerStep(double time, dfloat _dt, int _tstep)
   }
 
   computeUrst();
+  if (twoFluid) twoFluid->updateAdvectionCoordinates();
 
   if (geom && advectionSubcycingSteps) { // used in makeAdvection
     geom->computeDiv();
@@ -1666,6 +1733,7 @@ void nrs_t::initInnerStep(double time, dfloat _dt, int _tstep)
   if (fluid) {
     platform->linAlg->fill(fluid->fieldOffsetSum, 0.0, fluid->o_EXT);
   }
+  if (gas) platform->linAlg->fill(gas->fieldOffsetSum, 0.0, gas->o_EXT);
 
   if (userSource) {
     platform->timer.tic("udfSource");
@@ -1699,7 +1767,13 @@ void nrs_t::initInnerStep(double time, dfloat _dt, int _tstep)
       fluid->makeAdvection(time, tstep);
     }
     fluid->makeExplicit(time, tstep);
+    if (gas) {
+      if (platform->options.compareArgs("EQUATION TYPE", "NAVIERSTOKES")) gas->makeAdvection(time, tstep);
+      gas->makeExplicit(time, tstep);
+      twoFluid->makeExplicit(time);
+    }
     fluid->makeForcing();
+    if (gas) gas->makeForcing();
 
     platform->timer.toc("makef");
   }
@@ -1763,6 +1837,7 @@ bool nrs_t::runInnerStep(std::function<bool(int)> convergenceCheck, int iter, bo
     if (fluid) {
       fluid->lagSolution();
     }
+    if (gas) gas->lagSolution();
 
     if (scalar) {
       scalar->lagSolution();
@@ -1781,6 +1856,7 @@ bool nrs_t::runInnerStep(std::function<bool(int)> convergenceCheck, int iter, bo
       }
     }
   }
+  if (gas) gas->applyDirichlet(timeNew);
 
   if (Nscalar) {
     scalar->applyDirichlet(timeNew);
@@ -1808,6 +1884,7 @@ bool nrs_t::runInnerStep(std::function<bool(int)> convergenceCheck, int iter, bo
 
   if (fluid) {
     fluid->solve(timeNew, iter);
+    if (gas) gas->solve(timeNew, iter);
 
     if (platform->options.compareArgs("CONSTANT FLOW RATE", "TRUE")) {
       adjustFlowRate(tstep, timeNew);
@@ -1850,6 +1927,7 @@ void nrs_t::saveSolutionState()
   if (fluid) {
     fluid->saveSolutionState();
   }
+  if (gas) gas->saveSolutionState();
   if (scalar) {
     scalar->saveSolutionState();
   }
@@ -1863,6 +1941,7 @@ void nrs_t::restoreSolutionState()
   if (fluid) {
     fluid->restoreSolutionState();
   }
+  if (gas) gas->restoreSolutionState();
   if (scalar) {
     scalar->restoreSolutionState();
   }
@@ -2076,6 +2155,7 @@ void nrs_t::registerKernels(occa::properties kernelInfoBC)
   registerPostProcessingKernels();
 
   registerFluidSolverKernels(kernelInfoBC);
+  if (platform->options.compareArgs("TWO FLUID ENABLED", "TRUE")) registerTwoFluidKernels();
 
   registerGeomSolverKernels(kernelInfoBC);
 

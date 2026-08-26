@@ -1,0 +1,85 @@
+@kernel void dragSource(const dlong N,
+                        const dlong offset,
+                        const dfloat alphaFloor,
+                        const dfloat alphaL,
+                        const dfloat alphaG,
+                        const dfloat db,
+                        const dfloat gx,
+                        const dfloat gy,
+                        const dfloat gz,
+                        @ restrict const dfloat *rhoL,
+                        @ restrict const dfloat *muL,
+                        @ restrict const dfloat *rhoG,
+                        @ restrict const dfloat *UL,
+                        @ restrict const dfloat *UG,
+                        @ restrict dfloat *Kout,
+                        @ restrict dfloat *implicitL,
+                        @ restrict dfloat *implicitG,
+                        @ restrict dfloat *srcL,
+                        @ restrict dfloat *srcG)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    const dfloat sx = UG[n + 0 * offset] - UL[n + 0 * offset];
+    const dfloat sy = UG[n + 1 * offset] - UL[n + 1 * offset];
+    const dfloat sz = UG[n + 2 * offset] - UL[n + 2 * offset];
+    const dfloat slip = sqrt(sx*sx + sy*sy + sz*sz);
+    const dfloat Re = rhoL[n] * slip * db / fmax(muL[n], 1e-30);
+    dfloat Cd = 0.44;
+    if (Re < 1000.0)
+      Cd = 24.0 / fmax(Re, 1e-12) * (1.0 + 0.15 * pow(Re, 0.687));
+
+    // Interphase force per mixture volume: K (u_g-u_l).
+    const dfloat K = 0.75 * Cd * rhoL[n] * alphaL * alphaG * slip / db;
+    const dfloat aL = fmax(alphaL, alphaFloor);
+    const dfloat aG = fmax(alphaG, alphaFloor);
+    Kout[n] = K;
+    implicitL[n] = K / aL;
+    implicitG[n] = K / aG;
+
+    // The opposite-phase velocity is explicit; the same-phase contribution
+    // is placed on the Helmholtz diagonal through userImplicitLinearTerm.
+    srcL[n + 0 * offset] += gx + K * UG[n + 0 * offset] / (aL * rhoL[n]);
+    srcL[n + 1 * offset] += gy + K * UG[n + 1 * offset] / (aL * rhoL[n]);
+    srcL[n + 2 * offset] += gz + K * UG[n + 2 * offset] / (aL * rhoL[n]);
+    srcG[n + 0 * offset] += gx + K * UL[n + 0 * offset] / (aG * rhoG[n]);
+    srcG[n + 1 * offset] += gy + K * UL[n + 1 * offset] / (aG * rhoG[n]);
+    srcG[n + 2 * offset] += gz + K * UL[n + 2 * offset] / (aG * rhoG[n]);
+  }
+}
+
+@kernel void mixtureFlux(const dlong N,
+                         const dlong offset,
+                         const dfloat alphaL,
+                         const dfloat alphaG,
+                         @ restrict const dfloat *FL,
+                         @ restrict const dfloat *FG,
+                         @ restrict dfloat *F)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner))
+    for (int c = 0; c < 3; ++c)
+      F[n + c*offset] = alphaL*FL[n + c*offset] + alphaG*FG[n + c*offset];
+}
+
+@kernel void mixtureVelocity(const dlong N,
+                             const dlong offset,
+                             const dfloat alphaL,
+                             const dfloat alphaG,
+                             @ restrict const dfloat *UL,
+                             @ restrict const dfloat *UG,
+                             @ restrict dfloat *U)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner))
+    for (int c = 0; c < 3; ++c)
+      U[n + c*offset] = alphaL*UL[n + c*offset] + alphaG*UG[n + c*offset];
+}
+
+@kernel void pressureCoefficient(const dlong N,
+                                 const dfloat alphaL,
+                                 const dfloat alphaG,
+                                 @ restrict const dfloat *rhoL,
+                                 @ restrict const dfloat *rhoG,
+                                 @ restrict dfloat *lambda)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner))
+    lambda[n] = alphaL/rhoL[n] + alphaG/rhoG[n];
+}

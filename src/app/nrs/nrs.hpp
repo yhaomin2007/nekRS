@@ -14,6 +14,7 @@
 #include "fluidSolver.hpp"
 #include "geomSolver.hpp"
 #include "tavg.hpp"
+#include "twoFluid.hpp"
 
 class nrs_t : public app_t
 {
@@ -139,6 +140,8 @@ public:
   nrs_t();
 
   std::unique_ptr<fluidSolver_t> fluid = nullptr;
+  std::unique_ptr<fluidSolver_t> gas = nullptr;
+  std::unique_ptr<twoFluid_t> twoFluid = nullptr;
   std::unique_ptr<geomSolver_t> geom = nullptr;
   std::unique_ptr<scalar_t> scalar = nullptr;
 

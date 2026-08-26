@@ -1,0 +1,19 @@
+void UDF_Setup()
+{
+  auto mesh = nrs->meshV;
+  const auto xyz = mesh->xyzHost();
+  const auto &x = std::get<0>(xyz);
+  std::vector<dfloat> ul(3*nrs->fieldOffset, 0.0);
+  std::vector<dfloat> ug(3*nrs->fieldOffset, 0.0);
+  for (dlong n = 0; n < mesh->Nlocal; ++n) {
+    ul[n] = sin(x[n]);
+    ug[n] = sin(x[n]);
+  }
+  nrs->fluid->o_U.copyFrom(ul.data(), ul.size());
+  nrs->gas->o_U.copyFrom(ug.data(), ug.size());
+}
+
+void UDF_ExecuteStep(double time, int tstep)
+{
+  nrs->twoFluid->reportContinuity();
+}
