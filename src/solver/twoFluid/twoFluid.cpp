@@ -194,7 +194,9 @@ void twoFluid_t::reportContinuity()
 void registerTwoFluidKernels()
 {
   occa::properties props = platform->kernelInfo;
-  std::string file = getenv("NEKRS_KERNEL_DIR") + std::string("/solver/twoFluid/twoFluid.okl");
+  const std::string dir = getenv("NEKRS_KERNEL_DIR") + std::string("/solver/twoFluid/");
   for (const auto &name : {"dragSource", "mixtureFlux", "mixtureVelocity", "pressureCoefficient"})
-    platform->kernelRequests.add("twoFluid::" + std::string(name), file, props);
+    platform->kernelRequests.add("twoFluid::" + std::string(name),
+                                 dir + std::string(name) + ".okl",
+                                 props);
 }

@@ -1,0 +1,12 @@
+@kernel void mixtureVelocity(const dlong N,
+                             const dlong offset,
+                             const dfloat alphaL,
+                             const dfloat alphaG,
+                             @ restrict const dfloat *UL,
+                             @ restrict const dfloat *UG,
+                             @ restrict dfloat *U)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner))
+    for (int c = 0; c < 3; ++c)
+      U[n + c*offset] = alphaL*UL[n + c*offset] + alphaG*UG[n + c*offset];
+}
