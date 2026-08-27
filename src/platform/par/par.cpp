@@ -243,6 +243,17 @@ static std::vector<std::string> pressureKeys = {};
 
 static std::vector<std::string> geomKeys = {};
 
+static std::vector<std::string> twoFluidKeys = {
+    {"gasVolumeFraction"},
+    {"bubbleDiameter"},
+    {"gasDensity"},
+    {"gasViscosity"},
+    {"alphaFloor"},
+    {"gravityX"},
+    {"gravityY"},
+    {"gravityZ"},
+};
+
 static std::vector<std::string> deprecatedKeys = {
     // deprecated filter params
     {"filterWeight"},
@@ -259,6 +270,7 @@ static std::vector<std::string> validSections = {
     {"neknek"},
     {"fluid pressure"},
     {"fluid velocity"},
+    {"two fluid"},
     {"problemtype"},
     {"amgx"},
     {"boomeramg"},
@@ -287,6 +299,7 @@ void makeStringsLowerCase()
   amgxKeys = lowerCase(amgxKeys);
   boomeramgKeys = lowerCase(boomeramgKeys);
   pressureKeys = lowerCase(pressureKeys);
+  twoFluidKeys = lowerCase(twoFluidKeys);
   occaKeys = lowerCase(occaKeys);
   cvodeKeys = lowerCase(cvodeKeys);
   ellipticKeys = lowerCase(ellipticKeys);
@@ -362,6 +375,9 @@ const std::vector<std::string> &getValidKeys(const std::string &section)
   }
   if (section == "fluid velocity") {
     return velocityKeys;
+  }
+  if (section == "two fluid") {
+    return twoFluidKeys;
   }
   if (section == "cvode") {
     return cvodeKeys;

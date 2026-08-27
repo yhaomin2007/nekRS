@@ -1,5 +1,3 @@
-userSections = TWO FLUID
-
 [GENERAL]
 polynomialOrder = 5
 stopAt = numSteps

@@ -16,11 +16,9 @@ before division by phase volume and density.
 
 ## Parameter file
 
-Add `TWO FLUID` to the top-level `userSections` list and supply:
+Supply the native `TWO FLUID` section:
 
 ```ini
-userSections = TWO FLUID
-
 [TWO FLUID]
 gasVolumeFraction = 0.1
 bubbleDiameter = 1e-3
