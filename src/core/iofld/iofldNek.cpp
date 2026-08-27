@@ -2,7 +2,8 @@
 
 void iofldNek::validateUserFields(const std::string &name)
 {
-  std::vector<std::string> validNames = {"mesh", "velocity", "pressure", "temperature"};
+  std::vector<std::string> validNames = {
+      "mesh", "velocity", "pressure", "temperature", "gas_velocity", "gas_volume_fraction"};
   std::regex pattern(R"(scalar\d{2})");
 
   auto valid = false;
@@ -114,6 +115,31 @@ size_t iofldNek::write()
       if (auto o_buf = inquireVariable<std::vector<occa::memory>>("scalar" + scalarDigitStr(is))) {
         data.o_s.push_back(o_buf->get());
       }
+    }
+
+    // The legacy Nek field format has one named velocity vector and no
+    // facility for arbitrary variables. Store the second-phase velocity
+    // components and volume fraction in consecutive scalar slots. The ADIOS
+    // backend retains their semantic names and does not use this packing.
+    if (auto o_buf = inquireVariable<std::vector<occa::memory>>("gas_velocity")) {
+      const auto &o_velocity = o_buf->get();
+      nekrsCheck(o_velocity.size() != mesh->dim,
+                 MPI_COMM_SELF,
+                 EXIT_FAILURE,
+                 "invalid vector dim (%zu) of variable gas_velocity\n!",
+                 o_velocity.size());
+      for (const auto &o_component : o_velocity) {
+        data.o_s.push_back({o_component});
+      }
+    }
+    if (auto o_buf = inquireVariable<std::vector<occa::memory>>("gas_volume_fraction")) {
+      const auto &o_alpha = o_buf->get();
+      nekrsCheck(o_alpha.size() != 1,
+                 MPI_COMM_SELF,
+                 EXIT_FAILURE,
+                 "invalid vector dim (%zu) of variable gas_volume_fraction\n!",
+                 o_alpha.size());
+      data.o_s.push_back(o_alpha);
     }
 
     return data;
