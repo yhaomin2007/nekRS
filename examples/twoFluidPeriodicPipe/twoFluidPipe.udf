@@ -1,3 +1,9 @@
+// NekRS requires an OKL section even when this case has no custom device
+// kernels. The two-fluid kernels are compiled with the core solver.
+#ifdef __okl__
+
+#endif
+
 void UDF_Setup()
 {
   auto mesh = nrs->meshV;
