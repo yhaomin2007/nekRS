@@ -1,0 +1,62 @@
+void UDF_Setup()
+{
+  auto mesh = nrs->meshV;
+  auto [x, y, z] = mesh->xyzHost();
+
+  std::vector<dfloat> liquidVelocity(3 * nrs->fieldOffset, 0.0);
+  std::vector<dfloat> gasVelocity(3 * nrs->fieldOffset, 0.0);
+
+  constexpr dfloat radius = 0.5;
+  constexpr dfloat liquidCenterlineVelocity = 0.20;
+  constexpr dfloat gasCenterlineVelocity = 0.30;
+
+  for (dlong n = 0; n < mesh->Nlocal; ++n) {
+    const dfloat radialCoordinate2 =
+        (x[n] * x[n] + y[n] * y[n]) / (radius * radius);
+    const dfloat profile = std::max<dfloat>(0.0, 1.0 - radialCoordinate2);
+
+    liquidVelocity[n + 2 * nrs->fieldOffset] =
+        liquidCenterlineVelocity * profile;
+    gasVelocity[n + 2 * nrs->fieldOffset] =
+        gasCenterlineVelocity * profile;
+  }
+
+  nrs->fluid->o_U.copyFrom(liquidVelocity.data(), liquidVelocity.size());
+  nrs->gas->o_U.copyFrom(gasVelocity.data(), gasVelocity.size());
+}
+
+void UDF_ExecuteStep(double time, int tstep)
+{
+  if (tstep % 10 && !nrs->lastStep) return;
+
+  auto mesh = nrs->meshV;
+  const auto o_liquidUz =
+      nrs->fluid->o_U.slice(2 * nrs->fieldOffset, mesh->Nlocal);
+  const auto o_gasUz =
+      nrs->gas->o_U.slice(2 * nrs->fieldOffset, mesh->Nlocal);
+
+  const dfloat liquidBulkVelocity =
+      platform->linAlg->innerProd(mesh->Nlocal,
+                                  mesh->o_LMM,
+                                  o_liquidUz,
+                                  platform->comm.mpiComm()) /
+      mesh->volume;
+  const dfloat gasBulkVelocity =
+      platform->linAlg->innerProd(mesh->Nlocal,
+                                  mesh->o_LMM,
+                                  o_gasUz,
+                                  platform->comm.mpiComm()) /
+      mesh->volume;
+
+  if (platform->comm.mpiRank() == 0) {
+    printf("twoFluidPipe step=%d time=%g bulkUzL=%+.8e bulkUzG=%+.8e "
+           "bulkSlip=%+.8e\n",
+           tstep,
+           time,
+           liquidBulkVelocity,
+           gasBulkVelocity,
+           gasBulkVelocity - liquidBulkVelocity);
+  }
+
+  nrs->twoFluid->reportContinuity();
+}
