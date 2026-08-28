@@ -3,7 +3,17 @@
 void iofldNek::validateUserFields(const std::string &name)
 {
   std::vector<std::string> validNames = {
-      "mesh", "velocity", "pressure", "temperature", "gas_velocity", "gas_volume_fraction"};
+      "mesh",
+      "velocity",
+      "pressure",
+      "temperature",
+      "gas_velocity",
+      "gas_volume_fraction",
+      "slip_velocity",
+      "mixture_velocity",
+      "mixture_divergence",
+      "interphase_drag_coefficient",
+      "interphase_force"};
   std::regex pattern(R"(scalar\d{2})");
 
   auto valid = false;
@@ -141,6 +151,39 @@ size_t iofldNek::write()
                  o_alpha.size());
       data.o_s.push_back(o_alpha);
     }
+
+    auto appendVectorAsScalars = [&](const std::string &name) {
+      if (auto o_buf = inquireVariable<std::vector<occa::memory>>(name)) {
+        const auto &o_vector = o_buf->get();
+        nekrsCheck(o_vector.size() != mesh->dim,
+                   MPI_COMM_SELF,
+                   EXIT_FAILURE,
+                   "invalid vector dim (%zu) of variable %s\n!",
+                   o_vector.size(),
+                   name.c_str());
+        for (const auto &o_component : o_vector) {
+          data.o_s.push_back({o_component});
+        }
+      }
+    };
+    auto appendScalar = [&](const std::string &name) {
+      if (auto o_buf = inquireVariable<std::vector<occa::memory>>(name)) {
+        const auto &o_scalar = o_buf->get();
+        nekrsCheck(o_scalar.size() != 1,
+                   MPI_COMM_SELF,
+                   EXIT_FAILURE,
+                   "invalid vector dim (%zu) of variable %s\n!",
+                   o_scalar.size(),
+                   name.c_str());
+        data.o_s.push_back(o_scalar);
+      }
+    };
+
+    appendVectorAsScalars("slip_velocity");
+    appendVectorAsScalars("mixture_velocity");
+    appendScalar("mixture_divergence");
+    appendScalar("interphase_drag_coefficient");
+    appendVectorAsScalars("interphase_force");
 
     return data;
   }();

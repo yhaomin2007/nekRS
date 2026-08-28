@@ -29,5 +29,19 @@ phase bulk velocities and bulk slip, followed by the mixture-divergence norm.
 The drag term should reduce the phase slip while the shared pressure projection
 controls `div(alpha_l u_l + alpha_g u_g)`.
 
+Checkpoint files contain the standard liquid velocity and pressure fields. For
+this case, which has no transported scalars, the legacy Nek scalar slots are:
+
+- `scalar00`--`scalar02`: gas velocity;
+- `scalar03`: gas volume fraction;
+- `scalar04`--`scalar06`: slip velocity `u_g - u_l`;
+- `scalar07`--`scalar09`: mixture velocity `alpha_l u_l + alpha_g u_g`;
+- `scalar10`: pointwise mixture divergence;
+- `scalar11`: interphase drag coefficient `K`;
+- `scalar12`--`scalar14`: liquid-directed interphase force `K(u_g-u_l)`.
+
+When transported scalars are enabled, these diagnostics follow their existing
+Nek scalar slots. ADIOS output retains the diagnostic field names directly.
+
 The mesh is a radius-`0.5`, length-`6` pipe. The radial wall uses
 `zeroDirichlet` for both phase velocities; the two axial faces are periodic.

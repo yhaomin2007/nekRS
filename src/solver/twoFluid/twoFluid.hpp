@@ -25,6 +25,7 @@ public:
   void updateAdvectionCoordinates();
   void makeExplicit(double time);
   void solvePressure(double time, int stage);
+  void updateDiagnostics();
   void reportContinuity();
 
   fluidSolver_t *liquid = nullptr;
@@ -41,12 +42,15 @@ public:
   occa::memory o_drag;
   occa::memory o_implicitLiquid;
   occa::memory o_implicitGas;
+  occa::memory o_slipVelocity;
+  occa::memory o_mixtureVelocity;
+  occa::memory o_interphaseForce;
+  occa::memory o_continuityResidual;
 
 private:
   const std::unique_ptr<geomSolver_t> &geom;
   occa::memory o_pressureCoeff;
   occa::memory o_mixtureFlux;
-  occa::memory o_continuityResidual;
 };
 
 void registerTwoFluidKernels();

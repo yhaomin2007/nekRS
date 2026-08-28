@@ -1265,6 +1265,10 @@ void nrs_t::writeCheckpoint(double t, bool enforceOutXYZ, bool enforceFP64, int 
     checkpointWriter = iofldFactory::create();
   }
 
+  if (twoFluid) {
+    twoFluid->updateDiagnostics();
+  }
+
   const auto outXYZ =
       (enforceOutXYZ) ? true : platform->options.compareArgs("CHECKPOINT OUTPUT MESH", "TRUE");
 
@@ -1296,6 +1300,22 @@ void nrs_t::writeCheckpoint(double t, bool enforceOutXYZ, bool enforceFP64, int 
       checkpointWriter->addVariable("gas_velocity", o_Vg);
       checkpointWriter->addVariable("gas_volume_fraction",
                                     std::vector<occa::memory>{twoFluid->o_alphaG.slice(0, visMesh->Nlocal)});
+
+      auto vectorField = [&](occa::memory o_field) {
+        std::vector<occa::memory> components;
+        for (int i = 0; i < meshV->dim; i++)
+          components.push_back(o_field.slice(i * fluid->fieldOffset, visMesh->Nlocal));
+        return components;
+      };
+      checkpointWriter->addVariable("slip_velocity", vectorField(twoFluid->o_slipVelocity));
+      checkpointWriter->addVariable("mixture_velocity", vectorField(twoFluid->o_mixtureVelocity));
+      checkpointWriter->addVariable(
+          "mixture_divergence",
+          std::vector<occa::memory>{twoFluid->o_continuityResidual.slice(0, visMesh->Nlocal)});
+      checkpointWriter->addVariable(
+          "interphase_drag_coefficient",
+          std::vector<occa::memory>{twoFluid->o_drag.slice(0, visMesh->Nlocal)});
+      checkpointWriter->addVariable("interphase_force", vectorField(twoFluid->o_interphaseForce));
     }
 
     for (int i = 0; i < Nscalar; i++) {

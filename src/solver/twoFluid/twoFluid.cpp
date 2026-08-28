@@ -40,10 +40,20 @@ void twoFluid_t::setup()
   o_implicitGas = platform->device.malloc<dfloat>(N);
   o_pressureCoeff = platform->device.malloc<dfloat>(N);
   o_mixtureFlux = platform->device.malloc<dfloat>(mesh->dim * liquid->fieldOffset);
+  o_slipVelocity = platform->device.malloc<dfloat>(mesh->dim * liquid->fieldOffset);
+  o_mixtureVelocity = platform->device.malloc<dfloat>(mesh->dim * liquid->fieldOffset);
+  o_interphaseForce = platform->device.malloc<dfloat>(mesh->dim * liquid->fieldOffset);
   o_continuityResidual = platform->device.malloc<dfloat>(N);
 
   platform->linAlg->fill(mesh->Nlocal, alphaG, o_alphaG);
   platform->linAlg->fill(mesh->Nlocal, alphaL, o_alphaL);
+  platform->linAlg->fill(N, 0.0, o_drag);
+  platform->linAlg->fill(N, 0.0, o_implicitLiquid);
+  platform->linAlg->fill(N, 0.0, o_implicitGas);
+  platform->linAlg->fill(mesh->dim * N, 0.0, o_slipVelocity);
+  platform->linAlg->fill(mesh->dim * N, 0.0, o_mixtureVelocity);
+  platform->linAlg->fill(mesh->dim * N, 0.0, o_interphaseForce);
+  platform->linAlg->fill(N, 0.0, o_continuityResidual);
 
   // Both phases see the same pressure storage.  Only the primary phase owns
   // and destroys the pressure elliptic solver.
@@ -162,7 +172,7 @@ void twoFluid_t::solvePressure(double time, int stage)
   platform->timer.toc("mixture pressureSolve");
 }
 
-void twoFluid_t::reportContinuity()
+void twoFluid_t::updateDiagnostics()
 {
   auto mesh = liquid->mesh;
   launchKernel("twoFluid::mixtureVelocity",
@@ -172,17 +182,31 @@ void twoFluid_t::reportContinuity()
                alphaG,
                liquid->o_U,
                gas->o_U,
-               o_mixtureFlux);
+               o_mixtureVelocity);
+  launchKernel("twoFluid::diagnosticFields",
+               mesh->Nlocal,
+               liquid->fieldOffset,
+               liquid->o_U,
+               gas->o_U,
+               o_drag,
+               o_slipVelocity,
+               o_interphaseForce);
   launchKernel("core-divergenceVolumeHex3D",
                mesh->Nelements,
                mesh->o_vgeo,
                mesh->o_D,
                liquid->fieldOffset,
-               o_mixtureFlux,
+               o_mixtureVelocity,
                o_continuityResidual);
   oogs::startFinish(o_continuityResidual, 1, liquid->fieldOffset,
                     ogsDfloat, ogsAdd, mesh->oogs);
   platform->linAlg->axmy(mesh->Nlocal, 1.0, mesh->o_invLMM, o_continuityResidual);
+}
+
+void twoFluid_t::reportContinuity()
+{
+  auto mesh = liquid->mesh;
+  updateDiagnostics();
   const auto norm = platform->linAlg->weightedNorm2(mesh->Nlocal,
                                                     mesh->o_LMM,
                                                     o_continuityResidual,
@@ -195,7 +219,11 @@ void registerTwoFluidKernels()
 {
   occa::properties props = platform->kernelInfo;
   const std::string dir = getenv("NEKRS_KERNEL_DIR") + std::string("/solver/twoFluid/");
-  for (const auto &name : {"dragSource", "mixtureFlux", "mixtureVelocity", "pressureCoefficient"})
+  for (const auto &name : {"diagnosticFields",
+                           "dragSource",
+                           "mixtureFlux",
+                           "mixtureVelocity",
+                           "pressureCoefficient"})
     platform->kernelRequests.add("twoFluid::" + std::string(name),
                                  dir + std::string(name) + ".okl",
                                  props);
