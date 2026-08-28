@@ -97,7 +97,7 @@ public:
     solveVelocity(time, stage);
   };
 
-  void makeForcing();
+  void makeForcing(bool shiftHistory = true);
 
   void updateZeroNormalMask()
   {

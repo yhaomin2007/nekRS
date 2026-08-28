@@ -252,6 +252,10 @@ static std::vector<std::string> twoFluidKeys = {
     {"gravityX"},
     {"gravityY"},
     {"gravityZ"},
+    {"dragMultiplier"},
+    {"couplingIterations"},
+    {"pressureCorrectors"},
+    {"projectionOnly"},
 };
 
 static std::vector<std::string> deprecatedKeys = {

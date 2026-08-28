@@ -9,10 +9,21 @@ uses the mixture-volume constraint
 
 `div(alpha_l u_l + alpha_g u_g) = 0`.
 
-Interphase drag is Schiller--Naumann.  Its same-phase contribution is placed on
-each velocity Helmholtz diagonal; the opposite-phase velocity is lagged across
-the normal NekRS corrector iteration.  Momentum transfer is equal and opposite
-before division by phase volume and density.
+Interphase drag is Schiller--Naumann. Its same-phase contribution is placed on
+each velocity Helmholtz diagonal, and the opposite-phase velocity is refreshed
+inside configurable coupling iterations. The shared pressure coefficient is
+formed from the inverse local two-phase momentum diagonal, including implicit
+drag. Each pressure correction updates both velocities together.
+
+The mixture pressure RHS uses the same curl/curl, grad/div, gather-scatter,
+inverse-mass, volume-divergence, prescribed-divergence, and boundary-flux
+operators as the standard NekRS pressure path. Two regression cases isolate the
+new algorithm:
+
+- `twoFluidSingleFluid`: `K = 0`, equal phase properties and equal initial
+  velocities; verifies phase equality and mixture continuity.
+- `twoFluidMixture`: projection-only mode with prescribed provisional
+  velocities; verifies the shared mixture projection without momentum solves.
 
 ## Parameter file
 
@@ -28,6 +39,10 @@ gravityX = 0
 gravityY = 0
 gravityZ = -9.81
 alphaFloor = 1e-8
+dragMultiplier = 1
+couplingIterations = 2
+pressureCorrectors = 2
+projectionOnly = false
 ```
 
 Liquid density and viscosity remain in `[FLUID VELOCITY]`. The gas momentum
@@ -48,14 +63,18 @@ are `nrs->twoFluid->o_alphaG` and `o_alphaL`.
 
 ## Deliberate restrictions
 
+Set `dragMultiplier = 0` to disable interphase drag. `projectionOnly = true`
+skips both momentum solves and applies only the shared pressure correction; it
+is a debugging option rather than a physical time-advancement mode.
+
 This is a verification branch, not yet the full production solver. It currently
-requires a fixed mesh and is intended for periodic cases. It does not yet
-include surface terms in the mixture pressure RHS, independent gas boundary
-callbacks, dynamic volume fraction, lift, wall lubrication, turbulent
-dispersion, virtual mass, phase change, or turbulence. Pressure rho-splitting,
-low-Mach mode, NekNek, constant-flow-rate control, and subcycling are outside
-the supported v1 combination.
+requires a fixed mesh and is intended for periodic or impermeable-wall cases.
+It does not yet include independent gas boundary callbacks, dynamic volume
+fraction, lift, wall lubrication, turbulent dispersion, virtual mass, phase
+change, or turbulence. Pressure rho-splitting, low-Mach mode, NekNek,
+constant-flow-rate control, and subcycling are outside the supported v1
+combination.
 
 The next required numerical addition is the gas-volume-fraction transport
-equation with consistent momentum transport. Boundary pressure fluxes should
-be completed before wall-bounded physical validation.
+equation with consistent momentum transport. General inlet/outlet boundary
+conditions must be completed before open-boundary physical validation.

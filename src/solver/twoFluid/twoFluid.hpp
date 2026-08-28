@@ -24,7 +24,10 @@ public:
   void setup();
   void updateAdvectionCoordinates();
   void makeExplicit(double time);
+  void refreshCouplingForcing(double time, int tstep);
+  void finalizeCouplingForcing();
   void solvePressure(double time, int stage);
+  void correctMixtureContinuity(double time);
   void updateDiagnostics();
   void reportContinuity();
 
@@ -36,6 +39,10 @@ public:
   dfloat bubbleDiameter = 1e-3;
   dfloat gravity[3] = {0, 0, 0};
   dfloat alphaFloor = 1e-8;
+  dfloat dragMultiplier = 1;
+  int couplingIterations = 2;
+  int pressureCorrectors = 2;
+  bool projectionOnly = false;
 
   occa::memory o_alphaG;
   occa::memory o_alphaL;
@@ -46,11 +53,18 @@ public:
   occa::memory o_mixtureVelocity;
   occa::memory o_interphaseForce;
   occa::memory o_continuityResidual;
+  occa::memory o_pressureResponseLiquid;
+  occa::memory o_pressureResponseGas;
 
 private:
   const std::unique_ptr<geomSolver_t> &geom;
   occa::memory o_pressureCoeff;
   occa::memory o_mixtureFlux;
+  occa::memory o_baseExtLiquid;
+  occa::memory o_baseExtGas;
+
+  void phasePressureFlux(fluidSolver_t *phase, occa::memory o_flux);
+  void updatePressureResponse(bool scaleForMomentumPredictor);
 };
 
 void registerTwoFluidKernels();

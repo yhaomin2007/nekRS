@@ -11,6 +11,10 @@ void parseTwoFluidSection(const int rank, setupAide &options, inipp::Ini *ini)
   options.setArgs("TWO FLUID GRAVITY X", "0");
   options.setArgs("TWO FLUID GRAVITY Y", "0");
   options.setArgs("TWO FLUID GRAVITY Z", "0");
+  options.setArgs("TWO FLUID DRAG MULTIPLIER", "1");
+  options.setArgs("TWO FLUID COUPLING ITERATIONS", "2");
+  options.setArgs("TWO FLUID PRESSURE CORRECTORS", "2");
+  options.setArgs("TWO FLUID PROJECTION ONLY", "FALSE");
 
   auto extractReal = [&](const std::string &key, const std::string &option, bool required = false) {
     double value;
@@ -29,6 +33,19 @@ void parseTwoFluidSection(const int rank, setupAide &options, inipp::Ini *ini)
   extractReal("gravityx", "TWO FLUID GRAVITY X");
   extractReal("gravityy", "TWO FLUID GRAVITY Y");
   extractReal("gravityz", "TWO FLUID GRAVITY Z");
+  extractReal("dragmultiplier", "TWO FLUID DRAG MULTIPLIER");
+
+  int couplingIterations;
+  if (ini->extract("two fluid", "couplingiterations", couplingIterations))
+    options.setArgs("TWO FLUID COUPLING ITERATIONS", std::to_string(couplingIterations));
+
+  int pressureCorrectors;
+  if (ini->extract("two fluid", "pressurecorrectors", pressureCorrectors))
+    options.setArgs("TWO FLUID PRESSURE CORRECTORS", std::to_string(pressureCorrectors));
+
+  bool projectionOnly;
+  if (ini->extract("two fluid", "projectiononly", projectionOnly))
+    options.setArgs("TWO FLUID PROJECTION ONLY", projectionOnly ? "TRUE" : "FALSE");
 
   // v1 deliberately reuses the liquid velocity solver and boundary settings.
   // Clone every relevant option after the normal fluid parser has run.

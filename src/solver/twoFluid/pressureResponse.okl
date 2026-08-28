@@ -1,0 +1,30 @@
+@kernel void pressureResponse(const dlong N,
+                              const dfloat alphaFloor,
+                              const dfloat alphaL,
+                              const dfloat alphaG,
+                              const dfloat g0idt,
+                              const dfloat pressureScale,
+                              @ restrict const dfloat *rhoL,
+                              @ restrict const dfloat *rhoG,
+                              @ restrict const dfloat *K,
+                              @ restrict dfloat *responseL,
+                              @ restrict dfloat *responseG,
+                              @ restrict dfloat *mixtureResponse)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    const dfloat aL = fmax(alphaL, alphaFloor);
+    const dfloat aG = fmax(alphaG, alphaFloor);
+    const dfloat bL = K[n] / aL;
+    const dfloat bG = K[n] / aG;
+    const dfloat AL = g0idt * rhoL[n] + bL;
+    const dfloat AG = g0idt * rhoG[n] + bG;
+    const dfloat determinant = fmax(AL * AG - bL * bG, 1e-30);
+
+    // M^{-1}[1,1]^T for the locally coupled phase-momentum diagonal.
+    const dfloat DL = (AG + bL) / determinant;
+    const dfloat DG = (AL + bG) / determinant;
+    responseL[n] = DL;
+    responseG[n] = DG;
+    mixtureResponse[n] = pressureScale * (alphaL * DL + alphaG * DG);
+  }
+}

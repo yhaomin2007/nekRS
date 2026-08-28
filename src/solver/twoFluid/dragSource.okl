@@ -4,6 +4,7 @@
                         const dfloat alphaL,
                         const dfloat alphaG,
                         const dfloat db,
+                        const dfloat dragMultiplier,
                         const dfloat gx,
                         const dfloat gy,
                         const dfloat gz,
@@ -29,7 +30,7 @@
       Cd = 24.0 / fmax(Re, 1e-12) * (1.0 + 0.15 * pow(Re, 0.687));
 
     // Interphase force per mixture volume: K (u_g-u_l).
-    const dfloat K = 0.75 * Cd * rhoL[n] * alphaL * alphaG * slip / db;
+    const dfloat K = dragMultiplier * 0.75 * Cd * rhoL[n] * alphaL * alphaG * slip / db;
     const dfloat aL = fmax(alphaL, alphaFloor);
     const dfloat aG = fmax(alphaG, alphaFloor);
     Kout[n] = K;

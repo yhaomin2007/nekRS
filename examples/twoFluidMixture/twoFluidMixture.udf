@@ -1,3 +1,7 @@
+#ifdef __okl__
+
+#endif
+
 void UDF_Setup()
 {
   auto mesh = nrs->meshV;
@@ -16,4 +20,15 @@ void UDF_Setup()
 void UDF_ExecuteStep(double time, int tstep)
 {
   nrs->twoFluid->reportContinuity();
+  auto mesh = nrs->meshV;
+  const dfloat norm = platform->linAlg->weightedNorm2(
+      mesh->Nlocal,
+      mesh->o_LMM,
+      nrs->twoFluid->o_continuityResidual,
+      platform->comm.mpiComm()) / sqrt(mesh->volume);
+  nekrsCheck(nrs->lastStep && norm > 1e-6,
+             platform->comm.mpiComm(),
+             EXIT_FAILURE,
+             "projection-only mixture divergence is too large: %.8e\n",
+             norm);
 }

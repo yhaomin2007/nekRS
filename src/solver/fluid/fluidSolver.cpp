@@ -664,7 +664,7 @@ void fluidSolver_t::applyDirichlet(double time)
   }
 }
 
-void fluidSolver_t::makeForcing()
+void fluidSolver_t::makeForcing(bool shiftHistory)
 {
   if (ellipticSolver.size() == 0) {
     return;
@@ -700,10 +700,12 @@ void fluidSolver_t::makeForcing()
     }
   }
 
-  for (int s = o_coeffEXT.size(); s > 1; s--) {
-    o_EXT.copyFrom(o_EXT, fieldOffsetSum, (s - 1) * fieldOffsetSum, (s - 2) * fieldOffsetSum);
-    if (o_ADV.isInitialized()) {
-      o_ADV.copyFrom(o_ADV, fieldOffsetSum, (s - 1) * fieldOffsetSum, (s - 2) * fieldOffsetSum);
+  if (shiftHistory) {
+    for (int s = o_coeffEXT.size(); s > 1; s--) {
+      o_EXT.copyFrom(o_EXT, fieldOffsetSum, (s - 1) * fieldOffsetSum, (s - 2) * fieldOffsetSum);
+      if (o_ADV.isInitialized()) {
+        o_ADV.copyFrom(o_ADV, fieldOffsetSum, (s - 1) * fieldOffsetSum, (s - 2) * fieldOffsetSum);
+      }
     }
   }
 }

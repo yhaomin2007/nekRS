@@ -1905,8 +1905,25 @@ bool nrs_t::runInnerStep(std::function<bool(int)> convergenceCheck, int iter, bo
   }
 
   if (fluid) {
-    fluid->solve(timeNew, iter);
-    if (gas) gas->solve(timeNew, iter);
+    if (twoFluid) {
+      if (twoFluid->projectionOnly) {
+        twoFluid->correctMixtureContinuity(timeNew);
+      } else {
+        for (int couplingIteration = 0;
+             couplingIteration < twoFluid->couplingIterations;
+             ++couplingIteration) {
+          if (couplingIteration > 0) {
+            twoFluid->refreshCouplingForcing(timeNew, tstep);
+          }
+          fluid->solve(timeNew, iter);
+          gas->solve(timeNew, iter);
+          twoFluid->correctMixtureContinuity(timeNew);
+        }
+        twoFluid->finalizeCouplingForcing();
+      }
+    } else {
+      fluid->solve(timeNew, iter);
+    }
 
     if (platform->options.compareArgs("CONSTANT FLOW RATE", "TRUE")) {
       adjustFlowRate(tstep, timeNew);
