@@ -40,7 +40,8 @@ void twoFluid_t::setup()
              dragMultiplier);
   nekrsCheck(couplingIterations < 1 || pressureCorrectors < 1,
              platform->comm.mpiComm(), EXIT_FAILURE,
-             "TWO FLUID couplingIterations and pressureCorrectors must be positive.\n");
+             "%s\n",
+             "TWO FLUID couplingIterations and pressureCorrectors must be positive.");
 
   alphaL = 1 - alphaG;
   const auto N = liquid->fieldOffset;
