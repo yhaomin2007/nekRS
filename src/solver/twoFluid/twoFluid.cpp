@@ -56,6 +56,8 @@ void twoFluid_t::setup()
   o_mixtureFlux = platform->device.malloc<dfloat>(mesh->dim * liquid->fieldOffset);
   o_baseExtLiquid = platform->device.malloc<dfloat>(liquid->fieldOffsetSum);
   o_baseExtGas = platform->device.malloc<dfloat>(gas->fieldOffsetSum);
+  o_divergenceLiquid = platform->device.malloc<dfloat>(N);
+  o_divergenceGas = platform->device.malloc<dfloat>(N);
   o_slipVelocity = platform->device.malloc<dfloat>(mesh->dim * liquid->fieldOffset);
   o_mixtureVelocity = platform->device.malloc<dfloat>(mesh->dim * liquid->fieldOffset);
   o_interphaseForce = platform->device.malloc<dfloat>(mesh->dim * liquid->fieldOffset);
@@ -73,6 +75,8 @@ void twoFluid_t::setup()
   platform->linAlg->fill(N, 0.0, o_pressureResponseLiquid);
   platform->linAlg->fill(N, 0.0, o_pressureResponseGas);
   platform->linAlg->fill(N, 0.0, o_pressureCoeff);
+  platform->linAlg->fill(N, 0.0, o_divergenceLiquid);
+  platform->linAlg->fill(N, 0.0, o_divergenceGas);
   platform->linAlg->fill(N, 0.0, liquid->o_div);
   platform->linAlg->fill(N, 0.0, gas->o_div);
 
@@ -84,6 +88,11 @@ void twoFluid_t::setup()
 
   liquid->userImplicitLinearTerm = [this](double) { return o_implicitLiquid; };
   gas->userImplicitLinearTerm = [this](double) { return o_implicitGas; };
+
+  // UDF initial conditions have already been loaded at this point.  Report
+  // them before the first pressure projection so initialization and
+  // projection effects can be distinguished.
+  reportContinuity("initial");
 }
 
 void twoFluid_t::updateAdvectionCoordinates()
@@ -411,28 +420,54 @@ void twoFluid_t::updateDiagnostics()
                o_drag,
                o_slipVelocity,
                o_interphaseForce);
-  launchKernel("core-divergenceVolumeHex3D",
+  weakDivergence(liquid->o_U, o_divergenceLiquid);
+  weakDivergence(gas->o_U, o_divergenceGas);
+  weakDivergence(o_mixtureVelocity, o_continuityResidual);
+}
+
+void twoFluid_t::weakDivergence(const occa::memory &o_velocity,
+                                occa::memory o_divergence)
+{
+  auto mesh = liquid->mesh;
+  launchKernel("core-wDivergenceVolumeHex3D",
                mesh->Nelements,
                mesh->o_vgeo,
                mesh->o_D,
                liquid->fieldOffset,
-               o_mixtureVelocity,
-               o_continuityResidual);
-  oogs::startFinish(o_continuityResidual, 1, liquid->fieldOffset,
+               o_velocity,
+               o_divergence);
+  oogs::startFinish(o_divergence, 1, liquid->fieldOffset,
                     ogsDfloat, ogsAdd, mesh->oogs);
-  platform->linAlg->axmy(mesh->Nlocal, 1.0, mesh->o_invLMM, o_continuityResidual);
+  platform->linAlg->axmy(mesh->Nlocal, 1.0, mesh->o_invLMM, o_divergence);
 }
 
-void twoFluid_t::reportContinuity()
+void twoFluid_t::reportContinuity(const char *label)
 {
   auto mesh = liquid->mesh;
   updateDiagnostics();
-  const auto norm = platform->linAlg->weightedNorm2(mesh->Nlocal,
-                                                    mesh->o_LMM,
-                                                    o_continuityResidual,
-                                                    platform->comm.mpiComm());
-  if (platform->comm.mpiRank() == 0)
-    printf("twoFluid mixture-divergence norm: %.8e\n", norm);
+  const auto comm = platform->comm.mpiComm();
+  const auto maxLiquid = platform->linAlg->amax(mesh->Nlocal, o_divergenceLiquid, comm);
+  const auto maxGas = platform->linAlg->amax(mesh->Nlocal, o_divergenceGas, comm);
+  const auto maxMixture = platform->linAlg->amax(mesh->Nlocal, o_continuityResidual, comm);
+  const auto volumeScale = 1.0 / sqrt(mesh->volume);
+  const auto l2Liquid = volumeScale * platform->linAlg->weightedNorm2(
+      mesh->Nlocal, mesh->o_LMM, o_divergenceLiquid, comm);
+  const auto l2Gas = volumeScale * platform->linAlg->weightedNorm2(
+      mesh->Nlocal, mesh->o_LMM, o_divergenceGas, comm);
+  const auto l2Mixture = volumeScale * platform->linAlg->weightedNorm2(
+      mesh->Nlocal, mesh->o_LMM, o_continuityResidual, comm);
+  if (platform->comm.mpiRank() == 0) {
+    printf("twoFluid divergence%s%s max|L|=%.8e max|G|=%.8e max|mix|=%.8e "
+           "L2(L)=%.8e L2(G)=%.8e L2(mix)=%.8e\n",
+           label ? " " : "",
+           label ? label : "",
+           maxLiquid,
+           maxGas,
+           maxMixture,
+           l2Liquid,
+           l2Gas,
+           l2Mixture);
+  }
 }
 
 void registerTwoFluidKernels()

@@ -33,8 +33,6 @@ void UDF_Setup()
 
 void UDF_ExecuteStep(double time, int tstep)
 {
-  if (tstep % 10 && !nrs->lastStep) return;
-
   auto mesh = nrs->meshV;
   const auto o_liquidUz =
       nrs->fluid->o_U.slice(2 * nrs->fieldOffset, mesh->Nlocal);

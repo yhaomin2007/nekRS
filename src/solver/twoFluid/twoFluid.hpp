@@ -29,7 +29,7 @@ public:
   void solvePressure(double time, int stage);
   void correctMixtureContinuity(double time);
   void updateDiagnostics();
-  void reportContinuity();
+  void reportContinuity(const char *label = nullptr);
 
   fluidSolver_t *liquid = nullptr;
   fluidSolver_t *gas = nullptr;
@@ -62,8 +62,11 @@ private:
   occa::memory o_mixtureFlux;
   occa::memory o_baseExtLiquid;
   occa::memory o_baseExtGas;
+  occa::memory o_divergenceLiquid;
+  occa::memory o_divergenceGas;
 
   void phasePressureFlux(fluidSolver_t *phase, occa::memory o_flux);
+  void weakDivergence(const occa::memory &o_velocity, occa::memory o_divergence);
   void updatePressureResponse(bool scaleForMomentumPredictor);
 };
 
