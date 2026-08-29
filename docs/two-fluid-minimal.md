@@ -3,9 +3,10 @@
 ## Implemented model
 
 The branch advances two velocity fields on the same SEM mesh and one shared
-mechanical pressure.  The prescribed uniform volume fractions satisfy
-`alpha_l + alpha_g = 1`.  Phase properties are constant.  The pressure equation
-uses the mixture-volume constraint
+mechanical pressure. Gas volume fraction is advanced in conservative form,
+`d(alpha_g)/dt + div(alpha_g u_g) = 0`, and `alpha_l = 1 - alpha_g` is enforced
+pointwise. Phase properties are constant. The pressure equation uses the
+mixture-volume constraint
 
 `div(alpha_l u_l + alpha_g u_g) = 0`.
 
@@ -63,6 +64,11 @@ are `nrs->twoFluid->o_alphaG` and `o_alphaL`.
 
 ## Deliberate restrictions
 
+The volume-fraction transport presently supports `tombo1`/BDF1. Its bound
+correction redistributes any clipping defect over the remaining admissible
+capacity, preserving the integral of the raw conservative update for periodic
+or impermeable boundaries.
+
 Set `dragMultiplier = 0` to disable interphase drag. `projectionOnly = true`
 skips both momentum solves and applies only the shared pressure correction; it
 is a debugging option rather than a physical time-advancement mode.
@@ -75,6 +81,5 @@ change, or turbulence. Pressure rho-splitting, low-Mach mode, NekNek,
 constant-flow-rate control, and subcycling are outside the supported v1
 combination.
 
-The next required numerical addition is the gas-volume-fraction transport
-equation with consistent momentum transport. General inlet/outlet boundary
-conditions must be completed before open-boundary physical validation.
+General inlet/outlet volume-fraction fluxes must be completed before
+open-boundary physical validation.

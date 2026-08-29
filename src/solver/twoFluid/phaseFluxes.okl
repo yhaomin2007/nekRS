@@ -1,0 +1,19 @@
+@kernel void phaseFluxes(const dlong N,
+                         const dlong offset,
+                         @ restrict const dfloat *alphaL,
+                         @ restrict const dfloat *alphaG,
+                         @ restrict const dfloat *UL,
+                         @ restrict const dfloat *UG,
+                         @ restrict dfloat *fluxL,
+                         @ restrict dfloat *fluxG,
+                         @ restrict dfloat *mixtureFlux)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    for (int c = 0; c < 3; ++c) {
+      const dlong id = n + c*offset;
+      fluxL[id] = alphaL[n] * UL[id];
+      fluxG[id] = alphaG[n] * UG[id];
+      mixtureFlux[id] = fluxL[id] + fluxG[id];
+    }
+  }
+}

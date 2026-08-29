@@ -1,7 +1,7 @@
 @kernel void pressureResponse(const dlong N,
                               const dfloat alphaFloor,
-                              const dfloat alphaL,
-                              const dfloat alphaG,
+                              @ restrict const dfloat *alphaL,
+                              @ restrict const dfloat *alphaG,
                               const dfloat g0idt,
                               const dfloat pressureScale,
                               @ restrict const dfloat *rhoL,
@@ -12,8 +12,8 @@
                               @ restrict dfloat *mixtureResponse)
 {
   for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
-    const dfloat aL = fmax(alphaL, alphaFloor);
-    const dfloat aG = fmax(alphaG, alphaFloor);
+    const dfloat aL = fmax(alphaL[n], alphaFloor);
+    const dfloat aG = fmax(alphaG[n], alphaFloor);
     const dfloat bL = K[n] / aL;
     const dfloat bG = K[n] / aG;
     const dfloat AL = g0idt * rhoL[n] + bL;
@@ -25,6 +25,6 @@
     const dfloat DG = (AL + bG) / determinant;
     responseL[n] = DL;
     responseG[n] = DG;
-    mixtureResponse[n] = pressureScale * (alphaL * DL + alphaG * DG);
+    mixtureResponse[n] = pressureScale * (aL * DL + aG * DG);
   }
 }

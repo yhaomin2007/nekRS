@@ -5,11 +5,11 @@
 class fluidSolver_t;
 class geomSolver_t;
 
-// Experimental, constant-volume-fraction two-fluid coordinator.
+// Experimental two-fluid coordinator with conservative gas-volume transport.
 //
 // Scope of the first branch:
 //   * constant rho and mu for each phase
-//   * prescribed, spatially uniform gas volume fraction
+//   * conservative gas-volume-fraction transport and alpha_l = 1 - alpha_g
 //   * a common mechanical pressure
 //   * gravity and Schiller--Naumann drag
 //   * diagonal-implicit drag with outer correction iterations
@@ -22,6 +22,8 @@ public:
              const std::unique_ptr<geomSolver_t> &geom);
 
   void setup();
+  void beginTimeStep();
+  void advanceVolumeFraction();
   void updateAdvectionCoordinates();
   void makeExplicit(double time);
   void refreshCouplingForcing(double time, int tstep);
@@ -53,6 +55,8 @@ public:
   occa::memory o_mixtureVelocity;
   occa::memory o_interphaseForce;
   occa::memory o_continuityResidual;
+  occa::memory o_gasContinuityResidual;
+  occa::memory o_liquidContinuityResidual;
   occa::memory o_pressureResponseLiquid;
   occa::memory o_pressureResponseGas;
 
@@ -64,8 +68,16 @@ private:
   occa::memory o_baseExtGas;
   occa::memory o_divergenceLiquid;
   occa::memory o_divergenceGas;
+  occa::memory o_alphaGPrevious;
+  occa::memory o_alphaGRaw;
+  occa::memory o_boundCapacity;
+  occa::memory o_phaseFluxLiquid;
+  occa::memory o_phaseFluxGas;
+  occa::memory o_divergencePhaseFluxLiquid;
+  occa::memory o_divergencePhaseFluxGas;
 
   void phasePressureFlux(fluidSolver_t *phase, occa::memory o_flux);
+  void updatePhaseFluxes();
   void weakDivergence(const occa::memory &o_velocity, occa::memory o_divergence);
   void updatePressureResponse(bool scaleForMomentumPredictor);
 };

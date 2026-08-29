@@ -1,0 +1,17 @@
+@kernel void massResidual(const dlong N,
+                          const dfloat invDt,
+                          @ restrict const dfloat *alphaG0,
+                          @ restrict const dfloat *alphaG,
+                          @ restrict const dfloat *divFluxL,
+                          @ restrict const dfloat *divFluxG,
+                          @ restrict dfloat *residualL,
+                          @ restrict dfloat *residualG,
+                          @ restrict dfloat *residualMixture)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    const dfloat dAlphaGdt = (alphaG[n] - alphaG0[n]) * invDt;
+    residualG[n] = dAlphaGdt + divFluxG[n];
+    residualL[n] = -dAlphaGdt + divFluxL[n];
+    residualMixture[n] = residualL[n] + residualG[n];
+  }
+}

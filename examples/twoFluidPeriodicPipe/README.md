@@ -7,7 +7,9 @@ parameter file; no mesh copy or generation step is required.
 
 The model is intentionally limited to the first implementation increment:
 
-- prescribed uniform gas volume fraction;
+- conservative gas-volume-fraction transport using the gas phase flux;
+- pointwise `alpha_l = 1 - alpha_g`;
+- conservative bound correction for `0 <= alpha_g <= 1`;
 - constant liquid and gas properties;
 - separate liquid and gas velocities;
 - one shared mixture-continuity pressure;
@@ -25,9 +27,10 @@ nekrs --setup twoFluidPipe.par
 
 The liquid starts with a parabolic axial profile with centerline velocity
 `0.20`, while the gas starts at `0.30`. Every ten steps the UDF prints the
-phase bulk velocities and bulk slip, followed by the mixture-divergence norm.
-The drag term should reduce the phase slip while the shared pressure projection
-controls `div(alpha_l u_l + alpha_g u_g)`.
+phase bulk velocities and bulk slip. The continuity diagnostics report the gas,
+liquid, and mixture mass residuals separately. Short fixed-point iterations
+update `alpha_g`, momentum, and shared pressure without advancing physical time
+more than once per step.
 
 Checkpoint files contain the standard liquid velocity and pressure fields. For
 this case, which has no transported scalars, the legacy Nek scalar slots are:
@@ -36,7 +39,7 @@ this case, which has no transported scalars, the legacy Nek scalar slots are:
 - `scalar03`: gas volume fraction;
 - `scalar04`--`scalar06`: slip velocity `u_g - u_l`;
 - `scalar07`--`scalar09`: mixture velocity `alpha_l u_l + alpha_g u_g`;
-- `scalar10`: pointwise mixture divergence;
+- `scalar10`: pointwise mixture mass-continuity residual;
 - `scalar11`: interphase drag coefficient `K`;
 - `scalar12`--`scalar14`: liquid-directed interphase force `K(u_g-u_l)`.
 

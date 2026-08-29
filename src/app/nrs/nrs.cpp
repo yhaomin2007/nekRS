@@ -1859,7 +1859,10 @@ bool nrs_t::runInnerStep(std::function<bool(int)> convergenceCheck, int iter, bo
     if (fluid) {
       fluid->lagSolution();
     }
-    if (gas) gas->lagSolution();
+    if (gas) {
+      gas->lagSolution();
+      twoFluid->beginTimeStep();
+    }
 
     if (scalar) {
       scalar->lagSolution();
@@ -1912,9 +1915,8 @@ bool nrs_t::runInnerStep(std::function<bool(int)> convergenceCheck, int iter, bo
         for (int couplingIteration = 0;
              couplingIteration < twoFluid->couplingIterations;
              ++couplingIteration) {
-          if (couplingIteration > 0) {
-            twoFluid->refreshCouplingForcing(timeNew, tstep);
-          }
+          twoFluid->advanceVolumeFraction();
+          twoFluid->refreshCouplingForcing(timeNew, tstep);
           fluid->solve(timeNew, iter);
           gas->solve(timeNew, iter);
           twoFluid->correctMixtureContinuity(timeNew);
