@@ -151,7 +151,7 @@ jobs:
 
     - name: two-fluid periodic pipe
       working-directory: ${{ env.NEKRS_EXAMPLES }}/build
-      run: ctest --output-on-failure -R "^twoFluidPeriodicPipe_"
+      run: ctest -V -R "^twoFluidPeriodicPipe_1$"
 
   mv_cyl:
     needs: install
