@@ -63,4 +63,47 @@ void UDF_ExecuteStep(double time, int tstep)
   }
 
   nrs->twoFluid->reportContinuity();
+
+  if (nrs->lastStep) {
+    const auto comm = platform->comm.mpiComm();
+    const dfloat volumeScale = 1.0 / sqrt(mesh->volume);
+    const dfloat l2Liquid = volumeScale * platform->linAlg->weightedNorm2(
+        mesh->Nlocal,
+        mesh->o_LMM,
+        nrs->twoFluid->o_liquidContinuityResidual,
+        comm);
+    const dfloat l2Gas = volumeScale * platform->linAlg->weightedNorm2(
+        mesh->Nlocal,
+        mesh->o_LMM,
+        nrs->twoFluid->o_gasContinuityResidual,
+        comm);
+    const dfloat l2Mixture = volumeScale * platform->linAlg->weightedNorm2(
+        mesh->Nlocal,
+        mesh->o_LMM,
+        nrs->twoFluid->o_continuityResidual,
+        comm);
+    const dfloat alphaMin = platform->linAlg->min(
+        mesh->Nlocal, nrs->twoFluid->o_alphaG, comm);
+    const dfloat alphaMax = platform->linAlg->max(
+        mesh->Nlocal, nrs->twoFluid->o_alphaG, comm);
+    const dfloat alphaMean = platform->linAlg->innerProd(
+        mesh->Nlocal,
+        mesh->o_LMM,
+        nrs->twoFluid->o_alphaG,
+        comm) / mesh->volume;
+
+    nekrsCheck(l2Liquid > 1e-6 || l2Gas > 1e-7 || l2Mixture > 1e-6 ||
+                   alphaMin < 0.0 || alphaMax > 1.0 ||
+                   std::abs(alphaMean - 0.05) > 1e-8,
+               comm,
+               EXIT_FAILURE,
+               "two-fluid phase continuity failed: L2(Rl)=%g L2(Rg)=%g "
+               "L2(Rm)=%g alpha=[%g,%g] mean=%g\n",
+               l2Liquid,
+               l2Gas,
+               l2Mixture,
+               alphaMin,
+               alphaMax,
+               alphaMean);
+  }
 }
