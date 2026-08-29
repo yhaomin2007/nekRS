@@ -4,8 +4,11 @@
 
 The branch advances two velocity fields on the same SEM mesh and one shared
 mechanical pressure. Gas volume fraction is advanced in conservative form,
-`d(alpha_g)/dt + div(alpha_g u_g) = 0`, and `alpha_l = 1 - alpha_g` is enforced
-pointwise. Phase properties are constant. The pressure equation uses the
+`d(alpha_g)/dt + div(alpha_g u_g - D_alpha grad(alpha_g)) = 0`, and
+`alpha_l = 1 - alpha_g` is enforced pointwise. `D_alpha` is an optional
+constant numerical diffusivity and defaults to zero. Its equal-and-opposite
+liquid flux makes it cancel exactly from the mixture flux. Phase properties are
+constant. The pressure equation uses the
 mixture-volume constraint
 
 `div(alpha_l u_l + alpha_g u_g) = 0`.
@@ -40,6 +43,7 @@ gravityX = 0
 gravityY = 0
 gravityZ = -9.81
 alphaFloor = 1e-8
+alphaDiffusivity = 0
 dragMultiplier = 1
 couplingIterations = 2
 pressureCorrectors = 2
@@ -48,7 +52,8 @@ projectionOnly = false
 
 Liquid density and viscosity remain in `[FLUID VELOCITY]`. The gas momentum
 solver inherits the liquid velocity solver, preconditioner, tolerance, and
-boundary map settings.
+boundary map settings. `alphaDiffusivity` has units of length squared per time;
+set it to zero for pure advection.
 
 ## UDF access
 

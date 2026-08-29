@@ -8,6 +8,7 @@ parameter file; no mesh copy or generation step is required.
 The model is intentionally limited to the first implementation increment:
 
 - conservative gas-volume-fraction transport using the gas phase flux;
+- optional conservative numerical diffusion controlled by `alphaDiffusivity`;
 - pointwise `alpha_l = 1 - alpha_g`;
 - conservative bound correction for `0 <= alpha_g <= 1`;
 - constant liquid and gas properties;
@@ -31,6 +32,11 @@ phase bulk velocities and bulk slip. The continuity diagnostics report the gas,
 liquid, and mixture mass residuals separately. Short fixed-point iterations
 update `alpha_g`, momentum, and shared pressure without advancing physical time
 more than once per step.
+
+This example sets `alphaDiffusivity = 1.0e-6`. Set it to zero to recover pure
+advection. The gas diffusive flux is `-D_alpha grad(alpha_g)` and the liquid
+flux receives its exact opposite, so numerical diffusion does not enter the
+mixture-volume flux or change total mixture volume.
 
 Checkpoint files contain the standard liquid velocity and pressure fields. For
 this case, which has no transported scalars, the legacy Nek scalar slots are:

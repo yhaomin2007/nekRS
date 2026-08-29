@@ -30,5 +30,6 @@ gravityX = 0.0
 gravityY = 0.0
 gravityZ = 0.1
 alphaFloor = 1.0e-8
+alphaDiffusivity = 1.0e-6
 dragMultiplier = 0.0
 couplingIterations = 3

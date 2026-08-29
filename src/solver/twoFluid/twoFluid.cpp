@@ -20,6 +20,7 @@ void twoFluid_t::setup()
   platform->options.getArgs("TWO FLUID GAS VOLUME FRACTION", alphaG);
   platform->options.getArgs("TWO FLUID BUBBLE DIAMETER", bubbleDiameter);
   platform->options.getArgs("TWO FLUID ALPHA FLOOR", alphaFloor);
+  platform->options.getArgs("TWO FLUID ALPHA DIFFUSIVITY", alphaDiffusivity);
   platform->options.getArgs("TWO FLUID GRAVITY X", gravity[0]);
   platform->options.getArgs("TWO FLUID GRAVITY Y", gravity[1]);
   platform->options.getArgs("TWO FLUID GRAVITY Z", gravity[2]);
@@ -42,6 +43,10 @@ void twoFluid_t::setup()
              platform->comm.mpiComm(), EXIT_FAILURE,
              "TWO FLUID dragMultiplier must be non-negative: %g\n",
              dragMultiplier);
+  nekrsCheck(alphaDiffusivity < 0,
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "TWO FLUID alphaDiffusivity must be non-negative: %g\n",
+             alphaDiffusivity);
   nekrsCheck(couplingIterations < 1 || pressureCorrectors < 1,
              platform->comm.mpiComm(), EXIT_FAILURE,
              "%s\n",
@@ -69,6 +74,7 @@ void twoFluid_t::setup()
   o_alphaGPrevious = platform->device.malloc<dfloat>(N);
   o_alphaGRaw = platform->device.malloc<dfloat>(N);
   o_boundCapacity = platform->device.malloc<dfloat>(N);
+  o_alphaGradient = platform->device.malloc<dfloat>(mesh->dim * N);
   o_phaseFluxLiquid = platform->device.malloc<dfloat>(mesh->dim * N);
   o_phaseFluxGas = platform->device.malloc<dfloat>(mesh->dim * N);
   o_divergencePhaseFluxLiquid = platform->device.malloc<dfloat>(N);
@@ -97,6 +103,7 @@ void twoFluid_t::setup()
   o_alphaGPrevious.copyFrom(o_alphaG, N);
   o_alphaGRaw.copyFrom(o_alphaG, N);
   platform->linAlg->fill(N, 0.0, o_boundCapacity);
+  platform->linAlg->fill(mesh->dim * N, 0.0, o_alphaGradient);
   platform->linAlg->fill(mesh->dim * N, 0.0, o_phaseFluxLiquid);
   platform->linAlg->fill(mesh->dim * N, 0.0, o_phaseFluxGas);
   platform->linAlg->fill(N, 0.0, o_divergencePhaseFluxLiquid);
@@ -129,11 +136,37 @@ void twoFluid_t::beginTimeStep()
 void twoFluid_t::updatePhaseFluxes()
 {
   auto mesh = liquid->mesh;
+  if (alphaDiffusivity > 0) {
+    // Continuous-Galerkin gradient, averaged at shared nodes. The equal and
+    // opposite diffusive phase fluxes below cancel pointwise from the mixture
+    // flux while retaining a conservative gas-volume-fraction update.
+    launchKernel("core-gradientVolumeHex3D",
+                 mesh->Nelements,
+                 mesh->o_vgeo,
+                 mesh->o_D,
+                 liquid->fieldOffset,
+                 o_alphaG,
+                 o_alphaGradient);
+    oogs::startFinish(o_alphaGradient,
+                      mesh->dim,
+                      liquid->fieldOffset,
+                      ogsDfloat,
+                      ogsAdd,
+                      mesh->oogs3);
+    platform->linAlg->axmyVector(mesh->Nlocal,
+                                liquid->fieldOffset,
+                                0,
+                                1.0,
+                                mesh->o_invLMM,
+                                o_alphaGradient);
+  }
   launchKernel("twoFluid::phaseFluxes",
                mesh->Nlocal,
                liquid->fieldOffset,
+               alphaDiffusivity,
                o_alphaL,
                o_alphaG,
+               o_alphaGradient,
                liquid->o_U,
                gas->o_U,
                o_phaseFluxLiquid,

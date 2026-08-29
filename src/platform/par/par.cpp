@@ -249,6 +249,7 @@ static std::vector<std::string> twoFluidKeys = {
     {"gasDensity"},
     {"gasViscosity"},
     {"alphaFloor"},
+    {"alphaDiffusivity"},
     {"gravityX"},
     {"gravityY"},
     {"gravityZ"},

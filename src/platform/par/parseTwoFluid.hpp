@@ -8,6 +8,7 @@ void parseTwoFluidSection(const int rank, setupAide &options, inipp::Ini *ini)
   options.setArgs("TWO FLUID ENABLED", "TRUE");
   options.setArgs("FLUID PRESSURE ELLIPTIC COEFF FIELD", "TRUE");
   options.setArgs("TWO FLUID ALPHA FLOOR", "1e-8");
+  options.setArgs("TWO FLUID ALPHA DIFFUSIVITY", "0");
   options.setArgs("TWO FLUID GRAVITY X", "0");
   options.setArgs("TWO FLUID GRAVITY Y", "0");
   options.setArgs("TWO FLUID GRAVITY Z", "0");
@@ -30,6 +31,7 @@ void parseTwoFluidSection(const int rank, setupAide &options, inipp::Ini *ini)
   extractReal("gasdensity", "GAS DENSITY", true);
   extractReal("gasviscosity", "GAS VISCOSITY", true);
   extractReal("alphafloor", "TWO FLUID ALPHA FLOOR");
+  extractReal("alphadiffusivity", "TWO FLUID ALPHA DIFFUSIVITY");
   extractReal("gravityx", "TWO FLUID GRAVITY X");
   extractReal("gravityy", "TWO FLUID GRAVITY Y");
   extractReal("gravityz", "TWO FLUID GRAVITY Z");

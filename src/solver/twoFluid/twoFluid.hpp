@@ -41,6 +41,7 @@ public:
   dfloat bubbleDiameter = 1e-3;
   dfloat gravity[3] = {0, 0, 0};
   dfloat alphaFloor = 1e-8;
+  dfloat alphaDiffusivity = 0;
   dfloat dragMultiplier = 1;
   int couplingIterations = 2;
   int pressureCorrectors = 2;
@@ -71,6 +72,7 @@ private:
   occa::memory o_alphaGPrevious;
   occa::memory o_alphaGRaw;
   occa::memory o_boundCapacity;
+  occa::memory o_alphaGradient;
   occa::memory o_phaseFluxLiquid;
   occa::memory o_phaseFluxGas;
   occa::memory o_divergencePhaseFluxLiquid;
