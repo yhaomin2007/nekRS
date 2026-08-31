@@ -78,10 +78,20 @@ private:
   occa::memory o_divergencePhaseFluxLiquid;
   occa::memory o_divergencePhaseFluxGas;
 
+  // Read-only snapshots used only for reporting nonlinear coupling progress.
+  // They do not participate in any solver update.
+  occa::memory o_alphaGCouplingPrevious;
+  occa::memory o_liquidVelocityCouplingPrevious;
+  occa::memory o_gasVelocityCouplingPrevious;
+  occa::memory o_pressureCouplingPrevious;
+  dfloat alphaCouplingRelativeL2 = 0;
+  int currentCouplingIteration = -1;
+
   void phasePressureFlux(fluidSolver_t *phase, occa::memory o_flux);
   void updatePhaseFluxes();
   void weakDivergence(const occa::memory &o_velocity, occa::memory o_divergence);
   void updatePressureResponse(bool scaleForMomentumPredictor);
+  void reportCouplingIteration(int couplingIteration);
 };
 
 void registerTwoFluidKernels();
