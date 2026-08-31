@@ -93,7 +93,11 @@ public:
 
   void solve(double time, int stage) override
   {
-    if (createPressureSolver) solvePressure(time, stage);
+    // In two-fluid mode the coordinator owns the shared-pressure correction.
+    // Each phase solve here is therefore momentum-only; this avoids running an
+    // independent NekRS pressure predictor in addition to the mixture-pressure
+    // correction performed later in the coupling iteration.
+    if (createPressureSolver && !twoFluid) solvePressure(time, stage);
     solveVelocity(time, stage);
   };
 
@@ -125,8 +129,9 @@ public:
   std::function<occa::memory(double, int)> userAdvectionTerm = nullptr;
 
   // Set by the experimental Eulerian--Eulerian coordinator.  The primary
-  // phase delegates its pressure equation to this object, while the secondary
-  // phase only executes its momentum solve.
+  // phase owns the shared pressure storage/elliptic solver, but in two-fluid
+  // mode pressure advancement is controlled by twoFluid_t rather than by the
+  // standard single-fluid solve() sequence.
   twoFluid_t *twoFluid = nullptr;
   bool createPressureSolver = true;
 
