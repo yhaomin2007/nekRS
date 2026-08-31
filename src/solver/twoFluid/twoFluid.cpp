@@ -86,7 +86,6 @@ void twoFluid_t::setup()
   o_interphaseForce = platform->device.malloc<dfloat>(mesh->dim * liquid->fieldOffset);
   o_continuityResidual = platform->device.malloc<dfloat>(N);
 
-  // Persistent snapshots used exclusively for convergence reporting.
   o_alphaGCouplingPrevious = platform->device.malloc<dfloat>(N);
   o_liquidVelocityCouplingPrevious = platform->device.malloc<dfloat>(liquid->fieldOffsetSum);
   o_gasVelocityCouplingPrevious = platform->device.malloc<dfloat>(gas->fieldOffsetSum);
@@ -119,8 +118,6 @@ void twoFluid_t::setup()
   platform->linAlg->fill(N, 0.0, liquid->o_div);
   platform->linAlg->fill(N, 0.0, gas->o_div);
 
-  // Both phases see the same pressure storage.  Only the primary phase owns
-  // and destroys the pressure elliptic solver.
   gas->o_P = liquid->o_P;
   gas->o_Pe = liquid->o_Pe;
   liquid->twoFluid = this;
@@ -128,9 +125,6 @@ void twoFluid_t::setup()
   liquid->userImplicitLinearTerm = [this](double) { return o_implicitLiquid; };
   gas->userImplicitLinearTerm = [this](double) { return o_implicitGas; };
 
-  // UDF initial conditions have already been loaded at this point.  Report
-  // them before the first pressure projection so initialization and
-  // projection effects can be distinguished.
   reportContinuity("initial");
 }
 
@@ -143,9 +137,6 @@ void twoFluid_t::updatePhaseFluxes()
 {
   auto mesh = liquid->mesh;
   if (alphaDiffusivity > 0) {
-    // Continuous-Galerkin gradient, averaged at shared nodes. The equal and
-    // opposite diffusive phase fluxes below cancel pointwise from the mixture
-    // flux while retaining a conservative gas-volume-fraction update.
     launchKernel("core-gradientVolumeHex3D",
                  mesh->Nelements,
                  mesh->o_vgeo,
@@ -185,21 +176,15 @@ void twoFluid_t::advanceVolumeFraction(int couplingIteration)
   auto mesh = liquid->mesh;
   const auto comm = platform->comm.mpiComm();
 
-  // Snapshot the complete coupled state before this nonlinear iteration.
-  // These copies are diagnostics only and never feed back into the solve.
   currentCouplingIteration = couplingIteration;
   o_alphaGCouplingPrevious.copyFrom(o_alphaG, liquid->fieldOffset);
   o_liquidVelocityCouplingPrevious.copyFrom(liquid->o_U, liquid->fieldOffsetSum);
   o_gasVelocityCouplingPrevious.copyFrom(gas->o_U, gas->fieldOffsetSum);
   o_pressureCouplingPrevious.copyFrom(liquid->o_P, liquid->fieldOffset);
 
-  auto o_alphaGIterationPrevious =
-      platform->deviceMemoryPool.reserve<dfloat>(liquid->fieldOffset);
+  auto o_alphaGIterationPrevious = platform->deviceMemoryPool.reserve<dfloat>(liquid->fieldOffset);
   o_alphaGIterationPrevious.copyFrom(o_alphaG, liquid->fieldOffset);
 
-  // Backward-Euler fixed-point update. Each coupling iteration recomputes
-  // alpha_g^{n+1} from the same alpha_g^n using the latest gas phase flux;
-  // inner iterations therefore do not advance physical time repeatedly.
   updatePhaseFluxes();
   weakDivergence(o_phaseFluxGas, o_divergencePhaseFluxGas);
   launchKernel("twoFluid::advanceVolumeFraction",
@@ -212,13 +197,8 @@ void twoFluid_t::advanceVolumeFraction(int couplingIteration)
                o_alphaG,
                o_alphaL);
 
-  // Clipping alone is bounded but not conservative. Restore the integral of
-  // the raw conservative update by redistributing the clipping defect in
-  // proportion to the remaining admissible capacity.
-  const dfloat rawIntegral = platform->linAlg->innerProd(
-      mesh->Nlocal, mesh->o_LMM, o_alphaGRaw, comm);
-  const dfloat boundedIntegral = platform->linAlg->innerProd(
-      mesh->Nlocal, mesh->o_LMM, o_alphaG, comm);
+  const dfloat rawIntegral = platform->linAlg->innerProd(mesh->Nlocal, mesh->o_LMM, o_alphaGRaw, comm);
+  const dfloat boundedIntegral = platform->linAlg->innerProd(mesh->Nlocal, mesh->o_LMM, o_alphaG, comm);
   const dfloat correction = rawIntegral - boundedIntegral;
   const dfloat tolerance = 100 * std::numeric_limits<dfloat>::epsilon() * mesh->volume;
 
@@ -230,8 +210,7 @@ void twoFluid_t::advanceVolumeFraction(int couplingIteration)
                  direction,
                  o_alphaG,
                  o_boundCapacity);
-    const dfloat capacityIntegral = platform->linAlg->innerProd(
-        mesh->Nlocal, mesh->o_LMM, o_boundCapacity, comm);
+    const dfloat capacityIntegral = platform->linAlg->innerProd(mesh->Nlocal, mesh->o_LMM, o_boundCapacity, comm);
     nekrsCheck(capacityIntegral <= 0 || std::abs(correction) > capacityIntegral * (1 + 1e-10),
                comm,
                EXIT_FAILURE,
@@ -246,24 +225,16 @@ void twoFluid_t::advanceVolumeFraction(int couplingIteration)
                  o_alphaL);
   }
 
-  // Store alpha fixed-point progress for the combined per-iteration report.
-  platform->linAlg->axpby(mesh->Nlocal,
-                          1.0,
-                          o_alphaG,
-                          -1.0,
-                          o_alphaGIterationPrevious);
-  const dfloat deltaL2 = platform->linAlg->weightedNorm2(
-      mesh->Nlocal, mesh->o_LMM, o_alphaGIterationPrevious, comm);
-  const dfloat alphaL2 = platform->linAlg->weightedNorm2(
-      mesh->Nlocal, mesh->o_LMM, o_alphaG, comm);
-  alphaCouplingRelativeL2 =
-      deltaL2 / std::max(alphaL2, std::numeric_limits<dfloat>::epsilon());
+  platform->linAlg->axpby(mesh->Nlocal, 1.0, o_alphaG, -1.0, o_alphaGIterationPrevious);
+  const dfloat deltaL2 = platform->linAlg->weightedNorm2(mesh->Nlocal, mesh->o_LMM, o_alphaGIterationPrevious, comm);
+  const dfloat alphaL2 = platform->linAlg->weightedNorm2(mesh->Nlocal, mesh->o_LMM, o_alphaG, comm);
+  alphaCouplingRelativeL2 = deltaL2 / std::max(alphaL2, std::numeric_limits<dfloat>::epsilon());
 }
 
 void twoFluid_t::updateAdvectionCoordinates()
 {
   auto update = [&](fluidSolver_t *phase) {
-    const int relative = 0; // moving mesh is intentionally excluded in v1
+    const int relative = 0;
     if (platform->options.compareArgs("ADVECTION TYPE", "CUBATURE")) {
       launchKernel("nrs-UrstCubatureHex3D",
                    phase->mesh->Nelements,
@@ -457,7 +428,6 @@ void twoFluid_t::solvePressure(double time, int stage)
                o_pRhs);
 
   auto o_divMixture = platform->deviceMemoryPool.reserve<dfloat>(liquid->fieldOffset);
-  // Low-Mach/prescribed phase dilatation is excluded from this branch.
   platform->linAlg->fill(mesh->Nlocal, 0.0, o_divMixture);
   const dfloat g0idt = *liquid->g0 / liquid->dt[0];
   launchKernel("fluidSolver_t::pressureAddQtl",
@@ -493,10 +463,21 @@ void twoFluid_t::correctMixtureContinuity(double time)
   if (!liquid->ellipticSolverP) return;
 
   auto mesh = liquid->mesh;
+  const auto comm = platform->comm.mpiComm();
+  const dfloat volumeScale = 1.0 / sqrt(mesh->volume);
+  const dfloat eps = std::numeric_limits<dfloat>::epsilon();
   updatePressureResponse(false);
 
   for (int corrector = 0; corrector < pressureCorrectors; ++corrector) {
     updatePhaseFluxes();
+
+    // Measure the exact mixture divergence used by the final continuity
+    // diagnostic before applying this pressure correction.
+    auto o_preRm = platform->deviceMemoryPool.reserve<dfloat>(liquid->fieldOffset);
+    weakDivergence(o_mixtureVelocity, o_preRm);
+    const dfloat preL2 = volumeScale * platform->linAlg->weightedNorm2(
+        mesh->Nlocal, mesh->o_LMM, o_preRm, comm);
+    const dfloat preMax = platform->linAlg->amax(mesh->Nlocal, o_preRm, comm);
 
     auto o_rhs = platform->deviceMemoryPool.reserve<dfloat>(liquid->fieldOffset);
     launchKernel("core-wDivergenceVolumeHex3D",
@@ -532,6 +513,42 @@ void twoFluid_t::correctMixtureContinuity(double time)
                                 mesh->o_invLMM,
                                 o_weakGradient);
 
+    // Compare the actual discrete correction-flux divergence D_h(D_m G_h phi)
+    // against the pressure elliptic operator A_p phi.  A_p phi is converted
+    // from its weak assembled form to the same mass-inverted nodal scaling as
+    // weakDivergence().  Both signs are reported to make the NekRS weak-gradient
+    // sign convention explicit rather than assuming it here.
+    auto o_correctionFlux = platform->deviceMemoryPool.reserve<dfloat>(liquid->fieldOffsetSum);
+    o_correctionFlux.copyFrom(o_weakGradient, liquid->fieldOffsetSum);
+    platform->linAlg->axmyVector(mesh->Nlocal,
+                                liquid->fieldOffset,
+                                0,
+                                1.0,
+                                o_pressureCoeff,
+                                o_correctionFlux);
+
+    auto o_divCorrection = platform->deviceMemoryPool.reserve<dfloat>(liquid->fieldOffset);
+    weakDivergence(o_correctionFlux, o_divCorrection);
+
+    auto o_Aphi = platform->deviceMemoryPool.reserve<dfloat>(liquid->fieldOffset);
+    liquid->ellipticSolverP->Ax(o_pressureCoeff, o_NULL, o_phi, o_Aphi);
+    platform->linAlg->axmy(mesh->Nlocal, 1.0, mesh->o_invLMM, o_Aphi);
+
+    const dfloat AphiNorm = platform->linAlg->weightedNorm2(
+        mesh->Nlocal, mesh->o_LMM, o_Aphi, comm);
+
+    auto o_opMinus = platform->deviceMemoryPool.reserve<dfloat>(liquid->fieldOffset);
+    o_opMinus.copyFrom(o_Aphi, liquid->fieldOffset);
+    platform->linAlg->axpby(mesh->Nlocal, 1.0, o_divCorrection, -1.0, o_opMinus);
+    const dfloat opMinus = platform->linAlg->weightedNorm2(
+        mesh->Nlocal, mesh->o_LMM, o_opMinus, comm) / std::max(AphiNorm, eps);
+
+    auto o_opPlus = platform->deviceMemoryPool.reserve<dfloat>(liquid->fieldOffset);
+    o_opPlus.copyFrom(o_Aphi, liquid->fieldOffset);
+    platform->linAlg->axpby(mesh->Nlocal, 1.0, o_divCorrection, 1.0, o_opPlus);
+    const dfloat opPlus = platform->linAlg->weightedNorm2(
+        mesh->Nlocal, mesh->o_LMM, o_opPlus, comm) / std::max(AphiNorm, eps);
+
     launchKernel("twoFluid::correctPhaseVelocities",
                  mesh->Nlocal,
                  liquid->fieldOffset,
@@ -543,6 +560,27 @@ void twoFluid_t::correctMixtureContinuity(double time)
     platform->linAlg->axpby(mesh->Nlocal, 1.0, o_phi, 1.0, liquid->o_P);
     liquid->applyDirichlet(time);
     gas->applyDirichlet(time);
+
+    updatePhaseFluxes();
+    auto o_postRm = platform->deviceMemoryPool.reserve<dfloat>(liquid->fieldOffset);
+    weakDivergence(o_mixtureVelocity, o_postRm);
+    const dfloat postL2 = volumeScale * platform->linAlg->weightedNorm2(
+        mesh->Nlocal, mesh->o_LMM, o_postRm, comm);
+    const dfloat postMax = platform->linAlg->amax(mesh->Nlocal, o_postRm, comm);
+
+    if (platform->comm.mpiRank() == 0) {
+      printf("twoFluid pressure iter=%d corrector=%d  preL2(Rm)=%.8e preMax|Rm|=%.8e  "
+             "postL2(Rm)=%.8e postMax|Rm|=%.8e  "
+             "rel||D(DmGphi)-Aphi||=%.8e rel||D(DmGphi)+Aphi||=%.8e\n",
+             currentCouplingIteration + 1,
+             corrector + 1,
+             preL2,
+             preMax,
+             postL2,
+             postMax,
+             opMinus,
+             opPlus);
+    }
   }
 
   updateDiagnostics();
