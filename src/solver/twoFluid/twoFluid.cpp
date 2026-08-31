@@ -86,6 +86,12 @@ void twoFluid_t::setup()
   o_interphaseForce = platform->device.malloc<dfloat>(mesh->dim * liquid->fieldOffset);
   o_continuityResidual = platform->device.malloc<dfloat>(N);
 
+  // Persistent snapshots used exclusively for convergence reporting.
+  o_alphaGCouplingPrevious = platform->device.malloc<dfloat>(N);
+  o_liquidVelocityCouplingPrevious = platform->device.malloc<dfloat>(liquid->fieldOffsetSum);
+  o_gasVelocityCouplingPrevious = platform->device.malloc<dfloat>(gas->fieldOffsetSum);
+  o_pressureCouplingPrevious = platform->device.malloc<dfloat>(N);
+
   platform->linAlg->fill(mesh->Nlocal, alphaG, o_alphaG);
   platform->linAlg->fill(mesh->Nlocal, alphaL, o_alphaL);
   platform->linAlg->fill(N, 0.0, o_drag);
@@ -178,6 +184,15 @@ void twoFluid_t::advanceVolumeFraction(int couplingIteration)
 {
   auto mesh = liquid->mesh;
   const auto comm = platform->comm.mpiComm();
+
+  // Snapshot the complete coupled state before this nonlinear iteration.
+  // These copies are diagnostics only and never feed back into the solve.
+  currentCouplingIteration = couplingIteration;
+  o_alphaGCouplingPrevious.copyFrom(o_alphaG, liquid->fieldOffset);
+  o_liquidVelocityCouplingPrevious.copyFrom(liquid->o_U, liquid->fieldOffsetSum);
+  o_gasVelocityCouplingPrevious.copyFrom(gas->o_U, gas->fieldOffsetSum);
+  o_pressureCouplingPrevious.copyFrom(liquid->o_P, liquid->fieldOffset);
+
   auto o_alphaGIterationPrevious =
       platform->deviceMemoryPool.reserve<dfloat>(liquid->fieldOffset);
   o_alphaGIterationPrevious.copyFrom(o_alphaG, liquid->fieldOffset);
@@ -231,27 +246,18 @@ void twoFluid_t::advanceVolumeFraction(int couplingIteration)
                  o_alphaL);
   }
 
-  // Fixed-point convergence diagnostic. This is distinct from Rg, which is
-  // the final time-discrete gas phase-continuity equation residual.
+  // Store alpha fixed-point progress for the combined per-iteration report.
   platform->linAlg->axpby(mesh->Nlocal,
                           1.0,
                           o_alphaG,
                           -1.0,
                           o_alphaGIterationPrevious);
-  const dfloat maxDelta =
-      platform->linAlg->amax(mesh->Nlocal, o_alphaGIterationPrevious, comm);
   const dfloat deltaL2 = platform->linAlg->weightedNorm2(
       mesh->Nlocal, mesh->o_LMM, o_alphaGIterationPrevious, comm);
   const dfloat alphaL2 = platform->linAlg->weightedNorm2(
       mesh->Nlocal, mesh->o_LMM, o_alphaG, comm);
-  const dfloat relativeL2 =
+  alphaCouplingRelativeL2 =
       deltaL2 / std::max(alphaL2, std::numeric_limits<dfloat>::epsilon());
-  if (platform->comm.mpiRank() == 0) {
-    printf("twoFluid alpha iter=%d max|deltaAlphaG|=%.8e relL2=%.8e\n",
-           couplingIteration + 1,
-           maxDelta,
-           relativeL2);
-  }
 }
 
 void twoFluid_t::updateAdvectionCoordinates()
@@ -540,6 +546,7 @@ void twoFluid_t::correctMixtureContinuity(double time)
   }
 
   updateDiagnostics();
+  reportCouplingIteration(currentCouplingIteration);
 }
 
 void twoFluid_t::updateDiagnostics()
@@ -584,6 +591,84 @@ void twoFluid_t::weakDivergence(const occa::memory &o_velocity,
   oogs::startFinish(o_divergence, 1, liquid->fieldOffset,
                     ogsDfloat, ogsAdd, mesh->oogs);
   platform->linAlg->axmy(mesh->Nlocal, 1.0, mesh->o_invLMM, o_divergence);
+}
+
+void twoFluid_t::reportCouplingIteration(int couplingIteration)
+{
+  if (couplingIteration < 0) return;
+
+  auto mesh = liquid->mesh;
+  const auto comm = platform->comm.mpiComm();
+  const dfloat eps = std::numeric_limits<dfloat>::epsilon();
+
+  auto vectorRelativeL2 = [&](const occa::memory &o_current,
+                              const occa::memory &o_previous,
+                              dlong fieldOffsetSum) {
+    auto o_delta = platform->deviceMemoryPool.reserve<dfloat>(fieldOffsetSum);
+    o_delta.copyFrom(o_previous, fieldOffsetSum);
+    platform->linAlg->axpbyMany(mesh->Nlocal,
+                                mesh->dim,
+                                liquid->fieldOffset,
+                                1.0,
+                                o_current,
+                                -1.0,
+                                o_delta);
+    const dfloat deltaNorm = platform->linAlg->weightedNorm2Many(
+        mesh->Nlocal,
+        mesh->dim,
+        liquid->fieldOffset,
+        mesh->o_LMM,
+        o_delta,
+        comm);
+    const dfloat currentNorm = platform->linAlg->weightedNorm2Many(
+        mesh->Nlocal,
+        mesh->dim,
+        liquid->fieldOffset,
+        mesh->o_LMM,
+        o_current,
+        comm);
+    return deltaNorm / std::max(currentNorm, eps);
+  };
+
+  auto scalarRelativeL2 = [&](const occa::memory &o_current,
+                              const occa::memory &o_previous) {
+    auto o_delta = platform->deviceMemoryPool.reserve<dfloat>(liquid->fieldOffset);
+    o_delta.copyFrom(o_previous, liquid->fieldOffset);
+    platform->linAlg->axpby(mesh->Nlocal, 1.0, o_current, -1.0, o_delta);
+    const dfloat deltaNorm = platform->linAlg->weightedNorm2(
+        mesh->Nlocal, mesh->o_LMM, o_delta, comm);
+    const dfloat currentNorm = platform->linAlg->weightedNorm2(
+        mesh->Nlocal, mesh->o_LMM, o_current, comm);
+    return deltaNorm / std::max(currentNorm, eps);
+  };
+
+  const dfloat liquidRelativeL2 = vectorRelativeL2(
+      liquid->o_U, o_liquidVelocityCouplingPrevious, liquid->fieldOffsetSum);
+  const dfloat gasRelativeL2 = vectorRelativeL2(
+      gas->o_U, o_gasVelocityCouplingPrevious, gas->fieldOffsetSum);
+  const dfloat pressureRelativeL2 = scalarRelativeL2(
+      liquid->o_P, o_pressureCouplingPrevious);
+
+  const dfloat volumeScale = 1.0 / sqrt(mesh->volume);
+  const dfloat l2Liquid = volumeScale * platform->linAlg->weightedNorm2(
+      mesh->Nlocal, mesh->o_LMM, o_liquidContinuityResidual, comm);
+  const dfloat l2Gas = volumeScale * platform->linAlg->weightedNorm2(
+      mesh->Nlocal, mesh->o_LMM, o_gasContinuityResidual, comm);
+  const dfloat l2Mixture = volumeScale * platform->linAlg->weightedNorm2(
+      mesh->Nlocal, mesh->o_LMM, o_continuityResidual, comm);
+
+  if (platform->comm.mpiRank() == 0) {
+    printf("twoFluid iter=%d  alphaG relL2=%.8e  UL relL2=%.8e  UG relL2=%.8e  "
+           "p relL2=%.8e  L2(Rl)=%.8e  L2(Rg)=%.8e  L2(Rm)=%.8e\n",
+           couplingIteration + 1,
+           alphaCouplingRelativeL2,
+           liquidRelativeL2,
+           gasRelativeL2,
+           pressureRelativeL2,
+           l2Liquid,
+           l2Gas,
+           l2Mixture);
+  }
 }
 
 void twoFluid_t::reportContinuity(const char *label)
