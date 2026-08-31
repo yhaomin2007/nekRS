@@ -649,6 +649,12 @@ void twoFluid_t::reportCouplingIteration(int couplingIteration)
   const dfloat pressureRelativeL2 = scalarRelativeL2(
       liquid->o_P, o_pressureCouplingPrevious);
 
+  const dfloat maxLiquid = platform->linAlg->amax(
+      mesh->Nlocal, o_liquidContinuityResidual, comm);
+  const dfloat maxGas = platform->linAlg->amax(
+      mesh->Nlocal, o_gasContinuityResidual, comm);
+  const dfloat maxMixture = platform->linAlg->amax(
+      mesh->Nlocal, o_continuityResidual, comm);
   const dfloat volumeScale = 1.0 / sqrt(mesh->volume);
   const dfloat l2Liquid = volumeScale * platform->linAlg->weightedNorm2(
       mesh->Nlocal, mesh->o_LMM, o_liquidContinuityResidual, comm);
@@ -659,7 +665,8 @@ void twoFluid_t::reportCouplingIteration(int couplingIteration)
 
   if (platform->comm.mpiRank() == 0) {
     printf("twoFluid iter=%d  alphaG relL2=%.8e  UL relL2=%.8e  UG relL2=%.8e  "
-           "p relL2=%.8e  L2(Rl)=%.8e  L2(Rg)=%.8e  L2(Rm)=%.8e\n",
+           "p relL2=%.8e  L2(Rl)=%.8e  L2(Rg)=%.8e  L2(Rm)=%.8e  "
+           "max|Rl|=%.8e  max|Rg|=%.8e  max|Rm|=%.8e\n",
            couplingIteration + 1,
            alphaCouplingRelativeL2,
            liquidRelativeL2,
@@ -667,7 +674,10 @@ void twoFluid_t::reportCouplingIteration(int couplingIteration)
            pressureRelativeL2,
            l2Liquid,
            l2Gas,
-           l2Mixture);
+           l2Mixture,
+           maxLiquid,
+           maxGas,
+           maxMixture);
   }
 }
 
