@@ -23,7 +23,7 @@ public:
 
   void setup();
   void beginTimeStep();
-  void advanceVolumeFraction();
+  void advanceVolumeFraction(int couplingIteration);
   void updateAdvectionCoordinates();
   void makeExplicit(double time);
   void refreshCouplingForcing(double time, int tstep);

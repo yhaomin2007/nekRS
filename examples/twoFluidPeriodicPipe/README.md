@@ -33,6 +33,10 @@ liquid, and mixture mass residuals separately. Short fixed-point iterations
 update `alpha_g`, momentum, and shared pressure without advancing physical time
 more than once per step.
 
+Every coupling iteration prints `max|deltaAlphaG|` and the relative `L2` norm
+of the gas-volume-fraction fixed-point update. The separately reported `Rg`,
+`Rl`, and `Rm` values remain the final phase-continuity equation residuals.
+
 This example sets `alphaDiffusivity = 1.0e-6`. Set it to zero to recover pure
 advection. The gas diffusive flux is `-D_alpha grad(alpha_g)` and the liquid
 flux receives its exact opposite, so numerical diffusion does not enter the

@@ -174,10 +174,13 @@ void twoFluid_t::updatePhaseFluxes()
                o_mixtureVelocity);
 }
 
-void twoFluid_t::advanceVolumeFraction()
+void twoFluid_t::advanceVolumeFraction(int couplingIteration)
 {
   auto mesh = liquid->mesh;
   const auto comm = platform->comm.mpiComm();
+  auto o_alphaGIterationPrevious =
+      platform->deviceMemoryPool.reserve<dfloat>(liquid->fieldOffset);
+  o_alphaGIterationPrevious.copyFrom(o_alphaG, liquid->fieldOffset);
 
   // Backward-Euler fixed-point update. Each coupling iteration recomputes
   // alpha_g^{n+1} from the same alpha_g^n using the latest gas phase flux;
@@ -226,6 +229,28 @@ void twoFluid_t::advanceVolumeFraction()
                  o_boundCapacity,
                  o_alphaG,
                  o_alphaL);
+  }
+
+  // Fixed-point convergence diagnostic. This is distinct from Rg, which is
+  // the final time-discrete gas phase-continuity equation residual.
+  platform->linAlg->axpby(mesh->Nlocal,
+                          1.0,
+                          o_alphaG,
+                          -1.0,
+                          o_alphaGIterationPrevious);
+  const dfloat maxDelta =
+      platform->linAlg->amax(mesh->Nlocal, o_alphaGIterationPrevious, comm);
+  const dfloat deltaL2 = platform->linAlg->weightedNorm2(
+      mesh->Nlocal, mesh->o_LMM, o_alphaGIterationPrevious, comm);
+  const dfloat alphaL2 = platform->linAlg->weightedNorm2(
+      mesh->Nlocal, mesh->o_LMM, o_alphaG, comm);
+  const dfloat relativeL2 =
+      deltaL2 / std::max(alphaL2, std::numeric_limits<dfloat>::epsilon());
+  if (platform->comm.mpiRank() == 0) {
+    printf("twoFluid alpha iter=%d max|deltaAlphaG|=%.8e relL2=%.8e\n",
+           couplingIteration + 1,
+           maxDelta,
+           relativeL2);
   }
 }
 

@@ -1915,7 +1915,7 @@ bool nrs_t::runInnerStep(std::function<bool(int)> convergenceCheck, int iter, bo
         for (int couplingIteration = 0;
              couplingIteration < twoFluid->couplingIterations;
              ++couplingIteration) {
-          twoFluid->advanceVolumeFraction();
+          twoFluid->advanceVolumeFraction(couplingIteration);
           twoFluid->refreshCouplingForcing(timeNew, tstep);
           fluid->solve(timeNew, iter);
           gas->solve(timeNew, iter);

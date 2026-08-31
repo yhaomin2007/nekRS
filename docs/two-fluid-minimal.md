@@ -55,6 +55,11 @@ solver inherits the liquid velocity solver, preconditioner, tolerance, and
 boundary map settings. `alphaDiffusivity` has units of length squared per time;
 set it to zero for pure advection.
 
+Each alpha--momentum--pressure coupling iteration reports
+`max|deltaAlphaG|` and `relL2`, where `deltaAlphaG` is the change from the
+previous gas-volume-fraction fixed-point iterate. These iteration diagnostics
+are distinct from the final `Rg`, `Rl`, and `Rm` phase-continuity residuals.
+
 ## UDF access
 
 The liquid and gas velocities are available as:
