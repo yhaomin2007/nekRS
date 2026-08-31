@@ -49,24 +49,22 @@ void parseTwoFluidSection(const int rank, setupAide &options, inipp::Ini *ini)
   if (ini->extract("two fluid", "projectiononly", projectionOnly))
     options.setArgs("TWO FLUID PROJECTION ONLY", projectionOnly ? "TRUE" : "FALSE");
 
-  // Reuse the liquid velocity solver settings for the gas phase, but do not
-  // impose liquid no-slip walls on the gas.  A liquid zeroDirichlet wall is
-  // converted to NekRS' unaligned slip/symmetry condition for the gas:
-  // zero normal velocity with natural tangential velocity.  Other boundary
-  // maps (for example "none" on periodic-only cases) are left unchanged.
+  // Reuse the liquid velocity solver settings for the gas phase.  The gas
+  // boundary map can then be overridden independently so a liquid no-slip
+  // wall does not also constrain the gas tangential velocity.
   std::vector<std::pair<std::string, std::string>> cloned;
   for (const auto &entry : options) {
     const std::string prefix = "FLUID VELOCITY";
     if (entry.first.find(prefix) == 0) {
-      std::string gasValue = entry.second;
-      if (entry.first == "FLUID VELOCITY BOUNDARY TYPE MAP" &&
-          lowerCase(gasValue) == "zerodirichlet") {
-        gasValue = "zeroDirichletN/zeroNeumann";
-      }
-      cloned.push_back({"GAS VELOCITY" + entry.first.substr(prefix.size()), gasValue});
+      cloned.push_back({"GAS VELOCITY" + entry.first.substr(prefix.size()), entry.second});
     }
   }
   for (const auto &entry : cloned) options.setArgs(entry.first, entry.second);
+
+  std::string gasBoundaryTypeMap;
+  if (ini->extract("two fluid", "gasboundarytypemap", gasBoundaryTypeMap)) {
+    options.setArgs("GAS VELOCITY BOUNDARY TYPE MAP", gasBoundaryTypeMap);
+  }
   options.setArgs("GAS VELOCITY ELLIPTIC COEFF FIELD", "TRUE");
   options.setArgs("GAS CHECKPOINTING", "TRUE");
 }

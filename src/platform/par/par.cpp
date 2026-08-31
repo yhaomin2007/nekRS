@@ -257,6 +257,7 @@ static std::vector<std::string> twoFluidKeys = {
     {"couplingIterations"},
     {"pressureCorrectors"},
     {"projectionOnly"},
+    {"gasBoundaryTypeMap"},
 };
 
 static std::vector<std::string> deprecatedKeys = {
