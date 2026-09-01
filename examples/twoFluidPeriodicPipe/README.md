@@ -50,7 +50,8 @@ by the same weak gradient, phase response, homogeneous velocity masks, mixture
 flux, and weak divergence used in the actual velocity update. The native NekRS
 pressure operator is retained as a preconditioner. `operatorConsistency` checks
 the matrix-free operator against the applied correction and should be near
-roundoff.
+roundoff; `kspIters` and `kspResidual` report convergence of the exact Schur
+solve.
 
 This example sets `alphaDiffusivity = 1.0e-6`. Set it to zero to recover pure
 advection. The gas diffusive flux is `-D_alpha grad(alpha_g)` and the liquid
