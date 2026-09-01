@@ -876,3 +876,8 @@ void elliptic::Ax(const occa::memory &o_lambda0In,
   solver->o_lambda0 = o_lambda0Save;
   solver->o_lambda1 = o_lambda1Save;
 };
+
+void elliptic::applyMask(occa::memory &o_x)
+{
+  ellipticApplyMask(solver, o_x);
+}

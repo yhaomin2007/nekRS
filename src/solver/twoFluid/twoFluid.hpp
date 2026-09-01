@@ -4,6 +4,7 @@
 
 class fluidSolver_t;
 class geomSolver_t;
+class linearSolver;
 
 // Experimental two-fluid coordinator with conservative gas-volume transport.
 //
@@ -20,6 +21,7 @@ public:
   twoFluid_t(fluidSolver_t *liquid,
              fluidSolver_t *gas,
              const std::unique_ptr<geomSolver_t> &geom);
+  ~twoFluid_t();
 
   void setup();
   void beginTimeStep();
@@ -64,6 +66,7 @@ public:
 private:
   const std::unique_ptr<geomSolver_t> &geom;
   occa::memory o_pressureCoeff;
+  linearSolver *pressureCorrectionSolver = nullptr;
   occa::memory o_mixtureFlux;
   occa::memory o_baseExtLiquid;
   occa::memory o_baseExtGas;
@@ -90,6 +93,14 @@ private:
   int currentCouplingIteration = -1;
 
   void phasePressureFlux(fluidSolver_t *phase, occa::memory o_flux);
+  void applyHomogeneousVelocityMask(fluidSolver_t *phase,
+                                    occa::memory o_velocityCorrection);
+  void pressureCorrectionFlux(const occa::memory &o_phi,
+                              occa::memory o_deltaLiquid,
+                              occa::memory o_deltaGas,
+                              occa::memory o_deltaMixture);
+  void pressureCorrectionOperator(const occa::memory &o_phi,
+                                  occa::memory o_Aphi);
   void updatePhaseFluxes();
   void weakDivergence(const occa::memory &o_velocity, occa::memory o_divergence);
   void updatePressureResponse(bool scaleForMomentumPredictor);

@@ -45,6 +45,12 @@ physical step and remain read-only throughout those coupling iterations.
 Every coupling iteration prints `max|deltaAlphaG|` and the relative `L2` norm
 of the gas-volume-fraction fixed-point update. The separately reported `Rg`,
 `Rl`, and `Rm` values remain the final phase-continuity equation residuals.
+The mixture-pressure corrector uses the exact matrix-free Schur operator formed
+by the same weak gradient, phase response, homogeneous velocity masks, mixture
+flux, and weak divergence used in the actual velocity update. The native NekRS
+pressure operator is retained as a preconditioner. `operatorConsistency` checks
+the matrix-free operator against the applied correction and should be near
+roundoff.
 
 This example sets `alphaDiffusivity = 1.0e-6`. Set it to zero to recover pure
 advection. The gas diffusive flux is `-D_alpha grad(alpha_g)` and the liquid

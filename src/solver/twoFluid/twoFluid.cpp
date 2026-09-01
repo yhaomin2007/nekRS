@@ -3,6 +3,7 @@
 #include "fluidSolver.hpp"
 #include "geomSolver.hpp"
 #include "linAlg.hpp"
+#include "linearSolverFactory.hpp"
 #include "registerKernels.hpp"
 
 #include <limits>
@@ -12,6 +13,11 @@ twoFluid_t::twoFluid_t(fluidSolver_t *liquid_,
                        const std::unique_ptr<geomSolver_t> &geom_)
     : liquid(liquid_), gas(gas_), geom(geom_)
 {
+}
+
+twoFluid_t::~twoFluid_t()
+{
+  delete pressureCorrectionSolver;
 }
 
 void twoFluid_t::setup()
@@ -130,6 +136,38 @@ void twoFluid_t::setup()
 
   liquid->userImplicitLinearTerm = [this](double) { return o_implicitLiquid; };
   gas->userImplicitLinearTerm = [this](double) { return o_implicitGas; };
+
+  auto applyOperator = [this](const occa::memory &o_q, occa::memory &o_Aq) {
+    pressureCorrectionOperator(o_q, o_Aq);
+  };
+  auto applyPreconditioner = [this](const occa::memory &o_r,
+                                    occa::memory &o_z) {
+    auto mesh = liquid->mesh;
+    auto o_weakRhs = platform->deviceMemoryPool.reserve<dfloat>(
+        liquid->fieldOffset);
+    o_weakRhs.copyFrom(o_r, liquid->fieldOffset);
+    platform->linAlg->axmy(mesh->Nlocal, 1.0, mesh->o_LMM, o_weakRhs);
+
+    auto &pressureOptions = liquid->ellipticSolverP->options();
+    const auto initialGuess = pressureOptions.getArgs("INITIAL GUESS");
+    pressureOptions.setArgs("INITIAL GUESS", "ZERO");
+    platform->linAlg->fill(liquid->fieldOffset, 0.0, o_z);
+    liquid->ellipticSolverP->solve(o_pressureCoeff,
+                                   o_NULL,
+                                   o_weakRhs,
+                                   o_z.slice(0, mesh->Nlocal));
+    pressureOptions.setArgs("INITIAL GUESS", initialGuess);
+  };
+  pressureCorrectionSolver = linearSolverFactory<dfloat>::create(
+      "flexible gmres+nvector=20",
+      "twoFluid exact pressure correction",
+      mesh->Nlocal,
+      1,
+      liquid->fieldOffset,
+      mesh->o_LMM,
+      true,
+      applyOperator,
+      applyPreconditioner);
 
   reportContinuity("initial");
 }
@@ -470,6 +508,93 @@ void twoFluid_t::solvePressure(double time, int stage)
   platform->timer.toc("mixture pressureSolve");
 }
 
+void twoFluid_t::applyHomogeneousVelocityMask(
+    fluidSolver_t *phase,
+    occa::memory o_velocityCorrection)
+{
+  if (phase->ellipticSolver.size() == 1) {
+    phase->ellipticSolver.at(0)->applyMask(o_velocityCorrection);
+    return;
+  }
+
+  for (int component = 0; component < phase->mesh->dim; ++component) {
+    auto o_component = o_velocityCorrection.slice(
+        component * phase->fieldOffset, phase->mesh->Nlocal);
+    phase->ellipticSolver.at(component)->applyMask(o_component);
+  }
+}
+
+void twoFluid_t::pressureCorrectionFlux(const occa::memory &o_phi,
+                                        occa::memory o_deltaLiquid,
+                                        occa::memory o_deltaGas,
+                                        occa::memory o_deltaMixture)
+{
+  auto mesh = liquid->mesh;
+  auto o_weakGradient = platform->deviceMemoryPool.reserve<dfloat>(
+      liquid->fieldOffsetSum);
+  launchKernel("core-wGradientVolumeHex3D",
+               mesh->Nelements,
+               mesh->o_vgeo,
+               mesh->o_D,
+               liquid->fieldOffset,
+               o_phi,
+               o_weakGradient);
+  oogs::startFinish(o_weakGradient,
+                    mesh->dim,
+                    liquid->fieldOffset,
+                    ogsDfloat,
+                    ogsAdd,
+                    mesh->oogs3);
+  platform->linAlg->axmyVector(mesh->Nlocal,
+                              liquid->fieldOffset,
+                              0,
+                              1.0,
+                              mesh->o_invLMM,
+                              o_weakGradient);
+
+  platform->linAlg->fill(liquid->fieldOffsetSum, 0.0, o_deltaLiquid);
+  platform->linAlg->fill(gas->fieldOffsetSum, 0.0, o_deltaGas);
+  launchKernel("twoFluid::correctPhaseVelocities",
+               mesh->Nlocal,
+               liquid->fieldOffset,
+               o_pressureResponseLiquid,
+               o_pressureResponseGas,
+               o_weakGradient,
+               o_deltaLiquid,
+               o_deltaGas);
+  applyHomogeneousVelocityMask(liquid, o_deltaLiquid);
+  applyHomogeneousVelocityMask(gas, o_deltaGas);
+
+  launchKernel("twoFluid::mixtureFlux",
+               mesh->Nlocal,
+               liquid->fieldOffset,
+               o_alphaL,
+               o_alphaG,
+               o_deltaLiquid,
+               o_deltaGas,
+               o_deltaMixture);
+}
+
+void twoFluid_t::pressureCorrectionOperator(const occa::memory &o_phi,
+                                            occa::memory o_Aphi)
+{
+  auto mesh = liquid->mesh;
+  auto o_deltaLiquid = platform->deviceMemoryPool.reserve<dfloat>(
+      liquid->fieldOffsetSum);
+  auto o_deltaGas = platform->deviceMemoryPool.reserve<dfloat>(
+      gas->fieldOffsetSum);
+  auto o_deltaMixture = platform->deviceMemoryPool.reserve<dfloat>(
+      liquid->fieldOffsetSum);
+  pressureCorrectionFlux(o_phi,
+                         o_deltaLiquid,
+                         o_deltaGas,
+                         o_deltaMixture);
+  weakDivergence(o_deltaMixture, o_Aphi);
+  // The phase update adds deltaU, so its divergence is subtracted from the
+  // positive Schur operator used by the Krylov solve.
+  platform->linAlg->scale(mesh->Nlocal, -1.0, o_Aphi);
+}
+
 void twoFluid_t::correctMixtureContinuity(double time, const char *stageLabel)
 {
   if (!liquid->ellipticSolverP) return;
@@ -491,87 +616,56 @@ void twoFluid_t::correctMixtureContinuity(double time, const char *stageLabel)
         mesh->Nlocal, mesh->o_LMM, o_preRm, comm);
     const dfloat preMax = platform->linAlg->amax(mesh->Nlocal, o_preRm, comm);
 
-    auto o_rhs = platform->deviceMemoryPool.reserve<dfloat>(liquid->fieldOffset);
-    launchKernel("core-wDivergenceVolumeHex3D",
-                 mesh->Nelements,
-                 mesh->o_vgeo,
-                 mesh->o_D,
-                 liquid->fieldOffset,
-                 o_mixtureVelocity,
-                 o_rhs);
-
     auto o_phi = platform->deviceMemoryPool.reserve<dfloat>(liquid->fieldOffset);
-    platform->linAlg->fill(liquid->fieldOffset, 0.0, o_phi);
-    liquid->ellipticSolverP->solve(o_pressureCoeff, o_NULL, o_rhs, o_phi.slice(0, mesh->Nlocal));
+    constexpr int maximumIterations = 50;
+    constexpr dfloat pressureTolerance = 1.0e-10;
+    pressureCorrectionSolver->solve(pressureTolerance * sqrt(mesh->volume),
+                                    maximumIterations,
+                                    o_preRm,
+                                    o_phi);
 
-    auto o_weakGradient = platform->deviceMemoryPool.reserve<dfloat>(liquid->fieldOffsetSum);
-    launchKernel("core-wGradientVolumeHex3D",
-                 mesh->Nelements,
-                 mesh->o_vgeo,
-                 mesh->o_D,
-                 liquid->fieldOffset,
-                 o_phi,
-                 o_weakGradient);
-    oogs::startFinish(o_weakGradient,
-                      mesh->dim,
-                      liquid->fieldOffset,
-                      ogsDfloat,
-                      ogsAdd,
-                      mesh->oogs3);
-    platform->linAlg->axmyVector(mesh->Nlocal,
+    auto o_deltaLiquid = platform->deviceMemoryPool.reserve<dfloat>(
+        liquid->fieldOffsetSum);
+    auto o_deltaGas = platform->deviceMemoryPool.reserve<dfloat>(
+        gas->fieldOffsetSum);
+    auto o_deltaMixture = platform->deviceMemoryPool.reserve<dfloat>(
+        liquid->fieldOffsetSum);
+    pressureCorrectionFlux(o_phi,
+                           o_deltaLiquid,
+                           o_deltaGas,
+                           o_deltaMixture);
+    platform->linAlg->axpbyMany(mesh->Nlocal,
+                                mesh->dim,
                                 liquid->fieldOffset,
-                                0,
                                 1.0,
-                                mesh->o_invLMM,
-                                o_weakGradient);
-
-    // Compare the actual discrete correction-flux divergence D_h(D_m G_h phi)
-    // against the pressure elliptic operator A_p phi.  A_p phi is converted
-    // from its weak assembled form to the same mass-inverted nodal scaling as
-    // weakDivergence().  Both signs are reported to make the NekRS weak-gradient
-    // sign convention explicit rather than assuming it here.
-    auto o_correctionFlux = platform->deviceMemoryPool.reserve<dfloat>(liquid->fieldOffsetSum);
-    o_correctionFlux.copyFrom(o_weakGradient, liquid->fieldOffsetSum);
-    platform->linAlg->axmyVector(mesh->Nlocal,
-                                liquid->fieldOffset,
-                                0,
+                                o_deltaLiquid,
                                 1.0,
-                                o_pressureCoeff,
-                                o_correctionFlux);
-
-    auto o_divCorrection = platform->deviceMemoryPool.reserve<dfloat>(liquid->fieldOffset);
-    weakDivergence(o_correctionFlux, o_divCorrection);
-
-    auto o_Aphi = platform->deviceMemoryPool.reserve<dfloat>(liquid->fieldOffset);
-    liquid->ellipticSolverP->Ax(o_pressureCoeff, o_NULL, o_phi, o_Aphi);
-    platform->linAlg->axmy(mesh->Nlocal, 1.0, mesh->o_invLMM, o_Aphi);
-
-    const dfloat AphiNorm = platform->linAlg->weightedNorm2(
-        mesh->Nlocal, mesh->o_LMM, o_Aphi, comm);
-
-    auto o_opMinus = platform->deviceMemoryPool.reserve<dfloat>(liquid->fieldOffset);
-    o_opMinus.copyFrom(o_Aphi, liquid->fieldOffset);
-    platform->linAlg->axpby(mesh->Nlocal, 1.0, o_divCorrection, -1.0, o_opMinus);
-    const dfloat opMinus = platform->linAlg->weightedNorm2(
-        mesh->Nlocal, mesh->o_LMM, o_opMinus, comm) / std::max(AphiNorm, eps);
-
-    auto o_opPlus = platform->deviceMemoryPool.reserve<dfloat>(liquid->fieldOffset);
-    o_opPlus.copyFrom(o_Aphi, liquid->fieldOffset);
-    platform->linAlg->axpby(mesh->Nlocal, 1.0, o_divCorrection, 1.0, o_opPlus);
-    const dfloat opPlus = platform->linAlg->weightedNorm2(
-        mesh->Nlocal, mesh->o_LMM, o_opPlus, comm) / std::max(AphiNorm, eps);
-
-    launchKernel("twoFluid::correctPhaseVelocities",
-                 mesh->Nlocal,
-                 liquid->fieldOffset,
-                 o_pressureResponseLiquid,
-                 o_pressureResponseGas,
-                 o_weakGradient,
-                 liquid->o_U,
-                 gas->o_U);
+                                liquid->o_U);
+    platform->linAlg->axpbyMany(mesh->Nlocal,
+                                mesh->dim,
+                                gas->fieldOffset,
+                                1.0,
+                                o_deltaGas,
+                                1.0,
+                                gas->o_U);
     platform->linAlg->axpby(mesh->Nlocal, 1.0, o_phi, 1.0, liquid->o_P);
-    liquid->applyDirichlet(time);
-    gas->applyDirichlet(time);
+
+    auto o_Aphi = platform->deviceMemoryPool.reserve<dfloat>(
+        liquid->fieldOffset);
+    pressureCorrectionOperator(o_phi, o_Aphi);
+    auto o_divCorrection = platform->deviceMemoryPool.reserve<dfloat>(
+        liquid->fieldOffset);
+    weakDivergence(o_deltaMixture, o_divCorrection);
+    platform->linAlg->axpby(mesh->Nlocal,
+                            1.0,
+                            o_Aphi,
+                            1.0,
+                            o_divCorrection);
+    const dfloat operatorNorm = platform->linAlg->weightedNorm2(
+        mesh->Nlocal, mesh->o_LMM, o_Aphi, comm);
+    const dfloat operatorConsistency = platform->linAlg->weightedNorm2(
+        mesh->Nlocal, mesh->o_LMM, o_divCorrection, comm) /
+        std::max(operatorNorm, eps);
 
     updatePhaseFluxes();
     auto o_postRm = platform->deviceMemoryPool.reserve<dfloat>(liquid->fieldOffset);
@@ -583,27 +677,29 @@ void twoFluid_t::correctMixtureContinuity(double time, const char *stageLabel)
     if (platform->comm.mpiRank() == 0 && stageLabel) {
       printf("twoFluid pressure %s corrector=%d  preL2(Rm)=%.8e preMax|Rm|=%.8e  "
              "postL2(Rm)=%.8e postMax|Rm|=%.8e  "
-             "rel||D(DmGphi)-Aphi||=%.8e rel||D(DmGphi)+Aphi||=%.8e\n",
+             "kspIters=%d kspResidual=%.8e operatorConsistency=%.8e\n",
              stageLabel,
              corrector + 1,
              preL2,
              preMax,
              postL2,
              postMax,
-             opMinus,
-             opPlus);
+             pressureCorrectionSolver->nIter(),
+             pressureCorrectionSolver->finalResidualNorm(),
+             operatorConsistency);
     } else if (platform->comm.mpiRank() == 0) {
       printf("twoFluid pressure iter=%d corrector=%d  preL2(Rm)=%.8e preMax|Rm|=%.8e  "
              "postL2(Rm)=%.8e postMax|Rm|=%.8e  "
-             "rel||D(DmGphi)-Aphi||=%.8e rel||D(DmGphi)+Aphi||=%.8e\n",
+             "kspIters=%d kspResidual=%.8e operatorConsistency=%.8e\n",
              currentCouplingIteration + 1,
              corrector + 1,
              preL2,
              preMax,
              postL2,
              postMax,
-             opMinus,
-             opPlus);
+             pressureCorrectionSolver->nIter(),
+             pressureCorrectionSolver->finalResidualNorm(),
+             operatorConsistency);
     }
   }
 
