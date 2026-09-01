@@ -51,15 +51,21 @@ void UDF_ExecuteStep(double time, int tstep)
                                   o_gasUz,
                                   platform->comm.mpiComm()) /
       mesh->volume;
+  constexpr dfloat gasInitialBulkVelocity = 0.15;
+  constexpr dfloat gasAxialAcceleration = 0.1;
+  const dfloat gasBulkVelocityExpected =
+      gasInitialBulkVelocity + gasAxialAcceleration * time;
 
   if (platform->comm.mpiRank() == 0) {
     printf("twoFluidPipe step=%d time=%g bulkUzL=%+.8e bulkUzG=%+.8e "
-           "bulkSlip=%+.8e\n",
+           "bulkSlip=%+.8e expectedBulkUzG=%+.8e gasBulkError=%+.8e\n",
            tstep,
            time,
            liquidBulkVelocity,
            gasBulkVelocity,
-           gasBulkVelocity - liquidBulkVelocity);
+           gasBulkVelocity - liquidBulkVelocity,
+           gasBulkVelocityExpected,
+           gasBulkVelocity - gasBulkVelocityExpected);
   }
 
   nrs->twoFluid->reportContinuity();
@@ -92,15 +98,19 @@ void UDF_ExecuteStep(double time, int tstep)
         nrs->twoFluid->o_alphaG,
         comm) / mesh->volume;
     constexpr dfloat liquidBulkVelocityTarget = 0.10;
+    constexpr dfloat gasBulkVelocityTolerance = 1.0e-6;
 
     nekrsCheck(l2Liquid > 1e-6 || l2Gas > 1e-7 || l2Mixture > 1e-6 ||
                    alphaMin < 0.0 || alphaMax > 1.0 ||
                    std::abs(alphaMean - 0.05) > 1e-8 ||
-                   std::abs(liquidBulkVelocity - liquidBulkVelocityTarget) > 1e-8,
+                   std::abs(liquidBulkVelocity - liquidBulkVelocityTarget) > 1e-8 ||
+                   std::abs(gasBulkVelocity - gasBulkVelocityExpected) >
+                       gasBulkVelocityTolerance,
                comm,
                EXIT_FAILURE,
                "two-fluid phase continuity failed: L2(Rl)=%g L2(Rg)=%g "
-               "L2(Rm)=%g alpha=[%g,%g] mean=%g bulkUzL=%g target=%g\n",
+               "L2(Rm)=%g alpha=[%g,%g] mean=%g bulkUzL=%g target=%g "
+               "bulkUzG=%g expected=%g\n",
                l2Liquid,
                l2Gas,
                l2Mixture,
@@ -108,6 +118,8 @@ void UDF_ExecuteStep(double time, int tstep)
                alphaMax,
                alphaMean,
                liquidBulkVelocity,
-               liquidBulkVelocityTarget);
+               liquidBulkVelocityTarget,
+               gasBulkVelocity,
+               gasBulkVelocityExpected);
   }
 }

@@ -666,6 +666,12 @@ void fluidSolver_t::applyDirichlet(double time)
 
 void fluidSolver_t::makeForcing(bool shiftHistory)
 {
+  makeForcing(o_U, shiftHistory);
+}
+
+void fluidSolver_t::makeForcing(const occa::memory &o_velocityHistory,
+                                bool shiftHistory)
+{
   if (ellipticSolver.size() == 0) {
     return;
   }
@@ -680,7 +686,7 @@ void fluidSolver_t::makeForcing(bool shiftHistory)
                fieldOffsetSum,
                mesh->fieldOffset, /* o_Jw offset */
                o_rho,
-               o_U,
+               o_velocityHistory,
                o_ADV,
                o_EXT,
                o_JwF);

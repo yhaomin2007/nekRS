@@ -69,6 +69,10 @@ void twoFluid_t::setup()
   o_mixtureFlux = platform->device.malloc<dfloat>(mesh->dim * liquid->fieldOffset);
   o_baseExtLiquid = platform->device.malloc<dfloat>(liquid->fieldOffsetSum);
   o_baseExtGas = platform->device.malloc<dfloat>(gas->fieldOffsetSum);
+  o_liquidVelocityTimePrevious =
+      platform->device.malloc<dfloat>(liquid->fieldOffsetSum);
+  o_gasVelocityTimePrevious =
+      platform->device.malloc<dfloat>(gas->fieldOffsetSum);
   o_divergenceLiquid = platform->device.malloc<dfloat>(N);
   o_divergenceGas = platform->device.malloc<dfloat>(N);
   o_alphaGPrevious = platform->device.malloc<dfloat>(N);
@@ -105,6 +109,8 @@ void twoFluid_t::setup()
   platform->linAlg->fill(N, 0.0, o_pressureCoeff);
   platform->linAlg->fill(N, 0.0, o_divergenceLiquid);
   platform->linAlg->fill(N, 0.0, o_divergenceGas);
+  o_liquidVelocityTimePrevious.copyFrom(liquid->o_U, liquid->fieldOffsetSum);
+  o_gasVelocityTimePrevious.copyFrom(gas->o_U, gas->fieldOffsetSum);
   o_alphaGPrevious.copyFrom(o_alphaG, N);
   o_alphaGRaw.copyFrom(o_alphaG, N);
   platform->linAlg->fill(N, 0.0, o_boundCapacity);
@@ -131,6 +137,12 @@ void twoFluid_t::setup()
 void twoFluid_t::beginTimeStep()
 {
   o_alphaGPrevious.copyFrom(o_alphaG, liquid->fieldOffset);
+  // BDF history is physical-time state, not nonlinear-iteration state.  Slot
+  // zero in fluidSolver_t::o_U is overwritten by every coupling solve, so keep
+  // an immutable copy for all momentum RHS assemblies in this time step.
+  o_liquidVelocityTimePrevious.copyFrom(liquid->o_U,
+                                        liquid->fieldOffsetSum);
+  o_gasVelocityTimePrevious.copyFrom(gas->o_U, gas->fieldOffsetSum);
 }
 
 void twoFluid_t::updatePhaseFluxes()
@@ -300,8 +312,8 @@ void twoFluid_t::refreshCouplingForcing(double time, int tstep)
   }
 
   makeExplicit(time);
-  liquid->makeForcing(false);
-  gas->makeForcing(false);
+  liquid->makeForcing(o_liquidVelocityTimePrevious, false);
+  gas->makeForcing(o_gasVelocityTimePrevious, false);
 }
 
 void twoFluid_t::finalizeCouplingForcing()
@@ -458,7 +470,7 @@ void twoFluid_t::solvePressure(double time, int stage)
   platform->timer.toc("mixture pressureSolve");
 }
 
-void twoFluid_t::correctMixtureContinuity(double time)
+void twoFluid_t::correctMixtureContinuity(double time, const char *stageLabel)
 {
   if (!liquid->ellipticSolverP) return;
 
@@ -568,7 +580,19 @@ void twoFluid_t::correctMixtureContinuity(double time)
         mesh->Nlocal, mesh->o_LMM, o_postRm, comm);
     const dfloat postMax = platform->linAlg->amax(mesh->Nlocal, o_postRm, comm);
 
-    if (platform->comm.mpiRank() == 0) {
+    if (platform->comm.mpiRank() == 0 && stageLabel) {
+      printf("twoFluid pressure %s corrector=%d  preL2(Rm)=%.8e preMax|Rm|=%.8e  "
+             "postL2(Rm)=%.8e postMax|Rm|=%.8e  "
+             "rel||D(DmGphi)-Aphi||=%.8e rel||D(DmGphi)+Aphi||=%.8e\n",
+             stageLabel,
+             corrector + 1,
+             preL2,
+             preMax,
+             postL2,
+             postMax,
+             opMinus,
+             opPlus);
+    } else if (platform->comm.mpiRank() == 0) {
       printf("twoFluid pressure iter=%d corrector=%d  preL2(Rm)=%.8e preMax|Rm|=%.8e  "
              "postL2(Rm)=%.8e postMax|Rm|=%.8e  "
              "rel||D(DmGphi)-Aphi||=%.8e rel||D(DmGphi)+Aphi||=%.8e\n",
@@ -584,7 +608,11 @@ void twoFluid_t::correctMixtureContinuity(double time)
   }
 
   updateDiagnostics();
-  reportCouplingIteration(currentCouplingIteration);
+  if (stageLabel) {
+    reportContinuity(stageLabel);
+  } else {
+    reportCouplingIteration(currentCouplingIteration);
+  }
 }
 
 void twoFluid_t::updateDiagnostics()

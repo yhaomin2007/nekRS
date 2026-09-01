@@ -29,7 +29,7 @@ public:
   void refreshCouplingForcing(double time, int tstep);
   void finalizeCouplingForcing();
   void solvePressure(double time, int stage);
-  void correctMixtureContinuity(double time);
+  void correctMixtureContinuity(double time, const char *stageLabel = nullptr);
   void updateDiagnostics();
   void reportContinuity(const char *label = nullptr);
 
@@ -67,6 +67,8 @@ private:
   occa::memory o_mixtureFlux;
   occa::memory o_baseExtLiquid;
   occa::memory o_baseExtGas;
+  occa::memory o_liquidVelocityTimePrevious;
+  occa::memory o_gasVelocityTimePrevious;
   occa::memory o_divergenceLiquid;
   occa::memory o_divergenceGas;
   occa::memory o_alphaGPrevious;

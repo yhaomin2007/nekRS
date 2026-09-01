@@ -102,6 +102,7 @@ public:
   };
 
   void makeForcing(bool shiftHistory = true);
+  void makeForcing(const occa::memory &o_velocityHistory, bool shiftHistory);
 
   void updateZeroNormalMask()
   {

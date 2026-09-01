@@ -1927,7 +1927,7 @@ bool nrs_t::runInnerStep(std::function<bool(int)> convergenceCheck, int iter, bo
       // the discrete alpha-weighted mixture-continuity constraint.
       if (platform->options.compareArgs("CONSTANT FLOW RATE", "TRUE")) {
         adjustFlowRate(tstep, timeNew);
-        twoFluid->correctMixtureContinuity(timeNew);
+        twoFluid->correctMixtureContinuity(timeNew, "postFlowProjection");
       }
     } else {
       fluid->solve(timeNew, iter);

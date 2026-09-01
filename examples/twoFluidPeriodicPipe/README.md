@@ -33,10 +33,12 @@ The liquid starts with a parabolic axial profile with centerline velocity
 The `[GENERAL] constFlowRate` setting maintains the liquid bulk velocity at
 `0.10` in the axial (`Z`) direction. The gas bulk velocity is not prescribed;
 it evolves from its momentum equation. Every step the UDF prints the phase bulk
-velocities and bulk slip. The continuity diagnostics report the gas, liquid,
-and mixture mass residuals separately. Short fixed-point iterations update
-`alpha_g`, momentum, and shared pressure without advancing physical time more
-than once per step.
+velocities, bulk slip, the drag-free analytical gas bulk velocity
+`0.15 + gravityZ*time`, and its error. The final assertion verifies that three
+coupling iterations produce only one physical gas momentum advance. The
+continuity diagnostics report the gas, liquid, and mixture mass residuals
+separately. Short fixed-point iterations update `alpha_g`, momentum, and shared
+pressure without advancing physical time more than once per step.
 
 Every coupling iteration prints `max|deltaAlphaG|` and the relative `L2` norm
 of the gas-volume-fraction fixed-point update. The separately reported `Rg`,
