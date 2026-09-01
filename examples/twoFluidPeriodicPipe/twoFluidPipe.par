@@ -5,6 +5,7 @@ numSteps = 20
 dt = 1.0e-4
 timeStepper = tombo1
 checkpointInterval = 25
+constFlowRate = meanVelocity=0.10 + direction=Z
 
 usr = "twoFluidPipe.usr"
 udf = "twoFluidPipe.udf"

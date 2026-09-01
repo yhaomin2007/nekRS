@@ -15,10 +15,12 @@ The model is intentionally limited to the first implementation increment:
 - separate liquid and gas velocities;
 - one shared mixture-continuity pressure;
 - Schiller--Naumann drag with diagonal-implicit coupling;
-- a common axial body acceleration.
+- a common axial body acceleration;
+- native NekRS constant-flow control applied to the carrier liquid, followed
+  by another shared-pressure projection to preserve mixture continuity.
 
 Turbulence, dynamic void fraction, lift, wall lubrication, virtual mass, phase
-change, constant-flow-rate control, and advection subcycling are not enabled.
+change, gas-flow-rate control, and advection subcycling are not enabled.
 
 Run from this directory:
 
@@ -27,11 +29,14 @@ nekrs --setup twoFluidPipe.par
 ```
 
 The liquid starts with a parabolic axial profile with centerline velocity
-`0.20`, while the gas starts at `0.30`. Every ten steps the UDF prints the
-phase bulk velocities and bulk slip. The continuity diagnostics report the gas,
-liquid, and mixture mass residuals separately. Short fixed-point iterations
-update `alpha_g`, momentum, and shared pressure without advancing physical time
-more than once per step.
+`0.20`, corresponding to bulk velocity `0.10`, while the gas starts at `0.30`.
+The `[GENERAL] constFlowRate` setting maintains the liquid bulk velocity at
+`0.10` in the axial (`Z`) direction. The gas bulk velocity is not prescribed;
+it evolves from its momentum equation. Every step the UDF prints the phase bulk
+velocities and bulk slip. The continuity diagnostics report the gas, liquid,
+and mixture mass residuals separately. Short fixed-point iterations update
+`alpha_g`, momentum, and shared pressure without advancing physical time more
+than once per step.
 
 Every coupling iteration prints `max|deltaAlphaG|` and the relative `L2` norm
 of the gas-volume-fraction fixed-point update. The separately reported `Rg`,
@@ -56,5 +61,6 @@ this case, which has no transported scalars, the legacy Nek scalar slots are:
 When transported scalars are enabled, these diagnostics follow their existing
 Nek scalar slots. ADIOS output retains the diagnostic field names directly.
 
-The mesh is a radius-`0.5`, length-`6` pipe. The radial wall uses
-`zeroDirichlet` for both phase velocities; the two axial faces are periodic.
+The mesh is a radius-`0.5`, length-`6` pipe. The radial wall uses no-slip
+`zeroDirichlet` for the liquid and slip/no-penetration
+`zeroDirichletN/zeroNeumann` for the gas; the two axial faces are periodic.

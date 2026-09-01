@@ -157,13 +157,12 @@ void nrs_t::init()
   if (platform->options.compareArgs("TWO FLUID ENABLED", "TRUE")) {
     nekrsCheck(platform->options.compareArgs("MOVING MESH", "TRUE") ||
                    platform->options.compareArgs("LOWMACH", "TRUE") ||
-                   platform->options.compareArgs("CONSTANT FLOW RATE", "TRUE") ||
                    platform->options.compareArgs("FLUID STRESSFORMULATION", "TRUE") ||
                    platform->options.compareArgs("FLUID PRESSURE RHO SPLITTING", "TRUE"),
                platform->comm.mpiComm(), EXIT_FAILURE,
                "%s\n",
                "The minimal TWO FLUID branch does not support moving mesh, lowMach, "
-               "constant-flow control, stress formulation, or pressure rho splitting.");
+               "stress formulation, or pressure rho splitting.");
     int twoFluidSubsteps = 0;
     platform->options.getArgs("SUBCYCLING STEPS", twoFluidSubsteps);
     nekrsCheck(twoFluidSubsteps != 0, platform->comm.mpiComm(), EXIT_FAILURE,
@@ -1923,12 +1922,18 @@ bool nrs_t::runInnerStep(std::function<bool(int)> convergenceCheck, int iter, bo
         }
         twoFluid->finalizeCouplingForcing();
       }
+      // Native constant-flow control acts on the carrier liquid. Reproject
+      // both phases afterwards because a liquid-only correction can perturb
+      // the discrete alpha-weighted mixture-continuity constraint.
+      if (platform->options.compareArgs("CONSTANT FLOW RATE", "TRUE")) {
+        adjustFlowRate(tstep, timeNew);
+        twoFluid->correctMixtureContinuity(timeNew);
+      }
     } else {
       fluid->solve(timeNew, iter);
-    }
-
-    if (platform->options.compareArgs("CONSTANT FLOW RATE", "TRUE")) {
-      adjustFlowRate(tstep, timeNew);
+      if (platform->options.compareArgs("CONSTANT FLOW RATE", "TRUE")) {
+        adjustFlowRate(tstep, timeNew);
+      }
     }
   }
 
