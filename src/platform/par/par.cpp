@@ -254,6 +254,7 @@ static std::vector<std::string> twoFluidKeys = {
     {"gravityY"},
     {"gravityZ"},
     {"dragMultiplier"},
+    {"mixtureContinuityTolerance"},
     {"couplingIterations"},
     {"pressureCorrectors"},
     {"projectionOnly"},

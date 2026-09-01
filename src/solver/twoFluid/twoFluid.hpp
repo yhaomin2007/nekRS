@@ -45,6 +45,7 @@ public:
   dfloat alphaFloor = 1e-8;
   dfloat alphaDiffusivity = 0;
   dfloat dragMultiplier = 1;
+  dfloat mixtureContinuityTolerance = 1e-9;
   int couplingIterations = 2;
   int pressureCorrectors = 2;
   bool projectionOnly = false;

@@ -31,6 +31,8 @@ void twoFluid_t::setup()
   platform->options.getArgs("TWO FLUID GRAVITY Y", gravity[1]);
   platform->options.getArgs("TWO FLUID GRAVITY Z", gravity[2]);
   platform->options.getArgs("TWO FLUID DRAG MULTIPLIER", dragMultiplier);
+  platform->options.getArgs("TWO FLUID MIXTURE CONTINUITY TOLERANCE",
+                            mixtureContinuityTolerance);
   platform->options.getArgs("TWO FLUID COUPLING ITERATIONS", couplingIterations);
   platform->options.getArgs("TWO FLUID PRESSURE CORRECTORS", pressureCorrectors);
   projectionOnly = platform->options.compareArgs("TWO FLUID PROJECTION ONLY", "TRUE");
@@ -53,6 +55,10 @@ void twoFluid_t::setup()
              platform->comm.mpiComm(), EXIT_FAILURE,
              "TWO FLUID alphaDiffusivity must be non-negative: %g\n",
              alphaDiffusivity);
+  nekrsCheck(mixtureContinuityTolerance <= 0,
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "TWO FLUID mixtureContinuityTolerance must be positive: %g\n",
+             mixtureContinuityTolerance);
   nekrsCheck(couplingIterations < 1 || pressureCorrectors < 1,
              platform->comm.mpiComm(), EXIT_FAILURE,
              "%s\n",
@@ -616,10 +622,28 @@ void twoFluid_t::correctMixtureContinuity(double time, const char *stageLabel)
         mesh->Nlocal, mesh->o_LMM, o_preRm, comm);
     const dfloat preMax = platform->linAlg->amax(mesh->Nlocal, o_preRm, comm);
 
+    if (preL2 <= mixtureContinuityTolerance) {
+      if (platform->comm.mpiRank() == 0 && stageLabel) {
+        printf("twoFluid pressure %s corrector=%d skipped  L2(Rm)=%.8e "
+               "target=%.8e\n",
+               stageLabel,
+               corrector + 1,
+               preL2,
+               mixtureContinuityTolerance);
+      } else if (platform->comm.mpiRank() == 0) {
+        printf("twoFluid pressure iter=%d corrector=%d skipped  L2(Rm)=%.8e "
+               "target=%.8e\n",
+               currentCouplingIteration + 1,
+               corrector + 1,
+               preL2,
+               mixtureContinuityTolerance);
+      }
+      break;
+    }
+
     auto o_phi = platform->deviceMemoryPool.reserve<dfloat>(liquid->fieldOffset);
     constexpr int maximumIterations = 50;
-    constexpr dfloat pressureTolerance = 1.0e-10;
-    pressureCorrectionSolver->solve(pressureTolerance * sqrt(mesh->volume),
+    pressureCorrectionSolver->solve(mixtureContinuityTolerance * sqrt(mesh->volume),
                                     maximumIterations,
                                     o_preRm,
                                     o_phi);
@@ -670,14 +694,38 @@ void twoFluid_t::correctMixtureContinuity(double time, const char *stageLabel)
     updatePhaseFluxes();
     auto o_postRm = platform->deviceMemoryPool.reserve<dfloat>(liquid->fieldOffset);
     weakDivergence(o_mixtureVelocity, o_postRm);
-    const dfloat postL2 = volumeScale * platform->linAlg->weightedNorm2(
+    dfloat postL2 = volumeScale * platform->linAlg->weightedNorm2(
         mesh->Nlocal, mesh->o_LMM, o_postRm, comm);
-    const dfloat postMax = platform->linAlg->amax(mesh->Nlocal, o_postRm, comm);
+    dfloat postMax = platform->linAlg->amax(mesh->Nlocal, o_postRm, comm);
+    const bool accepted = postL2 < preL2;
+    if (!accepted) {
+      // A Krylov solve that reaches its iteration limit can produce a trial
+      // correction worse than the current state. Restore the phase velocities
+      // and pressure exactly rather than allowing that error to accumulate.
+      platform->linAlg->axpbyMany(mesh->Nlocal,
+                                  mesh->dim,
+                                  liquid->fieldOffset,
+                                  -1.0,
+                                  o_deltaLiquid,
+                                  1.0,
+                                  liquid->o_U);
+      platform->linAlg->axpbyMany(mesh->Nlocal,
+                                  mesh->dim,
+                                  gas->fieldOffset,
+                                  -1.0,
+                                  o_deltaGas,
+                                  1.0,
+                                  gas->o_U);
+      platform->linAlg->axpby(mesh->Nlocal, -1.0, o_phi, 1.0, liquid->o_P);
+      updatePhaseFluxes();
+      postL2 = preL2;
+      postMax = preMax;
+    }
 
     if (platform->comm.mpiRank() == 0 && stageLabel) {
       printf("twoFluid pressure %s corrector=%d  preL2(Rm)=%.8e preMax|Rm|=%.8e  "
              "postL2(Rm)=%.8e postMax|Rm|=%.8e  "
-             "kspIters=%d kspResidual=%.8e operatorConsistency=%.8e\n",
+             "kspIters=%d kspResidual=%.8e operatorConsistency=%.8e accepted=%d\n",
              stageLabel,
              corrector + 1,
              preL2,
@@ -686,11 +734,12 @@ void twoFluid_t::correctMixtureContinuity(double time, const char *stageLabel)
              postMax,
              pressureCorrectionSolver->nIter(),
              pressureCorrectionSolver->finalResidualNorm(),
-             operatorConsistency);
+             operatorConsistency,
+             accepted);
     } else if (platform->comm.mpiRank() == 0) {
       printf("twoFluid pressure iter=%d corrector=%d  preL2(Rm)=%.8e preMax|Rm|=%.8e  "
              "postL2(Rm)=%.8e postMax|Rm|=%.8e  "
-             "kspIters=%d kspResidual=%.8e operatorConsistency=%.8e\n",
+             "kspIters=%d kspResidual=%.8e operatorConsistency=%.8e accepted=%d\n",
              currentCouplingIteration + 1,
              corrector + 1,
              preL2,
@@ -699,8 +748,11 @@ void twoFluid_t::correctMixtureContinuity(double time, const char *stageLabel)
              postMax,
              pressureCorrectionSolver->nIter(),
              pressureCorrectionSolver->finalResidualNorm(),
-             operatorConsistency);
+             operatorConsistency,
+             accepted);
     }
+
+    if (!accepted || postL2 <= mixtureContinuityTolerance) break;
   }
 
   updateDiagnostics();

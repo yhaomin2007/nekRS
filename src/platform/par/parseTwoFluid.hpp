@@ -13,6 +13,7 @@ void parseTwoFluidSection(const int rank, setupAide &options, inipp::Ini *ini)
   options.setArgs("TWO FLUID GRAVITY Y", "0");
   options.setArgs("TWO FLUID GRAVITY Z", "0");
   options.setArgs("TWO FLUID DRAG MULTIPLIER", "1");
+  options.setArgs("TWO FLUID MIXTURE CONTINUITY TOLERANCE", "1e-9");
   options.setArgs("TWO FLUID COUPLING ITERATIONS", "2");
   options.setArgs("TWO FLUID PRESSURE CORRECTORS", "2");
   options.setArgs("TWO FLUID PROJECTION ONLY", "FALSE");
@@ -36,6 +37,7 @@ void parseTwoFluidSection(const int rank, setupAide &options, inipp::Ini *ini)
   extractReal("gravityy", "TWO FLUID GRAVITY Y");
   extractReal("gravityz", "TWO FLUID GRAVITY Z");
   extractReal("dragmultiplier", "TWO FLUID DRAG MULTIPLIER");
+  extractReal("mixturecontinuitytolerance", "TWO FLUID MIXTURE CONTINUITY TOLERANCE");
 
   int couplingIterations;
   if (ini->extract("two fluid", "couplingiterations", couplingIterations))

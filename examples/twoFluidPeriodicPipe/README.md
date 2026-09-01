@@ -53,6 +53,13 @@ the matrix-free operator against the applied correction and should be near
 roundoff; `kspIters` and `kspResidual` report convergence of the exact Schur
 solve.
 
+The pressure corrector stops once the mixture-continuity RMS reaches
+`mixtureContinuityTolerance` (set to `1.0e-9` here). A trial correction is
+accepted only when it decreases that RMS residual; otherwise the pressure and
+both phase velocities are restored. This prevents unconverged Krylov updates
+from degrading an already converged mixture field and avoids unnecessary
+pressure solves during long runs.
+
 This example sets `alphaDiffusivity = 1.0e-6`. Set it to zero to recover pure
 advection. The gas diffusive flux is `-D_alpha grad(alpha_g)` and the liquid
 flux receives its exact opposite, so numerical diffusion does not enter the
