@@ -91,19 +91,23 @@ void UDF_ExecuteStep(double time, int tstep)
         mesh->o_LMM,
         nrs->twoFluid->o_alphaG,
         comm) / mesh->volume;
+    constexpr dfloat liquidBulkVelocityTarget = 0.10;
 
     nekrsCheck(l2Liquid > 1e-6 || l2Gas > 1e-7 || l2Mixture > 1e-6 ||
                    alphaMin < 0.0 || alphaMax > 1.0 ||
-                   std::abs(alphaMean - 0.05) > 1e-8,
+                   std::abs(alphaMean - 0.05) > 1e-8 ||
+                   std::abs(liquidBulkVelocity - liquidBulkVelocityTarget) > 1e-8,
                comm,
                EXIT_FAILURE,
                "two-fluid phase continuity failed: L2(Rl)=%g L2(Rg)=%g "
-               "L2(Rm)=%g alpha=[%g,%g] mean=%g\n",
+               "L2(Rm)=%g alpha=[%g,%g] mean=%g bulkUzL=%g target=%g\n",
                l2Liquid,
                l2Gas,
                l2Mixture,
                alphaMin,
                alphaMax,
-               alphaMean);
+               alphaMean,
+               liquidBulkVelocity,
+               liquidBulkVelocityTarget);
   }
 }
