@@ -39,6 +39,8 @@ coupling iterations produce only one physical gas momentum advance. The
 continuity diagnostics report the gas, liquid, and mixture mass residuals
 separately. Short fixed-point iterations update `alpha_g`, momentum, and shared
 pressure without advancing physical time more than once per step.
+The BDF liquid and gas velocity histories are frozen at the beginning of each
+physical step and remain read-only throughout those coupling iterations.
 
 Every coupling iteration prints `max|deltaAlphaG|` and the relative `L2` norm
 of the gas-volume-fraction fixed-point update. The separately reported `Rg`,
