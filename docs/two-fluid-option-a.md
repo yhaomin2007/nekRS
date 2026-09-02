@@ -6,15 +6,37 @@ This branch restarts the Eulerian-Eulerian implementation from clean nekRS maste
 
 The first implementation is intentionally restricted to constant phase volume fractions and zero interfacial drag. It must establish the discrete pressure/velocity coupling before alpha transport or interfacial forces are enabled.
 
-For phases k = g,l, define the actual nekRS pressure-response map R_k by the velocity correction produced by a trial pressure q,
+## Important normalization when translating OpenFOAM to nekRS
 
-    delta U_k(q) = -R_k[alpha_k G q].
+OpenFOAM assembles the conservative phase momentum equation with alpha_k inside the phase momentum matrix. Consequently its rAU_k contains the inverse response to an alpha_k-weighted inertial/transport operator. The familiar OpenFOAM pressure coefficient alpha_k^2 rAU_k must not be copied as alpha_k^2 times an ordinary, unweighted nekRS velocity response.
 
-The common-pressure operator is then defined by the correction that is actually applied,
+For the constant-alpha restart it is cleaner to divide each phase momentum equation by alpha_k before using the standard nekRS phase velocity machinery:
+
+    rho_k dU_k/dt + ... = -G p + (K/alpha_k)(U_j-U_k) + ...
+
+With K=0, define Rhat_k as the ordinary nekRS response of the normalized phase momentum equation to -Gq:
+
+    delta U_k(q) = -Rhat_k[G q].
+
+Mixture continuity gives the Option-A pressure operator
+
+    L_p(q) = D[alpha_g Rhat_g(Gq) + alpha_l Rhat_l(Gq)].
+
+For a BDF transient-diagonal response,
+
+    Rhat_k ~ 1/(g0/dt * rho_k),
+
+so the scalar pressure coefficient is
+
+    beta = alpha_g/(g0/dt*rho_g) + alpha_l/(g0/dt*rho_l).
+
+If rho_g=rho_l=rho, then alpha_g+alpha_l=1 and beta reduces exactly to the native single-fluid response 1/(g0/dt*rho). This single-phase-equivalent limit is mandatory.
+
+Equivalently, if one keeps the conservative OpenFOAM form instead of dividing by alpha, then R_k includes the inverse alpha_k-weighted momentum operator and the pressure response can be written as
 
     L_p(q) = D[alpha_g R_g(alpha_g Gq) + alpha_l R_l(alpha_l Gq)].
 
-The pressure RHS is the divergence of the predicted alpha-weighted mixture motion. The implementation is acceptable only if the I7 operator identity below holds with the same gradient, divergence, gather-scatter, boundary treatment and mass weighting as the correction path.
+The two expressions are equivalent only when R_k and Rhat_k are defined consistently. Mixing the alpha weighting from one form with the response operator from the other is incorrect.
 
 ## I7 operator-consistency test
 
@@ -28,9 +50,27 @@ For an arbitrary trial pressure q:
 
 The relative L2 difference should be near the discrete solver/roundoff level. A small Krylov residual is not sufficient if I7 fails.
 
+For the K=0 constant-alpha implementation, the preferred test is against the native nekRS pressure operator using
+
+    beta = alpha_g/rho_g + alpha_l/rho_l
+
+up to the same time-discretization scaling used by the native pressure solve. In the equal-property limit beta=1/rho exactly.
+
 ## OpenFOAM-like drag stage (after K=0 passes)
 
-When drag is enabled, use implicit self-drag and lag the partner-phase drag contribution in the pressure predictor. With D_g = R_g K and D_l = R_l K, perform local post-pressure partial elimination
+After normalization by alpha_k, define
+
+    b_g = K/alpha_g
+    b_l = K/alpha_l
+
+and include b_k as the implicit self-drag term in each normalized phase momentum equation. With a local response based on the corresponding momentum diagonal,
+
+    A_g = g0/dt*rho_g + b_g
+    A_l = g0/dt*rho_l + b_l
+    D_g = b_g/A_g
+    D_l = b_l/A_l.
+
+Lag the partner-phase drag contribution in the pressure predictor and perform the local post-pressure partial elimination
 
     Delta = 1 - D_g D_l
     U_r = [(1-D_l) U_g^s - (1-D_g) U_l^s] / Delta
@@ -40,6 +80,8 @@ When drag is enabled, use implicit self-drag and lag the partner-phase drag cont
 and analogously for the corrected phase fluxes. The reconstructed phase fields must preserve
 
     alpha_g phi_g + alpha_l phi_l = phi_mix.
+
+This is the normalized nekRS form of the same OpenFOAM 2x2 drag elimination.
 
 ## Required verification order
 
