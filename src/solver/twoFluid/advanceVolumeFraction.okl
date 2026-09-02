@@ -8,7 +8,10 @@
                                    @ restrict dfloat *alphaL)
 {
   for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
-    const dfloat raw = alphaG0[n] - dt * divFluxG[n];
+    // weakDivergence() returns the assembled, mass-inverted weak operator
+    // -div(F).  Therefore alpha_t + div(F_g) = 0 advances with +dt times
+    // this stored operator.
+    const dfloat raw = alphaG0[n] + dt * divFluxG[n];
     alphaGRaw[n] = raw;
     alphaG[n] = fmin(1.0 - alphaFloor, fmax(alphaFloor, raw));
     alphaL[n] = 1.0 - alphaG[n];

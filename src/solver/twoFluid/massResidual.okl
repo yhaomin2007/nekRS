@@ -10,8 +10,10 @@
 {
   for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
     const dfloat dAlphaGdt = (alphaG[n] - alphaG0[n]) * invDt;
-    residualG[n] = dAlphaGdt + divFluxG[n];
-    residualL[n] = -dAlphaGdt + divFluxL[n];
+    // divFlux{L,G} contain the assembled, mass-inverted weak operators
+    // -div(F_{l,g}); negate them when reporting the physical phase balances.
+    residualG[n] = dAlphaGdt - divFluxG[n];
+    residualL[n] = -dAlphaGdt - divFluxL[n];
     residualMixture[n] = residualL[n] + residualG[n];
   }
 }

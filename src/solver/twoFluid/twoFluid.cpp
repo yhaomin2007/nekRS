@@ -794,6 +794,11 @@ void twoFluid_t::updateDiagnostics()
 void twoFluid_t::weakDivergence(const occa::memory &o_velocity,
                                 occa::memory o_divergence)
 {
+  // This is the assembled weak derivative D^T W followed by mass inversion.
+  // With periodic or zero-normal-flux boundaries it represents
+  // -div(o_velocity), not the strong positive divergence.  Its sign is
+  // immaterial when enforcing a zero mixture residual, but transport updates
+  // and physical phase-balance diagnostics must account for it explicitly.
   auto mesh = liquid->mesh;
   launchKernel("core-wDivergenceVolumeHex3D",
                mesh->Nelements,
