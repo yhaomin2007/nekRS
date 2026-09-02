@@ -12,6 +12,9 @@ single-fluid-like baseline isolates native alpha transport and the shared
 pressure correction before phase-property and boundary-condition differences
 are introduced.
 
+The regression explicitly checks that the matched phases remain equivalent by
+requiring the volume-normalized `L2(UG-UL)` norm to stay below `1.0e-10`.
+
 Each physical timestep uses one segregated pass: native alpha transport with
 the gas velocity, gas momentum, liquid momentum, and one shared-pressure
 correction. There are no nonlinear two-fluid inner iterations.

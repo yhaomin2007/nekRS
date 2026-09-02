@@ -61,23 +61,43 @@ void UDF_ExecuteStep(double time, int tstep)
   const dfloat gasUzMean = platform->linAlg->innerProd(
       mesh->Nlocal, mesh->o_LMM,
       nrs->gas->o_U.slice(2*nrs->fieldOffset), comm)/mesh->volume;
+  auto o_phaseDifference = platform->deviceMemoryPool.reserve<dfloat>(
+      nrs->fluid->fieldOffsetSum);
+  o_phaseDifference.copyFrom(nrs->gas->o_U, nrs->fluid->fieldOffsetSum);
+  platform->linAlg->axpbyMany(mesh->Nlocal,
+                              mesh->dim,
+                              nrs->fieldOffset,
+                              -1.0,
+                              nrs->fluid->o_U,
+                              1.0,
+                              o_phaseDifference);
+  const dfloat phaseDifference = platform->linAlg->weightedNorm2Many(
+      mesh->Nlocal,
+      mesh->dim,
+      nrs->fieldOffset,
+      mesh->o_LMM,
+      o_phaseDifference,
+      comm)/sqrt(mesh->volume);
 
   if (platform->comm.mpiRank() == 0) {
     printf("twoFluidInletOutlet step=%d time=%g alpha=[%.8e,%.8e] "
            "mean=%.8e meanUzL=%.8e meanUzG=%.8e "
-           "p=[%.8e,%.8e] pMean=%.8e L2(Rm)=%.8e max|Rm|=%.8e\n",
+           "L2(UG-UL)=%.8e p=[%.8e,%.8e] pMean=%.8e "
+           "L2(Rm)=%.8e max|Rm|=%.8e\n",
            tstep, time, alphaMin, alphaMax, alphaMean,
-           liquidUzMean, gasUzMean, pressureMin, pressureMax, pressureMean,
+           liquidUzMean, gasUzMean, phaseDifference,
+           pressureMin, pressureMax, pressureMean,
            l2Mixture, maxMixture);
   }
   nrs->twoFluid->reportContinuity();
 
   nekrsCheck(nrs->lastStep &&
                  (alphaMin < -1.0e-12 || alphaMax > 1.0 + 1.0e-12 ||
+                  phaseDifference > 1.0e-10 ||
                   l2Mixture > 1.0e-5 || maxMixture > 1.0e-3),
              comm,
              EXIT_FAILURE,
              "inlet-outlet verification failed: alpha=[%g,%g] "
-             "L2(Rm)=%g max|Rm|=%g\n",
-             alphaMin, alphaMax, l2Mixture, maxMixture);
+             "L2(UG-UL)=%g L2(Rm)=%g max|Rm|=%g\n",
+             alphaMin, alphaMax, phaseDifference, l2Mixture, maxMixture);
 }
