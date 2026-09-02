@@ -2230,6 +2230,16 @@ void nrs_t::registerKernels(occa::properties kernelInfoBC)
   {
     auto ellipticFieldsToRegister = fieldsToSolve();
 
+    dfloat alphaDiffusivity = 0;
+    platform->options.getArgs("TWO FLUID ALPHA DIFFUSIVITY", alphaDiffusivity);
+    if (platform->options.compareArgs("TWO FLUID ENABLED", "TRUE") &&
+        alphaDiffusivity > 0) {
+      // The implicit alpha-diffusion solve is deliberately not a general
+      // fieldsToSolve() entry (it has no independent BC/neknek field), but it
+      // still needs the native variable-coefficient elliptic kernels.
+      ellipticFieldsToRegister.push_back("two fluid alpha");
+    }
+
     auto list = serializeString(platform->options.getArgs("USER ELLIPTIC FIELDS"), ' ');
     for (auto &&entry : list) {
       if (!platform->options.compareArgs(std::string("ELLIPTIC ") + upperCase(entry) + " SOLVER", "NONE")) {
