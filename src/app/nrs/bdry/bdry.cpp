@@ -15,6 +15,8 @@ void nrs_t::bdry::setup()
 
   sectionsPar.insert({"GEOM", true});
   sectionsPar.insert({"FLUID VELOCITY", true});
+  if (platform->options.compareArgs("TWO FLUID ENABLED", "TRUE"))
+    sectionsPar.insert({"GAS VELOCITY", true});
 
   int nscal = 0;
   platform->options.getArgs("NUMBER OF SCALARS", nscal);

@@ -1,0 +1,11 @@
+@kernel void correctBoundedAlpha(const dlong N,
+                                 const dfloat scale,
+                                 @ restrict const dfloat *capacity,
+                                 @ restrict dfloat *alphaG,
+                                 @ restrict dfloat *alphaL)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    alphaG[n] += scale * capacity[n];
+    alphaL[n] = 1.0 - alphaG[n];
+  }
+}

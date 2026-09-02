@@ -1,0 +1,12 @@
+@kernel void boundCapacity(const dlong N,
+                           const dfloat alphaFloor,
+                           const dfloat direction,
+                           @ restrict const dfloat *alphaG,
+                           @ restrict dfloat *capacity)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    capacity[n] = direction > 0
+                    ? (1.0 - alphaFloor - alphaG[n])
+                    : (alphaG[n] - alphaFloor);
+  }
+}

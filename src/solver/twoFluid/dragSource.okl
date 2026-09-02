@@ -1,0 +1,49 @@
+@kernel void dragSource(const dlong N,
+                        const dlong offset,
+                        const dfloat alphaFloor,
+                        @ restrict const dfloat *alphaL,
+                        @ restrict const dfloat *alphaG,
+                        const dfloat db,
+                        const dfloat dragMultiplier,
+                        const dfloat gx,
+                        const dfloat gy,
+                        const dfloat gz,
+                        @ restrict const dfloat *rhoL,
+                        @ restrict const dfloat *muL,
+                        @ restrict const dfloat *rhoG,
+                        @ restrict const dfloat *UL,
+                        @ restrict const dfloat *UG,
+                        @ restrict dfloat *Kout,
+                        @ restrict dfloat *implicitL,
+                        @ restrict dfloat *implicitG,
+                        @ restrict dfloat *srcL,
+                        @ restrict dfloat *srcG)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    const dfloat sx = UG[n + 0 * offset] - UL[n + 0 * offset];
+    const dfloat sy = UG[n + 1 * offset] - UL[n + 1 * offset];
+    const dfloat sz = UG[n + 2 * offset] - UL[n + 2 * offset];
+    const dfloat slip = sqrt(sx*sx + sy*sy + sz*sz);
+    const dfloat Re = rhoL[n] * slip * db / fmax(muL[n], 1e-30);
+    dfloat Cd = 0.44;
+    if (Re < 1000.0)
+      Cd = 24.0 / fmax(Re, 1e-12) * (1.0 + 0.15 * pow(Re, 0.687));
+
+    // Interphase force per mixture volume: K (u_g-u_l).
+    const dfloat aL = fmax(alphaL[n], alphaFloor);
+    const dfloat aG = fmax(alphaG[n], alphaFloor);
+    const dfloat K = dragMultiplier * 0.75 * Cd * rhoL[n] * aL * aG * slip / db;
+    Kout[n] = K;
+    implicitL[n] = K / aL;
+    implicitG[n] = K / aG;
+
+    // The opposite-phase velocity is explicit; the same-phase contribution
+    // is placed on the Helmholtz diagonal through userImplicitLinearTerm.
+    srcL[n + 0 * offset] += gx + K * UG[n + 0 * offset] / (aL * rhoL[n]);
+    srcL[n + 1 * offset] += gy + K * UG[n + 1 * offset] / (aL * rhoL[n]);
+    srcL[n + 2 * offset] += gz + K * UG[n + 2 * offset] / (aL * rhoL[n]);
+    srcG[n + 0 * offset] += gx + K * UL[n + 0 * offset] / (aG * rhoG[n]);
+    srcG[n + 1 * offset] += gy + K * UL[n + 1 * offset] / (aG * rhoG[n]);
+    srcG[n + 2 * offset] += gz + K * UL[n + 2 * offset] / (aG * rhoG[n]);
+  }
+}

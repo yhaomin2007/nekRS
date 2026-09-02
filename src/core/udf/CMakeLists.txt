@@ -36,6 +36,7 @@ set(INCLUDE_DIRS
   ${NEKRS_INSTALL_DIR}/include/core/pointInterpolation/findpts
   ${NEKRS_INSTALL_DIR}/include/solver
   ${NEKRS_INSTALL_DIR}/include/solver/fluid
+  ${NEKRS_INSTALL_DIR}/include/solver/twoFluid
   ${NEKRS_INSTALL_DIR}/include/solver/geom
   ${NEKRS_INSTALL_DIR}/include/solver/scalar
   ${NEKRS_INSTALL_DIR}/include/solver/scalar/cvode

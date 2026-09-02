@@ -1,0 +1,12 @@
+@kernel void mixtureFlux(const dlong N,
+                         const dlong offset,
+                         @ restrict const dfloat *alphaL,
+                         @ restrict const dfloat *alphaG,
+                         @ restrict const dfloat *FL,
+                         @ restrict const dfloat *FG,
+                         @ restrict dfloat *F)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner))
+    for (int c = 0; c < 3; ++c)
+      F[n + c*offset] = alphaL[n]*FL[n + c*offset] + alphaG[n]*FG[n + c*offset];
+}

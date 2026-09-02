@@ -1,0 +1,10 @@
+@kernel void pressureCoefficient(const dlong N,
+                                 const dfloat alphaL,
+                                 const dfloat alphaG,
+                                 @ restrict const dfloat *rhoL,
+                                 @ restrict const dfloat *rhoG,
+                                 @ restrict dfloat *lambda)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner))
+    lambda[n] = alphaL/rhoL[n] + alphaG/rhoG[n];
+}

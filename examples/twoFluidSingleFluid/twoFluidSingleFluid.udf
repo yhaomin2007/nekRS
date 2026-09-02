@@ -1,0 +1,57 @@
+#ifdef __okl__
+
+#endif
+
+void UDF_Setup()
+{
+  auto mesh = nrs->meshV;
+  auto [x, y, z] = mesh->xyzHost();
+  std::vector<dfloat> velocity(3 * nrs->fieldOffset, 0.0);
+  for (dlong n = 0; n < mesh->Nlocal; ++n) {
+    velocity[n + 0 * nrs->fieldOffset] = sin(x[n]) * cos(y[n]) * cos(z[n]);
+    velocity[n + 1 * nrs->fieldOffset] = -cos(x[n]) * sin(y[n]) * cos(z[n]);
+  }
+  nrs->fluid->o_U.copyFrom(velocity.data(), velocity.size());
+  nrs->gas->o_U.copyFrom(velocity.data(), velocity.size());
+}
+
+void UDF_ExecuteStep(double time, int tstep)
+{
+  auto mesh = nrs->meshV;
+  auto o_difference = platform->deviceMemoryPool.reserve<dfloat>(nrs->fluid->fieldOffsetSum);
+  o_difference.copyFrom(nrs->gas->o_U, nrs->fluid->fieldOffsetSum);
+  platform->linAlg->axpbyMany(mesh->Nlocal,
+                              mesh->dim,
+                              nrs->fieldOffset,
+                              -1.0,
+                              nrs->fluid->o_U,
+                              1.0,
+                              o_difference);
+  const dfloat phaseDifference = platform->linAlg->weightedNorm2Many(
+      mesh->Nlocal,
+      mesh->dim,
+      nrs->fieldOffset,
+      mesh->o_LMM,
+      o_difference,
+      platform->comm.mpiComm()) / sqrt(mesh->volume);
+
+  nrs->twoFluid->updateDiagnostics();
+  const dfloat mixtureDivergence = platform->linAlg->weightedNorm2(
+      mesh->Nlocal,
+      mesh->o_LMM,
+      nrs->twoFluid->o_continuityResidual,
+      platform->comm.mpiComm()) / sqrt(mesh->volume);
+
+  if (platform->comm.mpiRank() == 0)
+    printf("singleFluidEquivalence step=%d phaseDifference=%.8e mixtureDivergence=%.8e\n",
+           tstep,
+           phaseDifference,
+           mixtureDivergence);
+
+  nekrsCheck(nrs->lastStep && (phaseDifference > 1e-10 || mixtureDivergence > 1e-6),
+             platform->comm.mpiComm(),
+             EXIT_FAILURE,
+             "two-fluid single-fluid equivalence failed: phaseDifference=%g divergence=%g\n",
+             phaseDifference,
+             mixtureDivergence);
+}

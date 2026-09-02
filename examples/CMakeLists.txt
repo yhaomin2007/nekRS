@@ -131,6 +131,11 @@ add("ktauChannel" 2 "channel.par" "1;2" "${USE_FP32}" "${dir}" "${BUILD_ONLY}")
 
 add("periodicHill" 2 "periodicHill.par" "1;2;3" "${USE_FP32}" "${dir}" "${BUILD_ONLY}")
 
+add("twoFluidPeriodicPipe" 2 "twoFluidPipe.par" "1" "${USE_FP32}" "${dir}" "${BUILD_ONLY}")
+add("twoFluidInletOutletPipe" 2 "twoFluidInletOutlet.par" "1" "${USE_FP32}" "${EXAMPLES_DIR}/twoFluidInletOutletPipe" "${BUILD_ONLY}")
+add("twoFluidPeriodicPipe_projectionOnly" 2 "twoFluidMixture.par" "1" "${USE_FP32}" "${EXAMPLES_DIR}/twoFluidMixture" "${BUILD_ONLY}")
+add("twoFluidPeriodicPipe_singleFluid" 2 "twoFluidSingleFluid.par" "1" "${USE_FP32}" "${EXAMPLES_DIR}/twoFluidSingleFluid" "${BUILD_ONLY}")
+
 add_eddy_neknek()
 add_eddy_nekneknek()
 

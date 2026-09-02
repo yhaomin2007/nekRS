@@ -1,0 +1,40 @@
+[GENERAL]
+polynomialOrder = 5
+stopAt = numSteps
+numSteps = 20
+dt = 1.0e-4
+timeStepper = tombo1
+checkpointInterval = 25
+constFlowRate = meanVelocity=0.10 + direction=Z
+
+usr = "twoFluidPipe.usr"
+udf = "twoFluidPipe.udf"
+
+[MESH]
+file = "../turbPipePeriodic/turbPipe.re2"
+
+[FLUID PRESSURE]
+residualTol = 1.0e-8
+
+[FLUID VELOCITY]
+boundaryTypeMap = zeroDirichlet
+rho = 1000.0
+viscosity = 1.0e-3
+residualTol = 1.0e-9
+
+[TWO FLUID]
+# The carrier liquid is no-slip at the pipe wall (see [FLUID VELOCITY]).
+# The dispersed gas is impermeable but has unconstrained tangential velocity.
+gasBoundaryTypeMap = zeroDirichletN/zeroNeumann
+gasVolumeFraction = 0.05
+bubbleDiameter = 3.0e-3
+gasDensity = 1.2
+gasViscosity = 1.8e-5
+gravityX = 0.0
+gravityY = 0.0
+gravityZ = 0.1
+alphaFloor = 1.0e-8
+alphaDiffusivity = 1.0e-5
+dragMultiplier = 0.0
+mixtureContinuityTolerance = 1.0e-9
+couplingIterations = 3

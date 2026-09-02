@@ -1,0 +1,28 @@
+[GENERAL]
+polynomialOrder = 5
+stopAt = numSteps
+numSteps = 5
+dt = 1.0e-4
+timeStepper = tombo1
+checkpointInterval = 5
+
+[FLUID PRESSURE]
+residualTol = 1.0e-11
+
+[FLUID VELOCITY]
+boundaryTypeMap = none
+rho = 1.0
+viscosity = 1.0e-4
+residualTol = 1.0e-11
+
+[TWO FLUID]
+gasVolumeFraction = 0.25
+bubbleDiameter = 1.0e-3
+gasDensity = 1.0
+gasViscosity = 1.0e-4
+dragMultiplier = 0.0
+couplingIterations = 1
+pressureCorrectors = 2
+gravityX = 0.0
+gravityY = 0.0
+gravityZ = 0.0

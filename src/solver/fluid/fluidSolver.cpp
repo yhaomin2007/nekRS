@@ -4,6 +4,7 @@
 #include "advectionSubCycling.hpp"
 #include "registerKernels.hpp"
 #include "nekInterfaceAdapter.hpp"
+#include "twoFluid.hpp"
 
 fluidSolver_t::fluidSolver_t(const fluidSolverCfg_t &cfg, const std::unique_ptr<geomSolver_t> &_geom)
     : geom(_geom)
@@ -19,6 +20,7 @@ fluidSolver_t::fluidSolver_t(const fluidSolverCfg_t &cfg, const std::unique_ptr<
   fieldOffset = cfg.fieldOffset;
   fieldOffsetSum = mesh->dim * fieldOffset;
   cubatureOffset = cfg.cubatureOffset;
+  createPressureSolver = cfg.createPressureSolver;
 
   const char nullChar[] = {'\0'};
 
@@ -124,6 +126,10 @@ fluidSolver_t::fluidSolver_t(const fluidSolverCfg_t &cfg, const std::unique_ptr<
 
 void fluidSolver_t::solvePressure(double time, int stage)
 {
+  if (twoFluid) {
+    twoFluid->solvePressure(time, stage);
+    return;
+  }
   if (!ellipticSolverP) {
     return;
   }
@@ -522,7 +528,7 @@ void fluidSolver_t::setupEllipticSolver()
     ellipticSolver.push_back(new elliptic(velocityName, mesh, fieldOffset, EToBz, o_lambda0, o_lambda1));
   }
 
-  {
+  if (createPressureSolver) {
     const auto o_lambda0 = [&]() {
       auto o_lambda = platform->deviceMemoryPool.reserve<dfloat>(mesh->Nlocal);
       if (platform->options.compareArgs(upperCase(pressureName) + " RHO SPLITTING", "TRUE")) {
@@ -629,7 +635,7 @@ void fluidSolver_t::applyDirichlet(double time)
                       mesh->oogs3);
   }
 
-  if (ellipticSolverP->Nmasked()) {
+  if (ellipticSolverP && ellipticSolverP->Nmasked()) {
     auto o_dirichletValues = o_tmp.slice(0, fieldOffset);
     launchKernel("core-maskCopy",
                  ellipticSolverP->Nmasked(),
@@ -658,7 +664,13 @@ void fluidSolver_t::applyDirichlet(double time)
   }
 }
 
-void fluidSolver_t::makeForcing()
+void fluidSolver_t::makeForcing(bool shiftHistory)
+{
+  makeForcing(o_U, shiftHistory);
+}
+
+void fluidSolver_t::makeForcing(const occa::memory &o_velocityHistory,
+                                bool shiftHistory)
 {
   if (ellipticSolver.size() == 0) {
     return;
@@ -674,7 +686,7 @@ void fluidSolver_t::makeForcing()
                fieldOffsetSum,
                mesh->fieldOffset, /* o_Jw offset */
                o_rho,
-               o_U,
+               o_velocityHistory,
                o_ADV,
                o_EXT,
                o_JwF);
@@ -694,10 +706,12 @@ void fluidSolver_t::makeForcing()
     }
   }
 
-  for (int s = o_coeffEXT.size(); s > 1; s--) {
-    o_EXT.copyFrom(o_EXT, fieldOffsetSum, (s - 1) * fieldOffsetSum, (s - 2) * fieldOffsetSum);
-    if (o_ADV.isInitialized()) {
-      o_ADV.copyFrom(o_ADV, fieldOffsetSum, (s - 1) * fieldOffsetSum, (s - 2) * fieldOffsetSum);
+  if (shiftHistory) {
+    for (int s = o_coeffEXT.size(); s > 1; s--) {
+      o_EXT.copyFrom(o_EXT, fieldOffsetSum, (s - 1) * fieldOffsetSum, (s - 2) * fieldOffsetSum);
+      if (o_ADV.isInitialized()) {
+        o_ADV.copyFrom(o_ADV, fieldOffsetSum, (s - 1) * fieldOffsetSum, (s - 2) * fieldOffsetSum);
+      }
     }
   }
 }

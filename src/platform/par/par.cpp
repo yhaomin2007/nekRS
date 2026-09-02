@@ -243,6 +243,25 @@ static std::vector<std::string> pressureKeys = {};
 
 static std::vector<std::string> geomKeys = {};
 
+static std::vector<std::string> twoFluidKeys = {
+    {"gasVolumeFraction"},
+    {"bubbleDiameter"},
+    {"gasDensity"},
+    {"gasViscosity"},
+    {"alphaFloor"},
+    {"alphaDiffusivity"},
+    {"gravityX"},
+    {"gravityY"},
+    {"gravityZ"},
+    {"dragMultiplier"},
+    {"mixtureContinuityTolerance"},
+    {"couplingIterations"},
+    {"pressureCorrectors"},
+    {"projectionOnly"},
+    {"gasBoundaryTypeMap"},
+    {"nativeAlphaScalar"},
+};
+
 static std::vector<std::string> deprecatedKeys = {
     // deprecated filter params
     {"filterWeight"},
@@ -259,6 +278,7 @@ static std::vector<std::string> validSections = {
     {"neknek"},
     {"fluid pressure"},
     {"fluid velocity"},
+    {"two fluid"},
     {"problemtype"},
     {"amgx"},
     {"boomeramg"},
@@ -287,6 +307,7 @@ void makeStringsLowerCase()
   amgxKeys = lowerCase(amgxKeys);
   boomeramgKeys = lowerCase(boomeramgKeys);
   pressureKeys = lowerCase(pressureKeys);
+  twoFluidKeys = lowerCase(twoFluidKeys);
   occaKeys = lowerCase(occaKeys);
   cvodeKeys = lowerCase(cvodeKeys);
   ellipticKeys = lowerCase(ellipticKeys);
@@ -362,6 +383,9 @@ const std::vector<std::string> &getValidKeys(const std::string &section)
   }
   if (section == "fluid velocity") {
     return velocityKeys;
+  }
+  if (section == "two fluid") {
+    return twoFluidKeys;
   }
   if (section == "cvode") {
     return cvodeKeys;
@@ -555,6 +579,7 @@ void parseCheckpointing(const int rank, setupAide &options, inipp::Ini *ini, std
 #include "parseProblemType.hpp"
 #include "parseNeknek.hpp"
 #include "parseFluid.hpp"
+#include "parseTwoFluid.hpp"
 #include "parseElliptic.hpp"
 
 #include "parseGeneral.hpp"
@@ -713,6 +738,8 @@ void Par::parse(setupAide &options)
   } else {
     options.setArgs("FLUID", "FALSE");
   }
+
+  parseTwoFluidSection(rank, options, ini);
 
   parseScalarSections(rank, options, ini);
 

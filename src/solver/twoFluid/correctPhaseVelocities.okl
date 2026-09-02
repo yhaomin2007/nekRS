@@ -1,0 +1,16 @@
+@kernel void correctPhaseVelocities(const dlong N,
+                                    const dlong offset,
+                                    @ restrict const dfloat *responseL,
+                                    @ restrict const dfloat *responseG,
+                                    @ restrict const dfloat *weakPressureGradient,
+                                    @ restrict dfloat *UL,
+                                    @ restrict dfloat *UG)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    for (int c = 0; c < 3; ++c) {
+      const dfloat gp = weakPressureGradient[n + c*offset];
+      UL[n + c*offset] += responseL[n] * gp;
+      UG[n + c*offset] += responseG[n] * gp;
+    }
+  }
+}
