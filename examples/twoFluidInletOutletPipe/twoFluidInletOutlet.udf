@@ -13,7 +13,7 @@ void udfDirichlet(bcData *bc)
   } else if (isField("gas velocity")) {
     bc->uxFluid = 0.0;
     bc->uyFluid = 0.0;
-    bc->uzFluid = 0.30*profile;
+    bc->uzFluid = 0.15;
   } else if (isField("scalar alpha")) {
     bc->sScalar = 0.05;
   }
@@ -35,7 +35,7 @@ void UDF_Setup()
     const dfloat r2 = (x[n]*x[n] + y[n]*y[n])/(radius*radius);
     const dfloat profile = std::max<dfloat>(0.0, 1.0-r2);
     liquidVelocity[n + 2*nrs->fieldOffset] = 0.20*profile;
-    gasVelocity[n + 2*nrs->fieldOffset] = 0.30*profile;
+    gasVelocity[n + 2*nrs->fieldOffset] = 0.15;
   }
 
   nrs->fluid->o_U.copyFrom(liquidVelocity.data(), liquidVelocity.size());
