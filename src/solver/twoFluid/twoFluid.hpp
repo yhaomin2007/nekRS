@@ -100,6 +100,7 @@ private:
   occa::memory o_pressureCouplingPrevious;
   dfloat alphaCouplingRelativeL2 = 0;
   int currentCouplingIteration = -1;
+  bool pressureOperatorCompared = false;
 
   void phasePressureFlux(fluidSolver_t *phase, occa::memory o_flux);
   void applyHomogeneousVelocityMask(fluidSolver_t *phase,

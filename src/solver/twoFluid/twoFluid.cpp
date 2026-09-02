@@ -776,6 +776,99 @@ void twoFluid_t::correctMixtureContinuity(double time, const char *stageLabel)
     o_pressureRhs.copyFrom(o_preRm, liquid->fieldOffset);
     liquid->ellipticSolverP->applyMask(o_pressureRhs);
 
+    if (!pressureOperatorCompared) {
+      // In the matched-phase benchmark the exact two-fluid Schur operator
+      // must reduce to NekRS's native variable-coefficient pressure operator.
+      // Compare both signs on a physically relevant native pressure trial;
+      // this diagnostic does not modify either phase velocity or pressure.
+      auto o_nativeWeakRhs = platform->deviceMemoryPool.reserve<dfloat>(
+          liquid->fieldOffset);
+      o_nativeWeakRhs.copyFrom(o_pressureRhs, liquid->fieldOffset);
+      platform->linAlg->axmy(mesh->Nlocal,
+                             1.0,
+                             mesh->o_LMM,
+                             o_nativeWeakRhs);
+
+      auto o_nativePhi = platform->deviceMemoryPool.reserve<dfloat>(
+          liquid->fieldOffset);
+      platform->linAlg->fill(liquid->fieldOffset, 0.0, o_nativePhi);
+      auto &pressureOptions = liquid->ellipticSolverP->options();
+      const auto initialGuess = pressureOptions.getArgs("INITIAL GUESS");
+      pressureOptions.setArgs("INITIAL GUESS", "ZERO");
+      liquid->ellipticSolverP->solve(o_pressureCoeff,
+                                     o_NULL,
+                                     o_nativeWeakRhs,
+                                     o_nativePhi.slice(0, mesh->Nlocal));
+      pressureOptions.setArgs("INITIAL GUESS", initialGuess);
+      liquid->ellipticSolverP->applyMask(o_nativePhi);
+
+      auto o_customAction = platform->deviceMemoryPool.reserve<dfloat>(
+          liquid->fieldOffset);
+      pressureCorrectionOperator(o_nativePhi, o_customAction);
+
+      auto o_nativeAction = platform->deviceMemoryPool.reserve<dfloat>(
+          liquid->fieldOffset);
+      const auto variableCoeff = pressureOptions.getArgs("ELLIPTIC COEFF FIELD");
+      pressureOptions.setArgs("ELLIPTIC COEFF FIELD", "TRUE");
+      liquid->ellipticSolverP->Ax(o_pressureCoeff,
+                                  o_NULL,
+                                  o_nativePhi,
+                                  o_nativeAction);
+      pressureOptions.setArgs("ELLIPTIC COEFF FIELD", variableCoeff);
+      platform->linAlg->axmy(mesh->Nlocal,
+                             1.0,
+                             mesh->o_invLMM,
+                             o_nativeAction);
+      liquid->ellipticSolverP->applyMask(o_nativeAction);
+
+      const dfloat nativeNorm = platform->linAlg->weightedNorm2(
+          mesh->Nlocal, mesh->o_LMM, o_nativeAction, comm);
+      auto o_sameSignError = platform->deviceMemoryPool.reserve<dfloat>(
+          liquid->fieldOffset);
+      o_sameSignError.copyFrom(o_customAction, liquid->fieldOffset);
+      platform->linAlg->axpby(mesh->Nlocal,
+                              -1.0,
+                              o_nativeAction,
+                              1.0,
+                              o_sameSignError);
+      auto o_oppositeSignError = platform->deviceMemoryPool.reserve<dfloat>(
+          liquid->fieldOffset);
+      o_oppositeSignError.copyFrom(o_customAction, liquid->fieldOffset);
+      platform->linAlg->axpby(mesh->Nlocal,
+                              1.0,
+                              o_nativeAction,
+                              1.0,
+                              o_oppositeSignError);
+      const dfloat sameSignRelative = platform->linAlg->weightedNorm2(
+          mesh->Nlocal, mesh->o_LMM, o_sameSignError, comm) /
+          std::max(nativeNorm, eps);
+      const dfloat oppositeSignRelative = platform->linAlg->weightedNorm2(
+          mesh->Nlocal, mesh->o_LMM, o_oppositeSignError, comm) /
+          std::max(nativeNorm, eps);
+
+      auto o_nativeTrialRm = platform->deviceMemoryPool.reserve<dfloat>(
+          liquid->fieldOffset);
+      o_nativeTrialRm.copyFrom(o_preRm, liquid->fieldOffset);
+      platform->linAlg->axpby(mesh->Nlocal,
+                              -1.0,
+                              o_customAction,
+                              1.0,
+                              o_nativeTrialRm);
+      const dfloat nativeTrialL2 = volumeScale *
+          platform->linAlg->weightedNorm2(mesh->Nlocal,
+                                          mesh->o_LMM,
+                                          o_nativeTrialRm,
+                                          comm);
+      if (platform->comm.mpiRank() == 0) {
+        printf("twoFluid operatorComparison sameSignRelL2=%.8e "
+               "oppositeSignRelL2=%.8e nativeTrialL2(Rm)=%.8e\n",
+               sameSignRelative,
+               oppositeSignRelative,
+               nativeTrialL2);
+      }
+      pressureOperatorCompared = true;
+    }
+
     auto o_phi = platform->deviceMemoryPool.reserve<dfloat>(liquid->fieldOffset);
     constexpr int maximumIterations = 50;
     pressureCorrectionSolver->solve(mixtureContinuityTolerance * sqrt(mesh->volume),
