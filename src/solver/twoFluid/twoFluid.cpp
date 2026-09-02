@@ -2,6 +2,8 @@
 
 #include "fluidSolver.hpp"
 #include "geomSolver.hpp"
+#include "elliptic.hpp"
+#include "ellipticBcTypes.h"
 #include "linAlg.hpp"
 #include "linearSolverFactory.hpp"
 #include "registerKernels.hpp"
@@ -17,6 +19,7 @@ twoFluid_t::twoFluid_t(fluidSolver_t *liquid_,
 
 twoFluid_t::~twoFluid_t()
 {
+  delete alphaSolver;
   delete pressureCorrectionSolver;
 }
 
@@ -101,6 +104,31 @@ void twoFluid_t::setup()
   o_mixtureVelocity = platform->device.malloc<dfloat>(mesh->dim * liquid->fieldOffset);
   o_interphaseForce = platform->device.malloc<dfloat>(mesh->dim * liquid->fieldOffset);
   o_continuityResidual = platform->device.malloc<dfloat>(N);
+
+  // Reuse NekRS's native scalar Helmholtz/elliptic machinery for numerical
+  // diffusion.  The conservative gas advection remains in twoFluid_t because
+  // scalar_t's stock strong-advection form is u.grad(alpha), whereas the phase
+  // balance requires div(alpha*u_g).
+  if (alphaDiffusivity > 0) {
+    o_alphaDiffusionCoeff = platform->device.malloc<dfloat>(N);
+    o_alphaTransportCoeff = platform->device.malloc<dfloat>(N);
+    platform->linAlg->fill(mesh->Nlocal,
+                           alphaDiffusivity,
+                           o_alphaDiffusionCoeff);
+    platform->linAlg->fill(mesh->Nlocal,
+                           1.0 / liquid->dt[0],
+                           o_alphaTransportCoeff);
+
+    auto EToBAlpha = mesh->createEToB([](int bID) -> int {
+      return bID < 1 ? ellipticBcType::NO_OP : ellipticBcType::NEUMANN;
+    });
+    alphaSolver = new elliptic("two fluid alpha",
+                               mesh,
+                               liquid->fieldOffset,
+                               EToBAlpha,
+                               o_alphaDiffusionCoeff,
+                               o_alphaTransportCoeff);
+  }
 
   o_alphaGCouplingPrevious = platform->device.malloc<dfloat>(N);
   o_liquidVelocityCouplingPrevious = platform->device.malloc<dfloat>(liquid->fieldOffsetSum);
@@ -241,12 +269,52 @@ void twoFluid_t::advanceVolumeFraction(int couplingIteration)
   auto o_alphaGIterationPrevious = platform->deviceMemoryPool.reserve<dfloat>(liquid->fieldOffset);
   o_alphaGIterationPrevious.copyFrom(o_alphaG, liquid->fieldOffset);
 
-  updatePhaseFluxes();
+  // Assemble only the conservative advective flux here. Diffusion is treated
+  // implicitly below by the same CG Helmholtz operator used for passive
+  // scalars. Full advective+diffusive phase fluxes are rebuilt by diagnostics.
+  launchKernel("twoFluid::phaseFluxes",
+               mesh->Nlocal,
+               liquid->fieldOffset,
+               0.0,
+               o_alphaL,
+               o_alphaG,
+               o_alphaGradient,
+               liquid->o_U,
+               gas->o_U,
+               o_phaseFluxLiquid,
+               o_phaseFluxGas,
+               o_mixtureVelocity);
   weakDivergence(o_phaseFluxGas, o_divergencePhaseFluxGas);
+
+  const int implicitDiffusion = alphaSolver ? 1 : 0;
+  if (alphaSolver) {
+    // weakDivergence() is M^{-1}[-D^T W(alpha*u_g)].  Therefore the BDF1
+    // Helmholtz right-hand side is
+    //   M [alpha^n/dt + weakDivergence(alpha*u_g)].
+    auto o_rhs = platform->deviceMemoryPool.reserve<dfloat>(liquid->fieldOffset);
+    o_rhs.copyFrom(o_divergencePhaseFluxGas, liquid->fieldOffset);
+    platform->linAlg->axpby(mesh->Nlocal,
+                            1.0 / liquid->dt[0],
+                            o_alphaGPrevious,
+                            1.0,
+                            o_rhs);
+    platform->linAlg->axmy(mesh->Nlocal, 1.0, mesh->o_LMM, o_rhs);
+
+    platform->linAlg->fill(mesh->Nlocal,
+                           1.0 / liquid->dt[0],
+                           o_alphaTransportCoeff);
+    o_alphaGRaw.copyFrom(o_alphaG, liquid->fieldOffset);
+    alphaSolver->solve(o_alphaDiffusionCoeff,
+                       o_alphaTransportCoeff,
+                       o_rhs,
+                       o_alphaGRaw.slice(0, mesh->Nlocal));
+  }
+
   launchKernel("twoFluid::advanceVolumeFraction",
                mesh->Nlocal,
                liquid->dt[0],
                alphaFloor,
+               implicitDiffusion,
                o_alphaGPrevious,
                o_divergencePhaseFluxGas,
                o_alphaGRaw,

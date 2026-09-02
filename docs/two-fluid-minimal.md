@@ -6,7 +6,9 @@ The branch advances two velocity fields on the same SEM mesh and one shared
 mechanical pressure. Gas volume fraction is advanced in conservative form,
 `d(alpha_g)/dt + div(alpha_g u_g - D_alpha grad(alpha_g)) = 0`, and
 `alpha_l = 1 - alpha_g` is enforced pointwise. `D_alpha` is an optional
-constant numerical diffusivity and defaults to zero. Its equal-and-opposite
+constant numerical diffusivity and defaults to zero. Advection retains the
+custom conservative gas flux, while nonzero diffusion is advanced implicitly
+with NekRS's native CG scalar Helmholtz/elliptic machinery. Its equal-and-opposite
 liquid flux makes it cancel exactly from the mixture flux. Phase properties are
 constant. The pressure equation uses the
 mixture-volume constraint

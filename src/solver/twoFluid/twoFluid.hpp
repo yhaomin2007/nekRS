@@ -5,6 +5,7 @@
 class fluidSolver_t;
 class geomSolver_t;
 class linearSolver;
+class elliptic;
 
 // Experimental two-fluid coordinator with conservative gas-volume transport.
 //
@@ -68,6 +69,9 @@ private:
   const std::unique_ptr<geomSolver_t> &geom;
   occa::memory o_pressureCoeff;
   linearSolver *pressureCorrectionSolver = nullptr;
+  elliptic *alphaSolver = nullptr;
+  occa::memory o_alphaDiffusionCoeff;
+  occa::memory o_alphaTransportCoeff;
   occa::memory o_mixtureFlux;
   occa::memory o_baseExtLiquid;
   occa::memory o_baseExtGas;

@@ -1,6 +1,7 @@
 @kernel void advanceVolumeFraction(const dlong N,
                                    const dfloat dt,
                                    const dfloat alphaFloor,
+                                   const int implicitDiffusion,
                                    @ restrict const dfloat *alphaG0,
                                    @ restrict const dfloat *divFluxG,
                                    @ restrict dfloat *alphaGRaw,
@@ -11,7 +12,10 @@
     // weakDivergence() returns the assembled, mass-inverted weak operator
     // -div(F).  Therefore alpha_t + div(F_g) = 0 advances with +dt times
     // this stored operator.
-    const dfloat raw = alphaG0[n] + dt * divFluxG[n];
+    // With implicit diffusion alphaGRaw already contains the solution of
+    // (M/dt + D_alpha*K) alpha = M(alpha^n/dt - div(alpha*u_g)).
+    const dfloat raw = implicitDiffusion ? alphaGRaw[n]
+                                         : alphaG0[n] + dt * divFluxG[n];
     alphaGRaw[n] = raw;
     alphaG[n] = fmin(1.0 - alphaFloor, fmax(alphaFloor, raw));
     alphaL[n] = 1.0 - alphaG[n];

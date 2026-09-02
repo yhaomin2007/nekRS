@@ -18,6 +18,23 @@ void parseTwoFluidSection(const int rank, setupAide &options, inipp::Ini *ini)
   options.setArgs("TWO FLUID PRESSURE CORRECTORS", "2");
   options.setArgs("TWO FLUID PROJECTION ONLY", "FALSE");
 
+  // Dedicated scalar Helmholtz solver used for implicit alpha diffusion.
+  // Start from the established velocity elliptic settings, then force the
+  // scalar-compatible choices.
+  std::vector<std::pair<std::string, std::string>> alphaSolverOptions;
+  for (const auto &entry : options) {
+    const std::string prefix = "FLUID VELOCITY";
+    if (entry.first.find(prefix) == 0) {
+      alphaSolverOptions.push_back(
+          {"TWO FLUID ALPHA" + entry.first.substr(prefix.size()), entry.second});
+    }
+  }
+  for (const auto &entry : alphaSolverOptions) options.setArgs(entry.first, entry.second);
+  options.setArgs("TWO FLUID ALPHA SOLVER", "CG");
+  options.setArgs("TWO FLUID ALPHA PRECONDITIONER", "JACOBI");
+  options.setArgs("TWO FLUID ALPHA SOLVER TOLERANCE", "1e-10");
+  options.setArgs("TWO FLUID ALPHA ELLIPTIC COEFF FIELD", "TRUE");
+
   auto extractReal = [&](const std::string &key, const std::string &option, bool required = false) {
     double value;
     if (ini->extract("two fluid", key, value)) {
