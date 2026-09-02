@@ -337,11 +337,22 @@ void nrs_t::init()
       cfg.fieldOffset = fieldOffset;
       cfg.vCubatureOffset = cubatureOffset;
       if (fluid) {
-        cfg.vFieldOffset = fluid->fieldOffset;
-        cfg.dpdt = bc.hasOutflow(fluid->name);
-        cfg.o_U = fluid->o_U;
-        cfg.o_Ue = fluid->o_Ue;
-        cfg.o_relUrst = fluid->o_relUrst;
+        auto *scalarTransportVelocity = fluid.get();
+        if (twoFluid &&
+            platform->options.compareArgs("TWO FLUID NATIVE ALPHA SCALAR", "TRUE")) {
+          nekrsCheck(Nscalar != 1 ||
+                         !platform->options.compareArgs("SCALAR00 NAME", "ALPHA"),
+                     platform->comm.mpiComm(),
+                     EXIT_FAILURE,
+                     "%s\n",
+                     "nativeAlphaScalar currently requires exactly one scalar named alpha.");
+          scalarTransportVelocity = gas.get();
+        }
+        cfg.vFieldOffset = scalarTransportVelocity->fieldOffset;
+        cfg.dpdt = bc.hasOutflow(scalarTransportVelocity->name);
+        cfg.o_U = scalarTransportVelocity->o_U;
+        cfg.o_Ue = scalarTransportVelocity->o_Ue;
+        cfg.o_relUrst = scalarTransportVelocity->o_relUrst;
       }
       cfg.mesh.resize(Nscalar);
       for (int is = 0; is < Nscalar; is++) {
@@ -354,6 +365,11 @@ void nrs_t::init()
 
       return std::make_unique<scalar_t>(cfg, geom);
     }();
+
+    if (twoFluid &&
+        platform->options.compareArgs("TWO FLUID NATIVE ALPHA SCALAR", "TRUE")) {
+      twoFluid->alphaScalar = scalar.get();
+    }
 
     if (scalar->cvode) {
       scalar->cvode->setEvaluateProperties(
@@ -2233,6 +2249,7 @@ void nrs_t::registerKernels(occa::properties kernelInfoBC)
     dfloat alphaDiffusivity = 0;
     platform->options.getArgs("TWO FLUID ALPHA DIFFUSIVITY", alphaDiffusivity);
     if (platform->options.compareArgs("TWO FLUID ENABLED", "TRUE") &&
+        !platform->options.compareArgs("TWO FLUID NATIVE ALPHA SCALAR", "TRUE") &&
         alphaDiffusivity > 0) {
       // The implicit alpha-diffusion solve is deliberately not a general
       // fieldsToSolve() entry (it has no independent BC/neknek field), but it

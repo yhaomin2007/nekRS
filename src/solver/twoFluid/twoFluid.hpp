@@ -6,6 +6,7 @@ class fluidSolver_t;
 class geomSolver_t;
 class linearSolver;
 class elliptic;
+class scalar_t;
 
 // Experimental two-fluid coordinator with conservative gas-volume transport.
 //
@@ -50,6 +51,8 @@ public:
   int couplingIterations = 2;
   int pressureCorrectors = 2;
   bool projectionOnly = false;
+  bool nativeAlphaScalar = false;
+  scalar_t *alphaScalar = nullptr;
 
   occa::memory o_alphaG;
   occa::memory o_alphaL;

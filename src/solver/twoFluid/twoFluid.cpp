@@ -7,6 +7,7 @@
 #include "linAlg.hpp"
 #include "linearSolverFactory.hpp"
 #include "registerKernels.hpp"
+#include "scalarSolver.hpp"
 
 #include <limits>
 
@@ -39,6 +40,8 @@ void twoFluid_t::setup()
   platform->options.getArgs("TWO FLUID COUPLING ITERATIONS", couplingIterations);
   platform->options.getArgs("TWO FLUID PRESSURE CORRECTORS", pressureCorrectors);
   projectionOnly = platform->options.compareArgs("TWO FLUID PROJECTION ONLY", "TRUE");
+  nativeAlphaScalar =
+      platform->options.compareArgs("TWO FLUID NATIVE ALPHA SCALAR", "TRUE");
   int bdfOrder = 1;
   platform->options.getArgs("BDF ORDER", bdfOrder);
 
@@ -73,7 +76,16 @@ void twoFluid_t::setup()
 
   alphaL = 1 - alphaG;
   const auto N = liquid->fieldOffset;
-  o_alphaG = platform->device.malloc<dfloat>(N);
+  if (nativeAlphaScalar) {
+    nekrsCheck(!alphaScalar,
+               platform->comm.mpiComm(),
+               EXIT_FAILURE,
+               "%s\n",
+               "nativeAlphaScalar requested but the NekRS alpha scalar is unavailable.");
+    o_alphaG = alphaScalar->o_solution("alpha");
+  } else {
+    o_alphaG = platform->device.malloc<dfloat>(N);
+  }
   o_alphaL = platform->device.malloc<dfloat>(N);
   o_drag = platform->device.malloc<dfloat>(N);
   o_implicitLiquid = platform->device.malloc<dfloat>(N);
@@ -109,7 +121,7 @@ void twoFluid_t::setup()
   // diffusion.  The conservative gas advection remains in twoFluid_t because
   // scalar_t's stock strong-advection form is u.grad(alpha), whereas the phase
   // balance requires div(alpha*u_g).
-  if (alphaDiffusivity > 0) {
+  if (alphaDiffusivity > 0 && !nativeAlphaScalar) {
     o_alphaDiffusionCoeff = platform->device.malloc<dfloat>(N);
     o_alphaTransportCoeff = platform->device.malloc<dfloat>(N);
     platform->linAlg->fill(mesh->Nlocal,
@@ -269,57 +281,75 @@ void twoFluid_t::advanceVolumeFraction(int couplingIteration)
   auto o_alphaGIterationPrevious = platform->deviceMemoryPool.reserve<dfloat>(liquid->fieldOffset);
   o_alphaGIterationPrevious.copyFrom(o_alphaG, liquid->fieldOffset);
 
-  // Assemble only the conservative advective flux here. Diffusion is treated
-  // implicitly below by the same CG Helmholtz operator used for passive
-  // scalars. Full advective+diffusive phase fluxes are rebuilt by diagnostics.
-  launchKernel("twoFluid::phaseFluxes",
-               mesh->Nlocal,
-               liquid->fieldOffset,
-               0.0,
-               o_alphaL,
-               o_alphaG,
-               o_alphaGradient,
-               liquid->o_U,
-               gas->o_U,
-               o_phaseFluxLiquid,
-               o_phaseFluxGas,
-               o_mixtureVelocity);
-  weakDivergence(o_phaseFluxGas, o_divergencePhaseFluxGas);
-
-  const int implicitDiffusion = alphaSolver ? 1 : 0;
-  if (alphaSolver) {
-    // weakDivergence() is M^{-1}[-D^T W(alpha*u_g)].  Therefore the BDF1
-    // Helmholtz right-hand side is
-    //   M [alpha^n/dt + weakDivergence(alpha*u_g)].
-    auto o_rhs = platform->deviceMemoryPool.reserve<dfloat>(liquid->fieldOffset);
-    o_rhs.copyFrom(o_divergencePhaseFluxGas, liquid->fieldOffset);
-    platform->linAlg->axpby(mesh->Nlocal,
-                            1.0 / liquid->dt[0],
-                            o_alphaGPrevious,
-                            1.0,
-                            o_rhs);
-    platform->linAlg->axmy(mesh->Nlocal, 1.0, mesh->o_LMM, o_rhs);
-
-    platform->linAlg->fill(mesh->Nlocal,
-                           1.0 / liquid->dt[0],
-                           o_alphaTransportCoeff);
+  if (nativeAlphaScalar) {
+    // scalar_t has already advanced alpha with gas->o_relUrst and its native
+    // advection/Helmholtz/BC machinery. Reuse the existing conservative bound
+    // correction and enforce alpha_l = 1-alpha_g before momentum coupling.
     o_alphaGRaw.copyFrom(o_alphaG, liquid->fieldOffset);
-    alphaSolver->solve(o_alphaDiffusionCoeff,
-                       o_alphaTransportCoeff,
-                       o_rhs,
-                       o_alphaGRaw.slice(0, mesh->Nlocal));
-  }
+    launchKernel("twoFluid::advanceVolumeFraction",
+                 mesh->Nlocal,
+                 liquid->dt[0],
+                 alphaFloor,
+                 1,
+                 o_alphaGPrevious,
+                 o_divergencePhaseFluxGas,
+                 o_alphaGRaw,
+                 o_alphaG,
+                 o_alphaL);
+  } else {
+    // Assemble only the conservative advective flux here. Diffusion is
+    // treated implicitly below by the same CG Helmholtz operator used for
+    // passive scalars. Full advective+diffusive phase fluxes are rebuilt by
+    // diagnostics.
+    launchKernel("twoFluid::phaseFluxes",
+                 mesh->Nlocal,
+                 liquid->fieldOffset,
+                 0.0,
+                 o_alphaL,
+                 o_alphaG,
+                 o_alphaGradient,
+                 liquid->o_U,
+                 gas->o_U,
+                 o_phaseFluxLiquid,
+                 o_phaseFluxGas,
+                 o_mixtureVelocity);
+    weakDivergence(o_phaseFluxGas, o_divergencePhaseFluxGas);
 
-  launchKernel("twoFluid::advanceVolumeFraction",
-               mesh->Nlocal,
-               liquid->dt[0],
-               alphaFloor,
-               implicitDiffusion,
-               o_alphaGPrevious,
-               o_divergencePhaseFluxGas,
-               o_alphaGRaw,
-               o_alphaG,
-               o_alphaL);
+    const int implicitDiffusion = alphaSolver ? 1 : 0;
+    if (alphaSolver) {
+      // weakDivergence() is M^{-1}[-D^T W(alpha*u_g)]. Therefore the BDF1
+      // Helmholtz right-hand side is
+      //   M [alpha^n/dt + weakDivergence(alpha*u_g)].
+      auto o_rhs = platform->deviceMemoryPool.reserve<dfloat>(liquid->fieldOffset);
+      o_rhs.copyFrom(o_divergencePhaseFluxGas, liquid->fieldOffset);
+      platform->linAlg->axpby(mesh->Nlocal,
+                              1.0 / liquid->dt[0],
+                              o_alphaGPrevious,
+                              1.0,
+                              o_rhs);
+      platform->linAlg->axmy(mesh->Nlocal, 1.0, mesh->o_LMM, o_rhs);
+
+      platform->linAlg->fill(mesh->Nlocal,
+                             1.0 / liquid->dt[0],
+                             o_alphaTransportCoeff);
+      o_alphaGRaw.copyFrom(o_alphaG, liquid->fieldOffset);
+      alphaSolver->solve(o_alphaDiffusionCoeff,
+                         o_alphaTransportCoeff,
+                         o_rhs,
+                         o_alphaGRaw.slice(0, mesh->Nlocal));
+    }
+
+    launchKernel("twoFluid::advanceVolumeFraction",
+                 mesh->Nlocal,
+                 liquid->dt[0],
+                 alphaFloor,
+                 implicitDiffusion,
+                 o_alphaGPrevious,
+                 o_divergencePhaseFluxGas,
+                 o_alphaGRaw,
+                 o_alphaG,
+                 o_alphaL);
+  }
 
   const dfloat rawIntegral = platform->linAlg->innerProd(mesh->Nlocal, mesh->o_LMM, o_alphaGRaw, comm);
   const dfloat boundedIntegral = platform->linAlg->innerProd(mesh->Nlocal, mesh->o_LMM, o_alphaG, comm);

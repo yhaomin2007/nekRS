@@ -85,6 +85,14 @@ Set `dragMultiplier = 0` to disable interphase drag. `projectionOnly = true`
 skips both momentum solves and applies only the shared pressure correction; it
 is a debugging option rather than a physical time-advancement mode.
 
+For the inlet--outlet transport verification, `nativeAlphaScalar = true`
+requires exactly one standard NekRS scalar named `alpha`. Its scalar solver is
+configured with the gas velocity (`o_U`, `o_Ue`, and `o_relUrst`) instead of the
+carrier-liquid velocity. The two-fluid coordinator aliases this native scalar
+as `alpha_g`, applies the existing conservative bound correction, and enforces
+`alpha_l = 1-alpha_g`. This is a narrow verification mode; general simultaneous
+alpha and species transport will require per-scalar transport velocities.
+
 This is a verification branch, not yet the full production solver. It currently
 requires a fixed mesh and is intended for periodic or impermeable-wall cases.
 It does not yet include independent gas boundary callbacks, dynamic volume

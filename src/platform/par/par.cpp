@@ -259,6 +259,7 @@ static std::vector<std::string> twoFluidKeys = {
     {"pressureCorrectors"},
     {"projectionOnly"},
     {"gasBoundaryTypeMap"},
+    {"nativeAlphaScalar"},
 };
 
 static std::vector<std::string> deprecatedKeys = {
