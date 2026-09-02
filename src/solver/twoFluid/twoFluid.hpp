@@ -4,7 +4,6 @@
 
 class fluidSolver_t;
 class geomSolver_t;
-class linearSolver;
 class elliptic;
 class scalar_t;
 
@@ -71,7 +70,6 @@ public:
 private:
   const std::unique_ptr<geomSolver_t> &geom;
   occa::memory o_pressureCoeff;
-  linearSolver *pressureCorrectionSolver = nullptr;
   elliptic *alphaSolver = nullptr;
   occa::memory o_alphaDiffusionCoeff;
   occa::memory o_alphaTransportCoeff;

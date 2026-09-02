@@ -4,10 +4,15 @@ This case reuses `examples/turbPipe/turbPipe.re2` (boundary 1 inlet,
 boundary 2 outlet, boundary 3 wall). It has no periodic boundary and no
 constant-flow-rate control.
 
-The liquid inlet is parabolic with bulk velocity `0.10`, and the liquid wall
-is no-slip. The gas inlet is a uniform `uz=0.15` plug profile, and the gas wall
-uses slip/no-penetration (`zeroDirichletN/zeroNeumann`). The initial velocity
-fields match these inlet profiles.
+The liquid and gas inlets are uniform plug profiles with `uz=0.10` and
+`uz=0.15`, respectively. The liquid wall is no-slip, while the gas wall uses
+slip/no-penetration (`zeroDirichletN/zeroNeumann`). Both interior velocity
+fields start from rest, while alpha starts uniformly at `0.05`, so inlet
+startup and the associated pressure evolution can be observed directly.
+
+Each physical timestep uses one segregated pass: native alpha transport with
+the gas velocity, gas momentum, liquid momentum, and one shared-pressure
+correction. There are no nonlinear two-fluid inner iterations.
 
 Gas volume fraction is the ordinary NekRS scalar named `alpha`. Setting
 `nativeAlphaScalar = true` binds that scalar's transport velocity to the gas

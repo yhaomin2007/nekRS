@@ -1927,15 +1927,16 @@ bool nrs_t::runInnerStep(std::function<bool(int)> convergenceCheck, int iter, bo
       if (twoFluid->projectionOnly) {
         twoFluid->correctMixtureContinuity(timeNew);
       } else {
-        for (int couplingIteration = 0;
-             couplingIteration < twoFluid->couplingIterations;
-             ++couplingIteration) {
-          twoFluid->advanceVolumeFraction(couplingIteration);
-          twoFluid->refreshCouplingForcing(timeNew, tstep);
-          fluid->solve(timeNew, iter);
-          gas->solve(timeNew, iter);
-          twoFluid->correctMixtureContinuity(timeNew);
-        }
+        // Deliberately use a single segregated pass per physical time step:
+        // native alpha scalar -> gas momentum -> liquid momentum -> shared
+        // pressure correction. Nonlinear inner iterations obscure which
+        // equation first becomes unstable and are not needed for the current
+        // inlet-outlet verification case.
+        twoFluid->advanceVolumeFraction(0);
+        twoFluid->refreshCouplingForcing(timeNew, tstep);
+        gas->solve(timeNew, iter);
+        fluid->solve(timeNew, iter);
+        twoFluid->correctMixtureContinuity(timeNew);
         twoFluid->finalizeCouplingForcing();
       }
       // Native constant-flow control acts on the carrier liquid. Reproject
