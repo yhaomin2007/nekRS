@@ -699,13 +699,23 @@ void twoFluid_t::pressureCorrectionOperator(const occa::memory &o_phi,
                                             occa::memory o_Aphi)
 {
   auto mesh = liquid->mesh;
+  // The outer matrix-free solve must operate in the same constrained
+  // pressure space as the native NekRS elliptic preconditioner. In
+  // particular, inlet-outlet cases have homogeneous pressure-correction
+  // Dirichlet nodes at the outlet. Keep the caller's Krylov vector untouched
+  // and mask a private copy before constructing the phase corrections.
+  auto o_phiMasked = platform->deviceMemoryPool.reserve<dfloat>(
+      liquid->fieldOffset);
+  o_phiMasked.copyFrom(o_phi, liquid->fieldOffset);
+  liquid->ellipticSolverP->applyMask(o_phiMasked);
+
   auto o_deltaLiquid = platform->deviceMemoryPool.reserve<dfloat>(
       liquid->fieldOffsetSum);
   auto o_deltaGas = platform->deviceMemoryPool.reserve<dfloat>(
       gas->fieldOffsetSum);
   auto o_deltaMixture = platform->deviceMemoryPool.reserve<dfloat>(
       liquid->fieldOffsetSum);
-  pressureCorrectionFlux(o_phi,
+  pressureCorrectionFlux(o_phiMasked,
                          o_deltaLiquid,
                          o_deltaGas,
                          o_deltaMixture);
@@ -713,6 +723,7 @@ void twoFluid_t::pressureCorrectionOperator(const occa::memory &o_phi,
   // The phase update adds deltaU, so its divergence is subtracted from the
   // positive Schur operator used by the Krylov solve.
   platform->linAlg->scale(mesh->Nlocal, -1.0, o_Aphi);
+  liquid->ellipticSolverP->applyMask(o_Aphi);
 }
 
 void twoFluid_t::correctMixtureContinuity(double time, const char *stageLabel)
@@ -755,12 +766,20 @@ void twoFluid_t::correctMixtureContinuity(double time, const char *stageLabel)
       break;
     }
 
+    // Preserve o_preRm for the physical before/after diagnostics. The Krylov
+    // RHS is a separate copy restricted to the native pressure space.
+    auto o_pressureRhs = platform->deviceMemoryPool.reserve<dfloat>(
+        liquid->fieldOffset);
+    o_pressureRhs.copyFrom(o_preRm, liquid->fieldOffset);
+    liquid->ellipticSolverP->applyMask(o_pressureRhs);
+
     auto o_phi = platform->deviceMemoryPool.reserve<dfloat>(liquid->fieldOffset);
     constexpr int maximumIterations = 50;
     pressureCorrectionSolver->solve(mixtureContinuityTolerance * sqrt(mesh->volume),
                                     maximumIterations,
-                                    o_preRm,
+                                    o_pressureRhs,
                                     o_phi);
+    liquid->ellipticSolverP->applyMask(o_phi);
 
     auto o_deltaLiquid = platform->deviceMemoryPool.reserve<dfloat>(
         liquid->fieldOffsetSum);
