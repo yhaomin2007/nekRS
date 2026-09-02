@@ -4,6 +4,7 @@
 #include "geomSolver.hpp"
 #include "elliptic.hpp"
 #include "ellipticBcTypes.h"
+#include "bdryBase.hpp"
 #include "linAlg.hpp"
 #include "linearSolverFactory.hpp"
 #include "registerKernels.hpp"
@@ -108,6 +109,21 @@ void twoFluid_t::setup()
   o_alphaGradient = platform->device.malloc<dfloat>(mesh->dim * N);
   o_phaseFluxLiquid = platform->device.malloc<dfloat>(mesh->dim * N);
   o_phaseFluxGas = platform->device.malloc<dfloat>(mesh->dim * N);
+  {
+    // Build a generic physical-flux boundary map for the weak divergence.
+    // Periodic/interior faces have mesh boundary ID zero and receive no
+    // surface term. Every physical boundary is mapped to the existing mixed
+    // BC branch of divergenceSurfaceHex3D, which evaluates -n.F directly.
+    std::vector<int> fluxEToB(mesh->Nelements * mesh->Nfaces,
+                              bdryBase::bcType_none);
+    for (dlong face = 0; face < mesh->Nelements * mesh->Nfaces; ++face) {
+      fluxEToB[face] = mesh->EToB[face] > 0
+                           ? bdryBase::bcType_zeroDirichletN_zeroNeumann
+                           : 0;
+    }
+    o_fluxDivergenceEToB =
+        platform->device.malloc<int>(fluxEToB.size(), fluxEToB.data());
+  }
   o_divergencePhaseFluxLiquid = platform->device.malloc<dfloat>(N);
   o_divergencePhaseFluxGas = platform->device.malloc<dfloat>(N);
   o_gasContinuityResidual = platform->device.malloc<dfloat>(N);
@@ -892,17 +908,28 @@ void twoFluid_t::updateDiagnostics()
 void twoFluid_t::weakDivergence(const occa::memory &o_velocity,
                                 occa::memory o_divergence)
 {
-  // This is the assembled weak derivative D^T W followed by mass inversion.
-  // With periodic or zero-normal-flux boundaries it represents
-  // -div(o_velocity), not the strong positive divergence.  Its sign is
-  // immaterial when enforcing a zero mixture residual, but transport updates
-  // and physical phase-balance diagnostics must account for it explicitly.
+  // Assemble the complete weak operator
+  //   D^T W F - B(n.F) = -M div(F),
+  // including physical-boundary fluxes. The surface term vanishes on periodic
+  // faces and, for impermeable walls, through n.F=0. This same routine is used
+  // by the phase diagnostics, mixture residual, pressure RHS, and Schur
+  // operator so their discrete definitions remain identical.
   auto mesh = liquid->mesh;
   launchKernel("core-wDivergenceVolumeHex3D",
                mesh->Nelements,
                mesh->o_vgeo,
                mesh->o_D,
                liquid->fieldOffset,
+               o_velocity,
+               o_divergence);
+  launchKernel("fluidSolver_t::divergenceSurfaceHex3D",
+               mesh->Nelements,
+               mesh->o_sgeo,
+               mesh->o_vmapM,
+               o_fluxDivergenceEToB,
+               0.0,
+               liquid->fieldOffset,
+               o_velocity,
                o_velocity,
                o_divergence);
   oogs::startFinish(o_divergence, 1, liquid->fieldOffset,

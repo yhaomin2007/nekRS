@@ -88,6 +88,7 @@ private:
   occa::memory o_alphaGradient;
   occa::memory o_phaseFluxLiquid;
   occa::memory o_phaseFluxGas;
+  occa::memory o_fluxDivergenceEToB;
   occa::memory o_divergencePhaseFluxLiquid;
   occa::memory o_divergencePhaseFluxGas;
 

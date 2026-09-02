@@ -57,18 +57,28 @@ void UDF_ExecuteStep(double time, int tstep)
                                                        mesh->o_LMM,
                                                        nrs->twoFluid->o_alphaG,
                                                        comm)/mesh->volume;
+  const dfloat l2Mixture = platform->linAlg->weightedNorm2(
+      mesh->Nlocal,
+      mesh->o_LMM,
+      nrs->twoFluid->o_continuityResidual,
+      comm)/sqrt(mesh->volume);
+  const dfloat maxMixture = platform->linAlg->amax(
+      mesh->Nlocal, nrs->twoFluid->o_continuityResidual, comm);
 
   if (platform->comm.mpiRank() == 0) {
-    printf("twoFluidInletOutlet step=%d time=%g alpha=[%.8e,%.8e] mean=%.8e\n",
-           tstep, time, alphaMin, alphaMax, alphaMean);
+    printf("twoFluidInletOutlet step=%d time=%g alpha=[%.8e,%.8e] "
+           "mean=%.8e L2(Rm)=%.8e max|Rm|=%.8e\n",
+           tstep, time, alphaMin, alphaMax, alphaMean,
+           l2Mixture, maxMixture);
   }
   nrs->twoFluid->reportContinuity();
 
   nekrsCheck(nrs->lastStep &&
-                 (alphaMin < -1.0e-12 || alphaMax > 1.0 + 1.0e-12),
+                 (alphaMin < -1.0e-12 || alphaMax > 1.0 + 1.0e-12 ||
+                  l2Mixture > 1.0e-5 || maxMixture > 1.0e-3),
              comm,
              EXIT_FAILURE,
-             "native alpha scalar is unbounded: [%g,%g]\n",
-             alphaMin,
-             alphaMax);
+             "inlet-outlet verification failed: alpha=[%g,%g] "
+             "L2(Rm)=%g max|Rm|=%g\n",
+             alphaMin, alphaMax, l2Mixture, maxMixture);
 }

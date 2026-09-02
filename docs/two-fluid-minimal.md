@@ -93,13 +93,22 @@ as `alpha_g`, applies the existing conservative bound correction, and enforces
 `alpha_l = 1-alpha_g`. This is a narrow verification mode; general simultaneous
 alpha and species transport will require per-scalar transport velocities.
 
+The two-fluid weak-divergence operator includes both its volume contribution
+and `-n.F` on every physical boundary. Periodic/interior faces receive no
+surface term. The same volume-plus-surface operator is used for phase and
+mixture diagnostics and for the exact pressure-correction Schur operator. This
+prevents prescribed inlet/outlet through-flow from being counted as a local
+continuity residual.
+
 This is a verification branch, not yet the full production solver. It currently
-requires a fixed mesh and is intended for periodic or impermeable-wall cases.
+requires a fixed mesh and supports inlet/outlet alpha transport only through
+the narrow native-alpha-scalar mode described above.
 It does not yet include independent gas boundary callbacks, dynamic volume
 fraction, lift, wall lubrication, turbulent dispersion, virtual mass, phase
 change, or turbulence. Pressure rho-splitting, low-Mach mode, NekNek,
 constant-flow-rate control, and subcycling are outside the supported v1
 combination.
 
-General inlet/outlet volume-fraction fluxes must be completed before
-open-boundary physical validation.
+General inlet/outlet volume-fraction fluxes for the custom conservative alpha
+update must still be completed before that path is used for open-boundary
+physical validation.
