@@ -227,7 +227,10 @@ void twoFluid_t::setup()
       1,
       liquid->fieldOffset,
       mesh->o_LMM,
-      true,
+      // Periodic/all-Neumann pressure has a constant null space; an
+      // inlet-outlet problem with pressure Dirichlet nodes does not. Match
+      // the native NekRS pressure solver instead of always removing the mean.
+      liquid->ellipticSolverP->nullSpace(),
       applyOperator,
       applyPreconditioner);
 
@@ -813,6 +816,9 @@ void twoFluid_t::correctMixtureContinuity(double time, const char *stageLabel)
     auto o_divCorrection = platform->deviceMemoryPool.reserve<dfloat>(
         liquid->fieldOffset);
     weakDivergence(o_deltaMixture, o_divCorrection);
+    // Compare the operator and applied correction in the constrained pressure
+    // space used by the Krylov solve.
+    liquid->ellipticSolverP->applyMask(o_divCorrection);
     platform->linAlg->axpby(mesh->Nlocal,
                             1.0,
                             o_Aphi,
