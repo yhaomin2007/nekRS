@@ -29,11 +29,11 @@ residualTol = 1.0e-10
 
 [TWO FLUID]
 nativeAlphaScalar = true
-gasBoundaryTypeMap = udfDirichlet, zeroNeumann, zeroDirichletN/zeroNeumann
+gasBoundaryTypeMap = udfDirichlet, zeroNeumann, zeroDirichlet
 gasVolumeFraction = 0.05
 bubbleDiameter = 3.0e-3
-gasDensity = 1.2
-gasViscosity = 1.8e-5
+gasDensity = 1000.0
+gasViscosity = 1.0e-3
 gravityX = 0.0
 gravityY = 0.0
 gravityZ = 0.0

@@ -4,11 +4,13 @@ This case reuses `examples/turbPipe/turbPipe.re2` (boundary 1 inlet,
 boundary 2 outlet, boundary 3 wall). It has no periodic boundary and no
 constant-flow-rate control.
 
-The liquid and gas inlets are uniform plug profiles with `uz=0.10` and
-`uz=0.15`, respectively. The liquid wall is no-slip, while the gas wall uses
-slip/no-penetration (`zeroDirichletN/zeroNeumann`). Both interior velocity
-fields start from rest, while alpha starts uniformly at `0.05`, so inlet
-startup and the associated pressure evolution can be observed directly.
+The liquid and gas have matching density (`1000`) and viscosity (`1.0e-3`).
+Both inlets use the same uniform plug profile, `uz=0.10`, and both phases use
+no-slip walls. Both interior velocity fields start from rest, while alpha
+starts uniformly at `0.05`; drag and gravity are disabled. This deliberately
+single-fluid-like baseline isolates native alpha transport and the shared
+pressure correction before phase-property and boundary-condition differences
+are introduced.
 
 Each physical timestep uses one segregated pass: native alpha transport with
 the gas velocity, gas momentum, liquid momentum, and one shared-pressure

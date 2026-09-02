@@ -9,7 +9,7 @@ void udfDirichlet(bcData *bc)
   } else if (isField("gas velocity")) {
     bc->uxFluid = 0.0;
     bc->uyFluid = 0.0;
-    bc->uzFluid = 0.15;
+    bc->uzFluid = 0.10;
   } else if (isField("scalar alpha")) {
     bc->sScalar = 0.05;
   }
