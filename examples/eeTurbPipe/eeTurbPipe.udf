@@ -109,24 +109,13 @@ static void solveGasVelocity(double time)
   for (auto *solver : fluid->ellipticSolver) {
     if (solver->Nmasked()) {
       const auto offset = (fluid->ellipticSolver.size() == 1) ? 0 : component * fieldOffset;
-      const auto nFields = (fluid->ellipticSolver.size() == 1) ? mesh->dim : 1;
-      if (nFields == mesh->dim) {
-        launchKernel("core-maskCopy",
-                     solver->Nmasked(),
-                     0,
-                     0,
-                     solver->o_maskIds(),
-                     fluid->o_U,
-                     nrs->o_Ug);
-      } else {
-        launchKernel("core-maskCopy",
-                     solver->Nmasked(),
-                     offset,
-                     offset,
-                     solver->o_maskIds(),
-                     fluid->o_U,
-                     nrs->o_Ug);
-      }
+      launchKernel("core-maskCopy",
+                   solver->Nmasked(),
+                   offset,
+                   offset,
+                   solver->o_maskIds(),
+                   fluid->o_U,
+                   nrs->o_Ug);
     }
     component++;
   }
@@ -245,34 +234,33 @@ void UDF_ExecuteStep(double time, int tstep)
 
   auto mesh = nrs->fluid->mesh;
   auto o_diff = platform->deviceMemoryPool.reserve<dfloat>(nrs->fluid->fieldOffsetSum);
-  platform->linAlg->axpbyzMany(mesh->Nlocal,
-                               mesh->dim,
-                               nrs->fluid->fieldOffset,
-                               1.0,
-                               nrs->o_Ug,
-                               -1.0,
-                               nrs->fluid->o_U,
-                               o_diff);
+  o_diff.copyFrom(nrs->o_Ug, nrs->fluid->fieldOffsetSum);
+  platform->linAlg->axpbyMany(mesh->Nlocal,
+                              mesh->dim,
+                              nrs->fluid->fieldOffset,
+                              -1.0,
+                              nrs->fluid->o_U,
+                              1.0,
+                              o_diff);
 
-  const auto relL2 = [&]() {
-    const auto diffL2 = platform->linAlg->weightedNorm2Many(mesh->Nlocal,
+  const auto diffL2 = platform->linAlg->weightedNorm2Many(mesh->Nlocal,
+                                                          mesh->dim,
+                                                          nrs->fluid->fieldOffset,
+                                                          mesh->o_LMM,
+                                                          o_diff,
+                                                          platform->comm.mpiComm());
+  const auto liquidL2 = platform->linAlg->weightedNorm2Many(mesh->Nlocal,
                                                             mesh->dim,
                                                             nrs->fluid->fieldOffset,
                                                             mesh->o_LMM,
-                                                            o_diff,
+                                                            nrs->fluid->o_U,
                                                             platform->comm.mpiComm());
-    const auto liquidL2 = platform->linAlg->weightedNorm2Many(mesh->Nlocal,
-                                                              mesh->dim,
-                                                              nrs->fluid->fieldOffset,
-                                                              mesh->o_LMM,
-                                                              nrs->fluid->o_U,
-                                                              platform->comm.mpiComm());
-    return diffL2 / std::max(liquidL2, static_cast<dfloat>(1e-30));
-  }();
+  const auto relL2 = diffL2 / std::max(liquidL2, static_cast<dfloat>(1e-30));
 
-  const auto maxDiff = platform->linAlg->amax(nrs->fluid->fieldOffsetSum,
-                                               o_diff,
-                                               platform->comm.mpiComm());
+  platform->linAlg->abs(nrs->fluid->fieldOffsetSum, o_diff);
+  const auto maxDiff = platform->linAlg->max(nrs->fluid->fieldOffsetSum,
+                                              o_diff,
+                                              platform->comm.mpiComm());
 
   if (platform->comm.mpiRank() == 0) {
     if (tstep == 1) {
