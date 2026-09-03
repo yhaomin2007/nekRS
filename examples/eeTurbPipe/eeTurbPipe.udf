@@ -1,0 +1,96 @@
+#include "tavg.hpp"
+#include "planarCopy.hpp"
+#include <cmath>
+
+static int NSLABS;
+static int NELSLAB;
+static int processAscentYamlFrequency;
+
+#ifdef __okl__
+void udfDirichlet(bcData *bc)
+{
+  if (isField("fluid velocity")) {
+    bc->uxFluid = bc->usrwrk[bc->idxVol + 0 * bc->fieldOffset];
+    bc->uyFluid = bc->usrwrk[bc->idxVol + 1 * bc->fieldOffset];
+    bc->uzFluid = bc->usrwrk[bc->idxVol + 2 * bc->fieldOffset];
+  } else if (isField("fluid pressure")) {
+    const dfloat iU0delta = 20.0;
+    const dfloat un = bc->uxFluid * bc->nx + bc->uyFluid * bc->ny + bc->uzFluid * bc->nz;
+    const dfloat s0 = 0.5 * (1.0 - tanh(un * iU0delta));
+    bc->pFluid = -0.5 * (bc->uxFluid * bc->uxFluid + bc->uyFluid * bc->uyFluid + bc->uzFluid * bc->uzFluid) * s0;
+  }
+}
+#endif
+
+void UDF_Setup0(MPI_Comm comm, setupAide &options)
+{
+  platform->par->extract("casedata", "nslabs", NSLABS);
+  platform->par->extract("casedata", "nelslab", NELSLAB);
+  platform->par->extract("casedata", "processAscentYamlFrequency", processAscentYamlFrequency);
+}
+
+void UDF_Setup()
+{
+  auto mesh = nrs->meshV;
+  const auto zLen = std::abs(platform->linAlg->max(mesh->Nlocal, mesh->o_z, platform->comm.mpiComm()) -
+                             platform->linAlg->min(mesh->Nlocal, mesh->o_z, platform->comm.mpiComm()));
+
+  std::vector<dfloat> x(mesh->Nlocal);
+  std::vector<dfloat> y(mesh->Nlocal);
+  std::vector<dfloat> z(mesh->Nlocal);
+  mesh->o_x.copyTo(x.data());
+  mesh->o_y.copyTo(y.data());
+  mesh->o_z.copyTo(z.data());
+
+  if (platform->options.getArgs("RESTART FILE NAME").empty()) {
+    auto rand = randomVector<dfloat>(mesh->Nlocal, -1.0, 1.0, true);
+    std::vector<dfloat> U(mesh->dim * nrs->fluid->fieldOffset, 0.0);
+    for (int n = 0; n < mesh->Nlocal; n++) {
+      const auto R = 0.5;
+      const auto xr = x[n] / R;
+      const auto yr = y[n] / R;
+      const auto zo = 2 * M_PI * z[n] / zLen;
+      auto rr = xr * xr + yr * yr;
+      rr = (rr > 0) ? std::sqrt(rr) : 0.0;
+      const auto th = std::atan2(y[n], x[n]);
+      auto uz = 6.0 / 5.0 * (1 - std::pow(rr, 6));
+      const auto phase_z = 0.35 * 2 * M_PI * std::sin(4.0 * zo);
+      auto amp_sin = 5.0 * std::sin(9.0 * th + phase_z);
+      if (amp_sin > 0.2) amp_sin = 0.2;
+      if (amp_sin < -0.2) amp_sin = -0.2;
+      if (rr > 0.93) uz += amp_sin;
+      U[n + 0 * nrs->fluid->fieldOffset] = 0.05 * std::pow(rand[n], 2);
+      U[n + 1 * nrs->fluid->fieldOffset] = 0.1 * std::pow(rand[n], 3);
+      U[n + 2 * nrs->fluid->fieldOffset] = uz + 0.01 * rand[n];
+    }
+    nrs->fluid->o_solution().copyFrom(U.data(), U.size());
+  }
+
+  platform->app->bc->o_usrwrk.resize(mesh->dim * nrs->fluid->fieldOffset);
+
+  const dfloat zRecycLayer = 0.25 * zLen;
+  std::vector<int> bID{1};
+  static deviceMemory<int> o_bID;
+  o_bID.resize(bID.size());
+  o_bID.copyFrom(bID);
+  static planarCopy *recyc = nullptr;
+  recyc = new planarCopy(mesh,
+                         nrs->fluid->o_solution(),
+                         mesh->dim,
+                         nrs->fluid->fieldOffset,
+                         0.0,
+                         0.0,
+                         zRecycLayer,
+                         bID[0],
+                         platform->app->bc->o_usrwrk);
+
+  nrs->addUserCheckpointField("eeGasVelocity", {
+    nrs->fluid->o_solution("x"), nrs->fluid->o_solution("y"), nrs->fluid->o_solution("z")});
+}
+
+void UDF_ExecuteStep(double time, int tstep)
+{
+  if (tstep == 1 && platform->comm.mpiRank() == 0) {
+    std::cout << "eeTurbPipe: fixed alpha_g=0.1, alpha_l=0.9; identical-phase reduction test enabled" << std::endl;
+  }
+}
