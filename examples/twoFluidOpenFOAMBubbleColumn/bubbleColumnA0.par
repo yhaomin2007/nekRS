@@ -1,0 +1,33 @@
+[GENERAL]
+polynomialOrder = 5
+stopAt = numSteps
+numSteps = 50
+dt = 1.0e-4
+timeStepper = tombo1
+checkpointInterval = 50
+udf = "bubbleColumnA0.udf"
+
+[MESH]
+file = "bubbleColumn.re2"
+
+[FLUID PRESSURE]
+residualTol = 1.0e-10
+
+[FLUID VELOCITY]
+boundaryTypeMap = zeroDirichlet, zeroDirichlet, zeroDirichlet, zeroDirichlet, udfDirichlet, zeroNeumann
+rho = 1000.0
+viscosity = 1.0e-3
+residualTol = 1.0e-10
+
+[TWO FLUID]
+freezeAlpha = true
+gasVolumeFraction = 0.10
+gasDensity = 1000.0
+gasViscosity = 1.0e-3
+dragMultiplier = 0.0
+gravityX = 0.0
+gravityY = 0.0
+gravityZ = 0.0
+couplingIterations = 2
+pressureCorrectors = 1
+operatorConsistencyTest = true
