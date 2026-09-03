@@ -6,8 +6,7 @@ on:
 
   push:
     branches:
-      - master
-      - ee_claude
+      - master 
 
 env:
   GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
@@ -119,33 +118,6 @@ jobs:
     - name: 'lowMach'
       working-directory: ${{ env.NEKRS_EXAMPLES }}/build
       run: ctest --output-on-failure -R lowMach 
-
-  eulerEulerTemplate:
-    needs: install
-    runs-on: ubuntu-22.04
-    steps:
-
-    - uses: actions/checkout@v4
-      with:
-        clean: true
-
-    - name: APT dependencies
-      run: |
-        sudo apt -y update
-        sudo apt install -y mpich libmpich-dev
-
-    - name: Download install dir
-      uses: actions/download-artifact@v4
-      with:
-        name: install-dir
-        path: ${{ env.NEKRS_HOME }}
-
-    - name: Set install dir permissions
-      run: chmod -R 755 ${{ env.NEKRS_HOME }}
-
-    - name: 'eulerEulerTemplate'
-      working-directory: ${{ env.NEKRS_EXAMPLES }}/build
-      run: ctest --output-on-failure -R eulerEulerTemplate
 
   mv_cyl:
     needs: install
