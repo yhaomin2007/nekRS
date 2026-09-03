@@ -1,0 +1,109 @@
+// eulerEuler plugin: bubble column case. See bubbleColumn.par's header
+// comment for how this maps to (and deviates from) OpenFOAM's
+// twoPhaseEulerFoam/bubbleColumn tutorial, and
+// ../../src/app/nrs/plugins/EULER_EULER_DESIGN.md for the plugin itself.
+//
+// MESH NOT INCLUDED -- see bubbleColumn.par. This case will not run
+// until bubbleColumn.re2 has been generated from input.box.
+
+#include "eulerEuler.hpp"
+
+static dfloat RHO_DISPERSED;
+static dfloat NU_CONTINUOUS;
+static dfloat PARTICLE_DIAMETER;
+static dfloat GRAVITY_Y;
+static dfloat ALPHA_MIN;
+static dfloat ALPHA_MAX;
+static dfloat U_INLET;
+static dfloat ALPHA_INLET;
+
+#ifdef __okl__
+
+void udfDirichlet(bcData *bc)
+{
+  // The bottom face (y=0) is the gas inlet: the continuous phase gets a
+  // small prescribed upward velocity there (see bubbleColumn.par
+  // deviation #2) and alpha is set to the inflowing gas fraction. Every
+  // other udfDirichlet face is a true no-slip, no-gas side wall.
+  const bool atBottom = bc->y < 1e-6;
+
+  if (isField("fluid velocity")) {
+    bc->uxFluid = 0.0;
+    bc->uyFluid = atBottom ? p_uInlet : 0.0;
+    bc->uzFluid = 0.0;
+  } else if (isField("scalar alpha")) {
+    bc->sScalar = atBottom ? p_alphaInlet : 0.0;
+  }
+}
+
+#endif
+
+void UDF_LoadKernels(deviceKernelProperties &kernelInfo)
+{
+  eulerEuler::buildKernel(kernelInfo);
+
+  kernelInfo.define("p_uInlet") = U_INLET;
+  kernelInfo.define("p_alphaInlet") = ALPHA_INLET;
+}
+
+void UDF_Setup0(MPI_Comm comm, setupAide &options)
+{
+  platform->par->extract("casedata", "rho_dispersed", RHO_DISPERSED);
+  platform->par->extract("casedata", "nu_continuous", NU_CONTINUOUS);
+  platform->par->extract("casedata", "particle_diameter", PARTICLE_DIAMETER);
+  platform->par->extract("casedata", "gravity_y", GRAVITY_Y);
+  platform->par->extract("casedata", "alpha_min", ALPHA_MIN);
+  platform->par->extract("casedata", "alpha_max", ALPHA_MAX);
+  platform->par->extract("casedata", "u_inlet", U_INLET);
+  platform->par->extract("casedata", "alpha_inlet", ALPHA_INLET);
+}
+
+void UDF_Setup()
+{
+  auto mesh = nrs->meshV;
+
+  // Column starts full of quiescent liquid (alpha = 0 everywhere); gas
+  // only enters through the bottom inlet BC above once the run starts.
+  std::vector<dfloat> alpha(nrs->scalar->fieldOffset(), 0.0);
+  nrs->scalar->o_solution("alpha").copyFrom(alpha.data(), mesh->Nlocal);
+
+  // GASUX/GASUY/GASUZ are just output containers for the gas velocity (see
+  // bubbleColumn.par) -- zero them so t=0 output isn't uninitialized device
+  // memory; UDF_ExecuteStep overwrites them for every step after this one.
+  std::vector<dfloat> zero(nrs->scalar->fieldOffset(), 0.0);
+  nrs->scalar->o_solution("gasux").copyFrom(zero.data(), mesh->Nlocal);
+  nrs->scalar->o_solution("gasuy").copyFrom(zero.data(), mesh->Nlocal);
+  nrs->scalar->o_solution("gasuz").copyFrom(zero.data(), mesh->Nlocal);
+
+  eulerEuler::config_t cfg;
+  cfg.alphaScalarName = "alpha";
+  cfg.rhoContinuous = 1000.0; // water -- must match [FLUID VELOCITY] rho
+  cfg.rhoDispersed = RHO_DISPERSED;
+  cfg.nuContinuous = NU_CONTINUOUS; // must match [FLUID VELOCITY] viscosity
+  cfg.particleDiameter = PARTICLE_DIAMETER;
+  cfg.gravity[0] = 0.0;
+  cfg.gravity[1] = GRAVITY_Y;
+  cfg.gravity[2] = 0.0;
+  cfg.dragModel = eulerEuler::DragModel::SchillerNaumann;
+  cfg.alphaMin = ALPHA_MIN;
+  cfg.alphaMax = ALPHA_MAX;
+
+  eulerEuler::setup(cfg);
+}
+
+void UDF_ExecuteStep(double time, int tstep)
+{
+  eulerEuler::step(time, tstep);
+
+  // Export the dispersed-phase (gas) velocity to the checkpoint output.
+  // o_U2 is a private plugin buffer with no field-output hook of its own
+  // (eulerEuler::o_U2() is just an accessor), so we copy its 3 components
+  // into the plain "solver = none" scalar slots declared in
+  // bubbleColumn.par every step -- nekRS then writes GASUX/GASUY/GASUZ to
+  // the .fld file exactly like any other scalar, no different from ALPHA.
+  auto mesh = nrs->meshV;
+  occa::memory o_U2 = eulerEuler::o_U2();
+  nrs->scalar->o_solution("gasux").copyFrom(o_U2, mesh->Nlocal, 0, 0 * nrs->fieldOffset);
+  nrs->scalar->o_solution("gasuy").copyFrom(o_U2, mesh->Nlocal, 0, 1 * nrs->fieldOffset);
+  nrs->scalar->o_solution("gasuz").copyFrom(o_U2, mesh->Nlocal, 0, 2 * nrs->fieldOffset);
+}

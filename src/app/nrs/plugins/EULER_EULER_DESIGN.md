@@ -100,6 +100,23 @@ has no other forcing path yet.
    hasn't been validated. A green CI run means "compiles and doesn't blow up
    for this short run," not "physically correct."
 
+## Example cases
+
+- `examples/eulerEulerTemplate/`: minimal smoke-test template. Reuses
+  `examples/lowMach/lowMach.re2` as a placeholder mesh (unverified
+  geometry, but wired into CI's `eulerEulerTemplate` ctest as a
+  compiles-and-doesn't-diverge check -- see limitation #4).
+- `examples/bubbleColumn/`: a real bubble-column case (narrow
+  water-filled column aerated from the bottom, air as the dispersed
+  phase), modeled on OpenFOAM's `twoPhaseEulerFoam/bubbleColumn`
+  tutorial. Its mesh is deliberately NOT checked in (must be generated
+  from its `input.box` via `genbox` -- no Fortran toolchain was
+  available to do that in this sandbox) and it is NOT wired into CI, so
+  treat it as an unbuilt, unrun design: geometry and BC choices follow
+  from the plugin's real capabilities (see the deviations documented in
+  `examples/bubbleColumn/bubbleColumn.par`'s header) but nothing about
+  it has been compiled, meshed, or executed even once.
+
 ## Wiring a case (see `examples/eulerEulerTemplate/`)
 
 1. Add the phase-fraction scalar in `.par`: `scalars = ALPHA` plus a
@@ -110,6 +127,24 @@ has no other forcing path yet.
    (optionally call `eulerEuler::setIC(...)` to set a nonzero initial
    dispersed-phase velocity).
 4. In `.udf`'s `UDF_ExecuteStep()`: `eulerEuler::step(time, tstep);`
+
+## Exporting the dispersed-phase velocity to output
+
+`eulerEuler::o_U2()` is a private plugin buffer -- it is never registered
+with nekRS's checkpoint writer (`src/core/iofld/iofldNek.cpp`'s field
+registry only knows `mesh`/`velocity`/`pressure`/`temperature` plus
+registered scalars), so a run's `.fld` files contain the continuous
+(liquid) phase's velocity and alpha, but NOT the gas velocity, unless a
+case explicitly exports it.
+
+`examples/bubbleColumn/` shows the pattern: declare 3 extra `solver = none`
+scalars (`GASUX`/`GASUY`/`GASUZ` in the `.par`'s `scalars = ...` list --
+`solver = none` means nekRS never solves/advects/applies BCs to them, see
+`scalarSolver.cpp`'s `compute[is] = 0`), then in `UDF_ExecuteStep`, after
+`eulerEuler::step(...)`, copy each component of `o_U2` into its slot with
+`nrs->scalar->o_solution("gasux").copyFrom(eulerEuler::o_U2(), mesh->Nlocal, 0, 0 * nrs->fieldOffset)`
+(and similarly with `1 *`/`2 * nrs->fieldOffset` as the source offset for
+y/z). nekRS then writes them to the checkpoint like any other scalar.
 
 ## Next phases (not started)
 

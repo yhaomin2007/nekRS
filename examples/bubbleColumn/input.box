@@ -1,0 +1,33 @@
+bubbleColumn.rea
+-3                     spatial dimension  ( < 0 --> generate .rea/.re2 pair)
+1                      number of fields
+#=======================================================================
+#
+#    Tall rectangular column, aspect ratio and BC layout modeled on
+#    OpenFOAM's twoPhaseEulerFoam/bubbleColumn tutorial: a narrow
+#    liquid-filled column with gas entering at the bottom and free to
+#    disengage at the top. See ../eulerEuler.md (or bubbleColumn.par's
+#    header comment) for exactly how this deviates from that tutorial.
+#
+#    x: 0 -> 0.15 m   column width, side walls
+#    y: 0 -> 1.0  m   column height (gravity direction), bottom = gas
+#                     inlet, top = outflow/disengagement
+#    z: 0 -> 0.01875 m, single element, periodic -- pseudo-2D column
+#                     (same trick nekRS's other "2D" box cases use: a
+#                     periodic single-element-thick homogeneous
+#                     direction instead of OpenFOAM's empty/frontAndBack
+#                     patch pair)
+#
+#    Run `genbox` on this file (Nek5000/tools/genbox) to produce
+#    bubbleColumn.re2 -- it is intentionally NOT checked in, unlike
+#    examples/eulerEulerTemplate/'s reused placeholder mesh, since a
+#    wrong-geometry mesh here would misrepresent the case.
+#
+#=======================================================================
+#
+Box
+-8 -48 -1              nelx,nely,nelz for Box
+0 0.15 1               x0 x1 ratio
+0 1.0  1               y0 y1 ratio
+0 0.01875 1            z0 z1 ratio
+v  ,v  ,v  ,O  ,P  ,P   BCs (3 characters each!) x0/x1=side walls, y0=bottom (gas inlet, see udfDirichlet), y1=outflow/top, z0/z1=periodic

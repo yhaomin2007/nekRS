@@ -1,0 +1,109 @@
+# eulerEuler plugin: bubble column case, modeled on OpenFOAM's
+# twoPhaseEulerFoam/bubbleColumn tutorial (a narrow water-filled column
+# aerated from the bottom, air as the dispersed phase). See
+# ../../src/app/nrs/plugins/EULER_EULER_DESIGN.md for the plugin's scope
+# and known limitations -- several of them directly shape this case's
+# design, so read the deviations below before treating this as a
+# faithful reproduction of the OpenFOAM tutorial.
+#
+# MESH NOT INCLUDED: unlike examples/eulerEulerTemplate/ (which reuses
+# lowMach's mesh as an admittedly-wrong-geometry placeholder),
+# bubbleColumn.re2 must be generated from input.box before this case can
+# run -- no Fortran toolchain (genbox/gfortran) was available in the
+# sandbox this was authored in to do that here. From a machine with
+# Nek5000's tools built:
+#   /path/to/Nek5000/bin/genbox <<< input.box
+#   mv box.re2 bubbleColumn.re2
+#
+# Physical parameters below are representative of the tutorial's scales
+# (water/air properties, millimeter-scale bubbles, a ~1 m tall x 0.15 m
+# wide column) rather than digit-for-digit copied from its input files
+# -- the exact OpenFOAM tutorial source wasn't available to check
+# against in this sandbox (no internet access).
+#
+# Deviations from the OpenFOAM tutorial, driven by plugin limitations:
+#   1. Full-bottom uniform aeration, not a small central sparger patch.
+#      A localized inlet needs a multi-box mesh (wall/inlet/wall column
+#      tiling); a single genbox Box can only assign one BC per whole
+#      face, so this case aerates the entire bottom instead.
+#   2. The bottom boundary gives the CONTINUOUS phase itself a small
+#      prescribed upward velocity (U_INLET), not a no-slip wall as
+#      OpenFOAM's tutorial uses for U.water there. This plugin's
+#      dispersed-phase velocity (o_U2) has no boundary/advection
+#      mechanism yet (EULER_EULER_DESIGN.md limitation #2) -- alpha is
+#      transported by nekRS's native scalar solver riding on the
+#      CONTINUOUS phase's velocity, so gas can only enter the domain by
+#      being advected in with nonzero liquid velocity at that boundary.
+#   3. alpha_max is capped at 0.7, not ~1. Real bubble columns rarely
+#      exceed that void fraction before a flow-regime transition
+#      (bubbly -> churn-turbulent), and this model's dispersed-phase
+#      buoyancy/drag terms get numerically stiff as alpha -> 1.
+#   4. No explicit liquid free-surface / freeboard region is set as an
+#      initial condition -- alpha is simply 0 (pure liquid) everywhere
+#      at t=0, and gas only enters through the bottom inlet BC.
+#
+userSections = CASEDATA
+
+[GENERAL]
+polynomialOrder = 7
+stopAt = endTime
+endTime = 5.0
+dt = targetCFL=0.5 + max=2e-03
+timeStepper = tombo2
+checkpointControl = simulationTime
+checkpointInterval = 0.5
+
+# ALPHA = dispersed-phase (air) volume fraction. Per the plugin's Phase 0
+# simplification this is transported with nekRS's native CG scalar
+# solver plus an artificial diffusivity, then pointwise-clipped every
+# step by eulerEuler::step() -- see limitation #3 in EULER_EULER_DESIGN.md.
+#
+# GASUX/GASUY/GASUZ are NOT solved fields (solver = none below) -- they're
+# plain per-node storage that bubbleColumn.udf's UDF_ExecuteStep overwrites
+# every step from eulerEuler::o_U2() purely so the dispersed-phase (gas)
+# velocity rides along in nekRS's normal .fld checkpoint output, which has
+# no native concept of this plugin's private o_U2 buffer otherwise.
+scalars = ALPHA, GASUX, GASUY, GASUZ
+
+[FLUID PRESSURE]
+residualTol = 1e-08
+initialGuess = previous
+
+[FLUID VELOCITY]
+boundaryTypeMap = udfDirichlet, outflow
+residualTol = 1e-08
+rho = 1000
+viscosity = 1e-06
+
+[SCALAR ALPHA]
+boundaryTypeMap = udfDirichlet, outflow
+residualTol = 1e-08
+# Artificial numerical diffusivity (Phase 0 simplification). Sized from
+# the grid-Peclet rule of thumb nu_art ~ |u|*h/(2N): |u| ~ 0.2 m/s
+# (order of a 3mm air bubble's terminal rise velocity in water), h ~
+# 0.019 m (smallest element edge above), N = polynomialOrder = 7 ->
+# ~2.7e-4. Tune per run -- too small and alpha oscillates/overshoots at
+# fronts, too large and the gas plume smears out.
+diffusivity = 2.5e-04
+
+# Output-only containers for the gas velocity -- see the `scalars =` comment
+# above. `solver = none` means nekRS never solves/advects/applies BCs to
+# these (scalarSolver.cpp: compute[is] = 0), so no boundaryTypeMap is needed.
+[SCALAR GASUX]
+solver = none
+
+[SCALAR GASUY]
+solver = none
+
+[SCALAR GASUZ]
+solver = none
+
+[CASEDATA]
+RHO_DISPERSED = 1.2      # air, kg/m^3
+NU_CONTINUOUS = 1e-06    # water, kinematic viscosity m^2/s (must match [FLUID VELOCITY] viscosity)
+PARTICLE_DIAMETER = 3e-03  # 3mm bubbles
+GRAVITY_Y = -9.81
+ALPHA_MIN = 0.0
+ALPHA_MAX = 0.7
+U_INLET = 0.03           # continuous-phase (water) inlet velocity at the bottom, m/s -- see deviation #2 above
+ALPHA_INLET = 0.1        # gas volume fraction entering at the bottom
