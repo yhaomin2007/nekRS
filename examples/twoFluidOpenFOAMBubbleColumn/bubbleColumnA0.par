@@ -28,6 +28,5 @@ dragMultiplier = 0.0
 gravityX = 0.0
 gravityY = 0.0
 gravityZ = 0.0
-couplingIterations = 2
+couplingIterations = 1
 pressureCorrectors = 1
-operatorConsistencyTest = true
