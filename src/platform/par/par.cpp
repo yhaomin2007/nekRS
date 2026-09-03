@@ -260,6 +260,7 @@ static std::vector<std::string> twoFluidKeys = {
     {"projectionOnly"},
     {"gasBoundaryTypeMap"},
     {"nativeAlphaScalar"},
+    {"freezeAlpha"},
 };
 
 static std::vector<std::string> deprecatedKeys = {

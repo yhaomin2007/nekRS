@@ -52,6 +52,7 @@ public:
   int pressureCorrectors = 2;
   bool projectionOnly = false;
   bool nativeAlphaScalar = false;
+  bool freezeAlpha = false;
   scalar_t *alphaScalar = nullptr;
 
   occa::memory o_alphaG;

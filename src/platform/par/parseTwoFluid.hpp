@@ -18,6 +18,7 @@ void parseTwoFluidSection(const int rank, setupAide &options, inipp::Ini *ini)
   options.setArgs("TWO FLUID PRESSURE CORRECTORS", "2");
   options.setArgs("TWO FLUID PROJECTION ONLY", "FALSE");
   options.setArgs("TWO FLUID NATIVE ALPHA SCALAR", "FALSE");
+  options.setArgs("TWO FLUID FREEZE ALPHA", "FALSE");
 
   // Dedicated scalar Helmholtz solver used for implicit alpha diffusion.
   // Start from the established velocity elliptic settings, then force the
@@ -73,6 +74,10 @@ void parseTwoFluidSection(const int rank, setupAide &options, inipp::Ini *ini)
   if (ini->extract("two fluid", "nativealphascalar", nativeAlphaScalar))
     options.setArgs("TWO FLUID NATIVE ALPHA SCALAR",
                     nativeAlphaScalar ? "TRUE" : "FALSE");
+
+  bool freezeAlpha;
+  if (ini->extract("two fluid", "freezealpha", freezeAlpha))
+    options.setArgs("TWO FLUID FREEZE ALPHA", freezeAlpha ? "TRUE" : "FALSE");
 
   // Reuse the liquid velocity solver settings for the gas phase.  The gas
   // boundary map can then be overridden independently so a liquid no-slip

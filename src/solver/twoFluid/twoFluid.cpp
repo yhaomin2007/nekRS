@@ -43,6 +43,7 @@ void twoFluid_t::setup()
   projectionOnly = platform->options.compareArgs("TWO FLUID PROJECTION ONLY", "TRUE");
   nativeAlphaScalar =
       platform->options.compareArgs("TWO FLUID NATIVE ALPHA SCALAR", "TRUE");
+  freezeAlpha = platform->options.compareArgs("TWO FLUID FREEZE ALPHA", "TRUE");
   int bdfOrder = 1;
   platform->options.getArgs("BDF ORDER", bdfOrder);
 
@@ -110,10 +111,6 @@ void twoFluid_t::setup()
   o_phaseFluxLiquid = platform->device.malloc<dfloat>(mesh->dim * N);
   o_phaseFluxGas = platform->device.malloc<dfloat>(mesh->dim * N);
   {
-    // Build a generic physical-flux boundary map for the weak divergence.
-    // Periodic/interior faces have mesh boundary ID zero and receive no
-    // surface term. Every physical boundary is mapped to the existing mixed
-    // BC branch of divergenceSurfaceHex3D, which evaluates -n.F directly.
     std::vector<int> fluxEToB(mesh->Nelements * mesh->Nfaces,
                               bdryBase::bcType_none);
     for (dlong face = 0; face < mesh->Nelements * mesh->Nfaces; ++face) {
@@ -133,10 +130,6 @@ void twoFluid_t::setup()
   o_interphaseForce = platform->device.malloc<dfloat>(mesh->dim * liquid->fieldOffset);
   o_continuityResidual = platform->device.malloc<dfloat>(N);
 
-  // Reuse NekRS's native scalar Helmholtz/elliptic machinery for numerical
-  // diffusion.  The conservative gas advection remains in twoFluid_t because
-  // scalar_t's stock strong-advection form is u.grad(alpha), whereas the phase
-  // balance requires div(alpha*u_g).
   if (alphaDiffusivity > 0 && !nativeAlphaScalar) {
     o_alphaDiffusionCoeff = platform->device.malloc<dfloat>(N);
     o_alphaTransportCoeff = platform->device.malloc<dfloat>(N);
@@ -227,9 +220,6 @@ void twoFluid_t::setup()
       1,
       liquid->fieldOffset,
       mesh->o_LMM,
-      // Periodic/all-Neumann pressure has a constant null space; an
-      // inlet-outlet problem with pressure Dirichlet nodes does not. Match
-      // the native NekRS pressure solver instead of always removing the mean.
       liquid->ellipticSolverP->nullSpace(),
       applyOperator,
       applyPreconditioner);
@@ -240,9 +230,6 @@ void twoFluid_t::setup()
 void twoFluid_t::beginTimeStep()
 {
   o_alphaGPrevious.copyFrom(o_alphaG, liquid->fieldOffset);
-  // BDF history is physical-time state, not nonlinear-iteration state.  Slot
-  // zero in fluidSolver_t::o_U is overwritten by every coupling solve, so keep
-  // an immutable copy for all momentum RHS assemblies in this time step.
   o_liquidVelocityTimePrevious.copyFrom(liquid->o_U,
                                         liquid->fieldOffsetSum);
   o_gasVelocityTimePrevious.copyFrom(gas->o_U, gas->fieldOffsetSum);
@@ -297,13 +284,15 @@ void twoFluid_t::advanceVolumeFraction(int couplingIteration)
   o_gasVelocityCouplingPrevious.copyFrom(gas->o_U, gas->fieldOffsetSum);
   o_pressureCouplingPrevious.copyFrom(liquid->o_P, liquid->fieldOffset);
 
+  if (freezeAlpha) {
+    alphaCouplingRelativeL2 = 0.0;
+    return;
+  }
+
   auto o_alphaGIterationPrevious = platform->deviceMemoryPool.reserve<dfloat>(liquid->fieldOffset);
   o_alphaGIterationPrevious.copyFrom(o_alphaG, liquid->fieldOffset);
 
   if (nativeAlphaScalar) {
-    // scalar_t has already advanced alpha with gas->o_relUrst and its native
-    // advection/Helmholtz/BC machinery. Reuse the existing conservative bound
-    // correction and enforce alpha_l = 1-alpha_g before momentum coupling.
     o_alphaGRaw.copyFrom(o_alphaG, liquid->fieldOffset);
     launchKernel("twoFluid::advanceVolumeFraction",
                  mesh->Nlocal,
@@ -316,10 +305,6 @@ void twoFluid_t::advanceVolumeFraction(int couplingIteration)
                  o_alphaG,
                  o_alphaL);
   } else {
-    // Assemble only the conservative advective flux here. Diffusion is
-    // treated implicitly below by the same CG Helmholtz operator used for
-    // passive scalars. Full advective+diffusive phase fluxes are rebuilt by
-    // diagnostics.
     launchKernel("twoFluid::phaseFluxes",
                  mesh->Nlocal,
                  liquid->fieldOffset,
@@ -336,9 +321,6 @@ void twoFluid_t::advanceVolumeFraction(int couplingIteration)
 
     const int implicitDiffusion = alphaSolver ? 1 : 0;
     if (alphaSolver) {
-      // weakDivergence() is M^{-1}[-D^T W(alpha*u_g)]. Therefore the BDF1
-      // Helmholtz right-hand side is
-      //   M [alpha^n/dt + weakDivergence(alpha*u_g)].
       auto o_rhs = platform->deviceMemoryPool.reserve<dfloat>(liquid->fieldOffset);
       o_rhs.copyFrom(o_divergencePhaseFluxGas, liquid->fieldOffset);
       platform->linAlg->axpby(mesh->Nlocal,
@@ -702,11 +684,6 @@ void twoFluid_t::pressureCorrectionOperator(const occa::memory &o_phi,
                                             occa::memory o_Aphi)
 {
   auto mesh = liquid->mesh;
-  // The outer matrix-free solve must operate in the same constrained
-  // pressure space as the native NekRS elliptic preconditioner. In
-  // particular, inlet-outlet cases have homogeneous pressure-correction
-  // Dirichlet nodes at the outlet. Keep the caller's Krylov vector untouched
-  // and mask a private copy before constructing the phase corrections.
   auto o_phiMasked = platform->deviceMemoryPool.reserve<dfloat>(
       liquid->fieldOffset);
   o_phiMasked.copyFrom(o_phi, liquid->fieldOffset);
@@ -723,8 +700,6 @@ void twoFluid_t::pressureCorrectionOperator(const occa::memory &o_phi,
                          o_deltaGas,
                          o_deltaMixture);
   weakDivergence(o_deltaMixture, o_Aphi);
-  // The phase update adds deltaU, so its divergence is subtracted from the
-  // positive Schur operator used by the Krylov solve.
   platform->linAlg->scale(mesh->Nlocal, -1.0, o_Aphi);
   liquid->ellipticSolverP->applyMask(o_Aphi);
 }
@@ -742,8 +717,6 @@ void twoFluid_t::correctMixtureContinuity(double time, const char *stageLabel)
   for (int corrector = 0; corrector < pressureCorrectors; ++corrector) {
     updatePhaseFluxes();
 
-    // Measure the exact mixture divergence used by the final continuity
-    // diagnostic before applying this pressure correction.
     auto o_preRm = platform->deviceMemoryPool.reserve<dfloat>(liquid->fieldOffset);
     weakDivergence(o_mixtureVelocity, o_preRm);
     const dfloat preL2 = volumeScale * platform->linAlg->weightedNorm2(
@@ -769,18 +742,12 @@ void twoFluid_t::correctMixtureContinuity(double time, const char *stageLabel)
       break;
     }
 
-    // Preserve o_preRm for the physical before/after diagnostics. The Krylov
-    // RHS is a separate copy restricted to the native pressure space.
     auto o_pressureRhs = platform->deviceMemoryPool.reserve<dfloat>(
         liquid->fieldOffset);
     o_pressureRhs.copyFrom(o_preRm, liquid->fieldOffset);
     liquid->ellipticSolverP->applyMask(o_pressureRhs);
 
     if (!pressureOperatorCompared) {
-      // In the matched-phase benchmark the exact two-fluid Schur operator
-      // must reduce to NekRS's native variable-coefficient pressure operator.
-      // Compare both signs on a physically relevant native pressure trial;
-      // this diagnostic does not modify either phase velocity or pressure.
       auto o_nativeWeakRhs = platform->deviceMemoryPool.reserve<dfloat>(
           liquid->fieldOffset);
       o_nativeWeakRhs.copyFrom(o_pressureRhs, liquid->fieldOffset);
@@ -909,8 +876,6 @@ void twoFluid_t::correctMixtureContinuity(double time, const char *stageLabel)
     auto o_divCorrection = platform->deviceMemoryPool.reserve<dfloat>(
         liquid->fieldOffset);
     weakDivergence(o_deltaMixture, o_divCorrection);
-    // Compare the operator and applied correction in the constrained pressure
-    // space used by the Krylov solve.
     liquid->ellipticSolverP->applyMask(o_divCorrection);
     platform->linAlg->axpby(mesh->Nlocal,
                             1.0,
@@ -931,9 +896,6 @@ void twoFluid_t::correctMixtureContinuity(double time, const char *stageLabel)
     dfloat postMax = platform->linAlg->amax(mesh->Nlocal, o_postRm, comm);
     const bool accepted = postL2 < preL2;
     if (!accepted) {
-      // A Krylov solve that reaches its iteration limit can produce a trial
-      // correction worse than the current state. Restore the phase velocities
-      // and pressure exactly rather than allowing that error to accumulate.
       platform->linAlg->axpbyMany(mesh->Nlocal,
                                   mesh->dim,
                                   liquid->fieldOffset,
@@ -1026,12 +988,6 @@ void twoFluid_t::updateDiagnostics()
 void twoFluid_t::weakDivergence(const occa::memory &o_velocity,
                                 occa::memory o_divergence)
 {
-  // Assemble the complete weak operator
-  //   D^T W F - B(n.F) = -M div(F),
-  // including physical-boundary fluxes. The surface term vanishes on periodic
-  // faces and, for impermeable walls, through n.F=0. This same routine is used
-  // by the phase diagnostics, mixture residual, pressure RHS, and Schur
-  // operator so their discrete definitions remain identical.
   auto mesh = liquid->mesh;
   launchKernel("core-wDivergenceVolumeHex3D",
                mesh->Nelements,
