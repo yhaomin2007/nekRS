@@ -1,0 +1,25 @@
+#ifdef __okl__
+
+void udfDirichlet(bcData *bc)
+{
+  // Stage A0: both phases receive the same inlet velocity so the
+  // equal-property two-fluid problem must collapse to single-fluid nekRS.
+  if (isField("fluid velocity") || isField("gas velocity")) {
+    bc->uxFluid = 0.0;
+    bc->uyFluid = 0.0;
+    bc->uzFluid = 0.10;
+  }
+}
+
+#endif
+
+void UDF_Setup()
+{
+}
+
+void UDF_ExecuteStep(double time, int tstep)
+{
+  if (platform->comm.mpiRank() == 0 && (tstep == 0 || nrs->lastStep)) {
+    printf("OpenFOAM-bubbleColumn A0 step=%d time=%g\n", tstep, time);
+  }
+}
