@@ -22,6 +22,7 @@ residualTol = 1.0e-10
 [TWO FLUID]
 freezeAlpha = true
 gasVolumeFraction = 0.10
+bubbleDiameter = 3.0e-3
 gasDensity = 1000.0
 gasViscosity = 1.0e-3
 dragMultiplier = 0.0
