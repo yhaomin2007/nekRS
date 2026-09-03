@@ -29,6 +29,135 @@ void UDF_Setup0(MPI_Comm comm, setupAide &options)
   platform->par->extract("casedata", "processAscentYamlFrequency", processAscentYamlFrequency);
 }
 
+// First E-E reduction test: solve a second velocity field with the same
+// momentum operator, coefficients, pressure and BC topology as the standard
+// NekRS liquid velocity.  The predictor forcing is intentionally shared in
+// this first stage; gas-specific advection/history is the next incremental
+// change after the two-solve reduction test is verified.
+static void solveGasVelocity(double time)
+{
+  auto fluid = nrs->fluid.get();
+  auto mesh = fluid->mesh;
+
+  if (!nrs->o_Ug.isInitialized() || fluid->ellipticSolver.empty()) {
+    return;
+  }
+
+  const auto fieldOffset = fluid->fieldOffset;
+  const auto fieldOffsetSum = fluid->fieldOffsetSum;
+  const auto g0idt = *fluid->g0 / fluid->dt[0];
+
+  // The pressure is shared by both phases.  Rebuild exactly the velocity RHS
+  // used by the liquid solve, then solve the same Helmholtz operator for u_g.
+  auto o_mueDiv = platform->deviceMemoryPool.reserve<dfloat>(fieldOffset);
+  platform->linAlg->axmyz(mesh->Nlocal, 1.0 / 3.0, fluid->o_mue, fluid->o_div, o_mueDiv);
+
+  auto o_gradMueDiv = platform->deviceMemoryPool.reserve<dfloat>(fieldOffsetSum);
+  launchKernel("core-gradientVolumeHex3D",
+               mesh->Nelements,
+               mesh->o_vgeo,
+               mesh->o_D,
+               fieldOffset,
+               o_mueDiv,
+               o_gradMueDiv);
+
+  auto o_gradP = platform->deviceMemoryPool.reserve<dfloat>(fieldOffsetSum);
+  launchKernel("core-wGradientVolumeHex3D",
+               mesh->Nelements,
+               mesh->o_vgeo,
+               mesh->o_D,
+               fieldOffset,
+               fluid->o_P,
+               o_gradP);
+
+  auto o_rhs = platform->deviceMemoryPool.reserve<dfloat>(fieldOffsetSum);
+  launchKernel("fluidSolver_t::velocityRhsHex3D",
+               mesh->Nlocal,
+               fieldOffset,
+               fluid->o_rho,
+               fluid->o_JwF,
+               o_gradMueDiv,
+               o_gradP,
+               o_rhs);
+
+  // turbPipe uses the same physical velocity BCs for both phases.  Reuse the
+  // native NekRS Neumann contribution and the already-evaluated liquid
+  // boundary data.  Dirichlet values are imposed below with the same masks.
+  launchKernel("fluidSolver_t::velocityNeumannBCHex3D",
+               fluid->o_velocityName,
+               fluid->o_pressureName,
+               mesh->Nelements,
+               fieldOffset,
+               mesh->o_sgeo,
+               mesh->o_vmapM,
+               mesh->o_EToB,
+               fluid->o_EToB,
+               time,
+               mesh->o_x,
+               mesh->o_y,
+               mesh->o_z,
+               fluid->o_rho,
+               fluid->o_mue,
+               platform->app->bc->o_usrwrk,
+               fluid->o_Ue,
+               o_rhs);
+
+  // Apply exactly the same essential velocity constraints to u_g that NekRS
+  // applies to u_l.  For the present case this covers the prescribed/recycle
+  // velocity boundary and the no-slip wall.
+  int component = 0;
+  for (auto *solver : fluid->ellipticSolver) {
+    if (solver->Nmasked()) {
+      const auto offset = (fluid->ellipticSolver.size() == 1) ? 0 : component * fieldOffset;
+      const auto nFields = (fluid->ellipticSolver.size() == 1) ? mesh->dim : 1;
+      if (nFields == mesh->dim) {
+        launchKernel("core-maskCopy",
+                     solver->Nmasked(),
+                     0,
+                     0,
+                     solver->o_maskIds(),
+                     fluid->o_U,
+                     nrs->o_Ug);
+      } else {
+        launchKernel("core-maskCopy",
+                     solver->Nmasked(),
+                     offset,
+                     offset,
+                     solver->o_maskIds(),
+                     fluid->o_U,
+                     nrs->o_Ug);
+      }
+    }
+    component++;
+  }
+
+  auto o_lambda1 = platform->deviceMemoryPool.reserve<dfloat>(mesh->Nlocal);
+  platform->linAlg->axpby(mesh->Nlocal, g0idt, fluid->o_rho, 0.0, o_lambda1);
+
+  if (fluid->ellipticSolver.at(0)->Nfields() > 1) {
+    fluid->ellipticSolver.at(0)->solve(fluid->o_mue,
+                                       o_lambda1,
+                                       o_rhs,
+                                       nrs->o_Ug.slice(0, fieldOffsetSum));
+  } else {
+    const auto o_rhsX = o_rhs.slice(0 * fieldOffset, mesh->Nlocal);
+    const auto o_rhsY = o_rhs.slice(1 * fieldOffset, mesh->Nlocal);
+    const auto o_rhsZ = o_rhs.slice(2 * fieldOffset, mesh->Nlocal);
+    fluid->ellipticSolver.at(0)->solve(fluid->o_mue,
+                                       o_lambda1,
+                                       o_rhsX,
+                                       nrs->o_Ug.slice(0 * fieldOffset, mesh->Nlocal));
+    fluid->ellipticSolver.at(1)->solve(fluid->o_mue,
+                                       o_lambda1,
+                                       o_rhsY,
+                                       nrs->o_Ug.slice(1 * fieldOffset, mesh->Nlocal));
+    fluid->ellipticSolver.at(2)->solve(fluid->o_mue,
+                                       o_lambda1,
+                                       o_rhsZ,
+                                       nrs->o_Ug.slice(2 * fieldOffset, mesh->Nlocal));
+  }
+}
+
 void UDF_Setup()
 {
   auto mesh = nrs->meshV;
@@ -112,8 +241,46 @@ void UDF_Setup()
 
 void UDF_ExecuteStep(double time, int tstep)
 {
-  if (tstep == 1 && platform->comm.mpiRank() == 0) {
-    std::cout << "eeTurbPipe: fixed alpha_g=0.1, alpha_l=0.9; fluid->o_U is u_l; nrs->o_Ug is u_g"
-              << std::endl;
+  solveGasVelocity(time);
+
+  auto mesh = nrs->fluid->mesh;
+  auto o_diff = platform->deviceMemoryPool.reserve<dfloat>(nrs->fluid->fieldOffsetSum);
+  platform->linAlg->axpbyzMany(mesh->Nlocal,
+                               mesh->dim,
+                               nrs->fluid->fieldOffset,
+                               1.0,
+                               nrs->o_Ug,
+                               -1.0,
+                               nrs->fluid->o_U,
+                               o_diff);
+
+  const auto relL2 = [&]() {
+    const auto diffL2 = platform->linAlg->weightedNorm2Many(mesh->Nlocal,
+                                                            mesh->dim,
+                                                            nrs->fluid->fieldOffset,
+                                                            mesh->o_LMM,
+                                                            o_diff,
+                                                            platform->comm.mpiComm());
+    const auto liquidL2 = platform->linAlg->weightedNorm2Many(mesh->Nlocal,
+                                                              mesh->dim,
+                                                              nrs->fluid->fieldOffset,
+                                                              mesh->o_LMM,
+                                                              nrs->fluid->o_U,
+                                                              platform->comm.mpiComm());
+    return diffL2 / std::max(liquidL2, static_cast<dfloat>(1e-30));
+  }();
+
+  const auto maxDiff = platform->linAlg->amax(nrs->fluid->fieldOffsetSum,
+                                               o_diff,
+                                               platform->comm.mpiComm());
+
+  if (platform->comm.mpiRank() == 0) {
+    if (tstep == 1) {
+      std::cout << "eeTurbPipe: fixed alpha_g=0.1, alpha_l=0.9; fluid->o_U is u_l; nrs->o_Ug is independently solved u_g"
+                << std::endl;
+    }
+    std::cout << "eeTurbPipe: step=" << tstep
+              << " ug-ul relL2=" << relL2
+              << " maxAbs=" << maxDiff << std::endl;
   }
 }
