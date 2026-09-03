@@ -63,6 +63,7 @@ void UDF_Setup()
       U[n + 1 * nrs->fluid->fieldOffset] = 0.1 * std::pow(rand[n], 3);
       U[n + 2 * nrs->fluid->fieldOffset] = uz + 0.01 * rand[n];
     }
+    // The standard NekRS fluid velocity is u_l in the E-E development.
     nrs->fluid->o_solution().copyFrom(U.data(), U.size());
   }
 
@@ -84,13 +85,35 @@ void UDF_Setup()
                          bID[0],
                          platform->app->bc->o_usrwrk);
 
-  nrs->addUserCheckpointField("eeGasVelocity", {
-    nrs->fluid->o_solution("x"), nrs->fluid->o_solution("y"), nrs->fluid->o_solution("z")});
+  // Allocate the independent gas velocity state.  It is copied here so the
+  // checkpoint field is valid immediately; preFluid performs the definitive
+  // one-time initialization after NekRS has projected the liquid IC to C0.
+  nrs->o_Ug.resize(nrs->fluid->fieldOffsetSum);
+  nrs->o_Ug.copyFrom(nrs->fluid->o_U, nrs->fluid->fieldOffsetSum);
+
+  nrs->preFluid = [](double time, int tstep) {
+    static bool gasInitializedFromProjectedLiquid = false;
+    if (!gasInitializedFromProjectedLiquid) {
+      nrs->o_Ug.copyFrom(nrs->fluid->o_U, nrs->fluid->fieldOffsetSum);
+      gasInitializedFromProjectedLiquid = true;
+
+      if (platform->comm.mpiRank() == 0) {
+        std::cout << "eeTurbPipe: initialized independent u_g from projected u_l" << std::endl;
+      }
+    }
+  };
+
+  nrs->addUserCheckpointField(
+      "eeGasVelocity",
+      {nrs->o_Ug.slice(0 * nrs->fluid->fieldOffset, mesh->Nlocal),
+       nrs->o_Ug.slice(1 * nrs->fluid->fieldOffset, mesh->Nlocal),
+       nrs->o_Ug.slice(2 * nrs->fluid->fieldOffset, mesh->Nlocal)});
 }
 
 void UDF_ExecuteStep(double time, int tstep)
 {
   if (tstep == 1 && platform->comm.mpiRank() == 0) {
-    std::cout << "eeTurbPipe: fixed alpha_g=0.1, alpha_l=0.9; identical-phase reduction test enabled" << std::endl;
+    std::cout << "eeTurbPipe: fixed alpha_g=0.1, alpha_l=0.9; fluid->o_U is u_l; nrs->o_Ug is u_g"
+              << std::endl;
   }
 }
