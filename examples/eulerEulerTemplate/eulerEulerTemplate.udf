@@ -1,0 +1,85 @@
+// eulerEuler plugin template case (UNVERIFIED -- not build-tested, see
+// ../../src/app/nrs/plugins/EULER_EULER_DESIGN.md for caveats). Reuses
+// examples/lowMach's box mesh; the udfDirichlet BCs below assume the same
+// boundary layout lowMach.udf uses -- adjust to your actual mesh.
+
+#include "eulerEuler.hpp"
+
+static dfloat RHO_DISPERSED;
+static dfloat NU_CONTINUOUS;
+static dfloat PARTICLE_DIAMETER;
+static dfloat GRAVITY_Y;
+static dfloat ALPHA_MIN;
+static dfloat ALPHA_MAX;
+
+#ifdef __okl__
+
+void udfDirichlet(bcData *bc)
+{
+  if (isField("fluid velocity")) {
+    bc->uxFluid = 0.0;
+    bc->uyFluid = 0.0;
+    bc->uzFluid = 0.0;
+  } else if (isField("scalar alpha")) {
+    // no dispersed phase entering through this boundary by default
+    bc->sScalar = 0.0;
+  }
+}
+
+#endif
+
+void UDF_LoadKernels(deviceKernelProperties &kernelInfo)
+{
+  eulerEuler::buildKernel(kernelInfo);
+}
+
+void UDF_Setup0(MPI_Comm comm, setupAide &options)
+{
+  platform->par->extract("casedata", "rho_dispersed", RHO_DISPERSED);
+  platform->par->extract("casedata", "nu_continuous", NU_CONTINUOUS);
+  platform->par->extract("casedata", "particle_diameter", PARTICLE_DIAMETER);
+  platform->par->extract("casedata", "gravity_y", GRAVITY_Y);
+  platform->par->extract("casedata", "alpha_min", ALPHA_MIN);
+  platform->par->extract("casedata", "alpha_max", ALPHA_MAX);
+}
+
+void UDF_Setup()
+{
+  auto mesh = nrs->meshV;
+
+  // Initial condition: a circular blob of dispersed phase (alpha = 1 inside,
+  // 0 outside a smoothed radius) sitting in the lower half of the domain, so
+  // that buoyancy (GRAVITY_Y < 0 with RHO_DISPERSED < 1, i.e. a light phase
+  // like bubbles rising) drives visible relative motion for a first sanity
+  // check of the drag/PEA coupling.
+  auto [x, y, z] = mesh->xyzHost();
+  std::vector<dfloat> alpha(nrs->scalar->fieldOffset(), 0.0);
+  const dfloat r0 = 0.1;
+  const dfloat x0 = 0.0;
+  const dfloat y0 = -0.3;
+  for (int n = 0; n < mesh->Nlocal; n++) {
+    const auto r = sqrt((x[n] - x0) * (x[n] - x0) + (y[n] - y0) * (y[n] - y0));
+    alpha[n] = 0.5 * (1.0 - tanh((r - r0) / (0.1 * r0)));
+  }
+  nrs->scalar->o_solution("alpha").copyFrom(alpha.data(), mesh->Nlocal);
+
+  eulerEuler::config_t cfg;
+  cfg.alphaScalarName = "alpha";
+  cfg.rhoContinuous = 1.0; // must match [FLUID VELOCITY] rho
+  cfg.rhoDispersed = RHO_DISPERSED;
+  cfg.nuContinuous = NU_CONTINUOUS; // must match [FLUID VELOCITY] viscosity
+  cfg.particleDiameter = PARTICLE_DIAMETER;
+  cfg.gravity[0] = 0.0;
+  cfg.gravity[1] = GRAVITY_Y;
+  cfg.gravity[2] = 0.0;
+  cfg.dragModel = eulerEuler::DragModel::SchillerNaumann;
+  cfg.alphaMin = ALPHA_MIN;
+  cfg.alphaMax = ALPHA_MAX;
+
+  eulerEuler::setup(cfg);
+}
+
+void UDF_ExecuteStep(double time, int tstep)
+{
+  eulerEuler::step(time, tstep);
+}

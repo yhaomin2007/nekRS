@@ -1,0 +1,139 @@
+// Drag closure: returns Ki such that the interphase momentum transfer force
+// density is  M = alphaD * Ki * (U1 - U2)  [consistent with OpenFOAM's
+// dragModel::K(), i.e. Ki already carries the factor that multiplies the *slip
+// velocity* alone, not alphaD -- alphaD is applied by the caller].
+//
+// dragModelId: 0 = Schiller-Naumann, 1 = Wen-Yu, 2 = Ergun, 3 = Gidaspow
+inline dfloat eulerEuler_dragKi(const int dragModelId,
+                                 const dfloat alphaC,
+                                 const dfloat rhoC,
+                                 const dfloat nuC,
+                                 const dfloat d,
+                                 const dfloat relVelMag)
+{
+  const dfloat alphaCSafe = (alphaC > 1e-6) ? alphaC : 1e-6;
+  const dfloat Re = alphaCSafe * relVelMag * d / nuC;
+
+  dfloat CdRe;
+  if (dragModelId == 0) {
+    // Schiller-Naumann
+    CdRe = (Re < 1000.0) ? 24.0 * (1.0 + 0.15 * pow(Re, 0.687)) : 0.44 * Re;
+  } else if (dragModelId == 1) {
+    // Wen-Yu
+    const dfloat Res = alphaCSafe * Re;
+    const dfloat CdReS = (Res < 1000.0) ? 24.0 * (1.0 + 0.15 * pow(Res, 0.687)) : 0.44 * Res;
+    CdRe = CdReS * pow(alphaCSafe, -3.65);
+  } else if (dragModelId == 2) {
+    // Ergun
+    CdRe = (4.0 / 3.0) * (150.0 * (1.0 - alphaCSafe) / alphaCSafe + 1.75 * Re);
+  } else {
+    // Gidaspow: Ergun below alphaC = 0.8 (dense), Wen-Yu above (dilute)
+    const dfloat CdReErgun = (4.0 / 3.0) * (150.0 * (1.0 - alphaCSafe) / alphaCSafe + 1.75 * Re);
+    const dfloat Res = alphaCSafe * Re;
+    const dfloat CdReS = (Res < 1000.0) ? 24.0 * (1.0 + 0.15 * pow(Res, 0.687)) : 0.44 * Res;
+    const dfloat CdReWenYu = CdReS * pow(alphaCSafe, -3.65);
+    CdRe = (alphaCSafe < 0.8) ? CdReErgun : CdReWenYu;
+  }
+
+  return 0.75 * CdRe * rhoC * nuC / (d * d);
+}
+
+// Clamps a phase-fraction field in place to [lo, hi].
+//
+// NOTE: this is a pointwise clip only -- it does not rescale to conserve
+// sum(alpha_k) = 1 exactly (there are only 2 phases and only one is transported,
+// so this is a Phase-0-acceptable simplification; see design doc TODO).
+@kernel void clipAlpha(const dlong N, const dfloat lo, const dfloat hi, @restrict dfloat *alpha)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    if (n < N) {
+      dfloat a = alpha[n];
+      a = (a < lo) ? lo : a;
+      a = (a > hi) ? hi : a;
+      alpha[n] = a;
+    }
+  }
+}
+
+// Closed-form 2-phase Partial Elimination Algorithm (PEA) step: implicitly
+// couples the continuous-phase velocity U1 (nekRS's nrs->fluid->o_U) and the
+// dispersed-phase velocity U2 (this plugin's o_U2) through the linearized drag
+// force, then explicitly adds the dispersed phase's buoyancy term
+// alphaD*(rhoD - rhoC)*g (reduced gravity form -- the continuous phase's own
+// gravity forcing, if any, is expected to already be applied by nekRS's usual
+// body-force mechanism and is intentionally NOT duplicated here).
+//
+// Per component i, the 2x2 system solved per node is:
+//   (A1 + K) U1_i - K U2_i = A1 U1_i^old
+//  -K U1_i + (A2 + K) U2_i = A2 U2_i^old + alphaD (rhoD - rhoC) g_i
+// with A1 = alphaC*rhoC*g0/dt, A2 = alphaD*rhoD*g0/dt, K = alphaD*Ki(...).
+@kernel void partialElimination(const dlong N,
+                                 const dlong fieldOffset,
+                                 const int dragModelId,
+                                 const dfloat rhoC,
+                                 const dfloat rhoD,
+                                 const dfloat nuC,
+                                 const dfloat d,
+                                 const dfloat gx,
+                                 const dfloat gy,
+                                 const dfloat gz,
+                                 const dfloat g0,
+                                 const dfloat dt,
+                                 @restrict const dfloat *alpha,
+                                 @restrict dfloat *U1,
+                                 @restrict dfloat *U2)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    if (n < N) {
+      dfloat alphaD = alpha[n];
+      alphaD = (alphaD < 0.0) ? 0.0 : alphaD;
+      alphaD = (alphaD > 1.0) ? 1.0 : alphaD;
+      const dfloat alphaC = 1.0 - alphaD;
+
+      const dfloat alphaDSafe = (alphaD > 1e-6) ? alphaD : 1e-6;
+      const dfloat alphaCSafe = (alphaC > 1e-6) ? alphaC : 1e-6;
+
+      const dfloat u1x = U1[n + 0 * fieldOffset];
+      const dfloat u1y = U1[n + 1 * fieldOffset];
+      const dfloat u1z = U1[n + 2 * fieldOffset];
+
+      const dfloat u2x = U2[n + 0 * fieldOffset];
+      const dfloat u2y = U2[n + 1 * fieldOffset];
+      const dfloat u2z = U2[n + 2 * fieldOffset];
+
+      const dfloat rx = u1x - u2x;
+      const dfloat ry = u1y - u2y;
+      const dfloat rz = u1z - u2z;
+      const dfloat relVelMag = sqrt(rx * rx + ry * ry + rz * rz) + 1e-14;
+
+      const dfloat Ki = eulerEuler_dragKi(dragModelId, alphaCSafe, rhoC, nuC, d, relVelMag);
+      const dfloat K = alphaD * Ki;
+
+      const dfloat A1 = alphaCSafe * rhoC * g0 / dt;
+      const dfloat A2 = alphaDSafe * rhoD * g0 / dt;
+
+      const dfloat buoyX = alphaD * (rhoD - rhoC) * gx;
+      const dfloat buoyY = alphaD * (rhoD - rhoC) * gy;
+      const dfloat buoyZ = alphaD * (rhoD - rhoC) * gz;
+
+      const dfloat det = (A1 + K) * (A2 + K) - K * K;
+      const dfloat invDet = 1.0 / det;
+
+      const dfloat rhs1x = A1 * u1x;
+      const dfloat rhs1y = A1 * u1y;
+      const dfloat rhs1z = A1 * u1z;
+
+      const dfloat rhs2x = A2 * u2x + buoyX;
+      const dfloat rhs2y = A2 * u2y + buoyY;
+      const dfloat rhs2z = A2 * u2z + buoyZ;
+
+      U1[n + 0 * fieldOffset] = ((A2 + K) * rhs1x + K * rhs2x) * invDet;
+      U1[n + 1 * fieldOffset] = ((A2 + K) * rhs1y + K * rhs2y) * invDet;
+      U1[n + 2 * fieldOffset] = ((A2 + K) * rhs1z + K * rhs2z) * invDet;
+
+      U2[n + 0 * fieldOffset] = (K * rhs1x + (A1 + K) * rhs2x) * invDet;
+      U2[n + 1 * fieldOffset] = (K * rhs1y + (A1 + K) * rhs2y) * invDet;
+      U2[n + 2 * fieldOffset] = (K * rhs1z + (A1 + K) * rhs2z) * invDet;
+    }
+  }
+}

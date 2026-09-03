@@ -1,0 +1,51 @@
+# eulerEuler plugin template case.
+#
+# UNVERIFIED: this mesh is reused as-is from examples/lowMach/lowMach.re2 (no
+# build toolchain was available to run genbox/exo2nek in the sandbox this was
+# authored in). The domain/BC layout below assumes lowMach's 2D box (a slab
+# with two udfDirichlet x-boundaries, symmetric/periodic elsewhere) -- verify
+# against `examples/lowMach/input.box` and adjust boundaryTypeMap if your
+# actual mesh differs before running. See ../../src/app/nrs/plugins/EULER_EULER_DESIGN.md.
+
+userSections = CASEDATA
+
+[GENERAL]
+polynomialOrder = 7
+stopAt = numSteps
+numSteps = 300
+dt = 1e-03
+timeStepper = tombo2
+checkpointInterval = 100
+
+# ALPHA = dispersed-phase (e.g. bubble/particle) volume fraction, transported
+# with nekRS's native CG scalar solver. Per the accepted Phase 0 simplification
+# this is stabilized with a numerical diffusivity instead of a bound-preserving
+# (MULES-style) scheme, then pointwise-clipped every step by eulerEuler::step().
+scalars = ALPHA
+
+[FLUID PRESSURE]
+residualTol = 1e-08
+initialGuess = previous
+
+[FLUID VELOCITY]
+boundaryTypeMap = udfDirichlet
+residualTol = 1e-12
+rho = 1.0
+viscosity = 1e-03
+
+[SCALAR ALPHA]
+boundaryTypeMap = udfDirichlet
+residualTol = 1e-12
+# Artificial numerical diffusivity (Phase 0 simplification). Grid-Peclet sizing
+# rule of thumb: nu_art ~ |u|*h/(2N), h = element size, N = polynomialOrder.
+# Tune per case -- too small and alpha will oscillate/overshoot at fronts, too
+# large and the interface will smear.
+diffusivity = 1e-04
+
+[CASEDATA]
+RHO_DISPERSED = 0.1
+NU_CONTINUOUS = 1e-03
+PARTICLE_DIAMETER = 1e-03
+GRAVITY_Y = -9.81
+ALPHA_MIN = 0.0
+ALPHA_MAX = 0.999
