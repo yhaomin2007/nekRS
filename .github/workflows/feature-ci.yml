@@ -1,0 +1,67 @@
+name: Feature CI
+
+on:
+  workflow_dispatch:
+
+  push:
+    branches:
+      - "feature/**"
+
+  pull_request:
+    branches:
+      - master
+      - "feature/**"
+
+env:
+  GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+  NEKRS_HOME: "${{ github.workspace }}/.local/nekrs"
+  MPICH_FC: "gfortran"
+  NEKRS_EXAMPLES: "${{ github.workspace }}/.local/nekrs/examples"
+  NEKRS_COMPILER_FLAGS: "-O2"
+  NRSCONFIG_NOBUILD: "1"
+  RUNNER_ARCH: "X64"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build-and-two-fluid-smoke:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: true
+
+      - name: APT dependencies
+        run: |
+          sudo apt -y update
+          sudo apt install -y mpich libmpich-dev
+
+      - name: Configure and build nekRS
+        run: |
+          CC=mpicc CXX=mpic++ FC=mpif77 ./build.sh \
+            -DENABLE_CVODE=OFF \
+            -DNEKRS_CXX_FLAGS=${{ env.NEKRS_COMPILER_FLAGS }} \
+            -DNEKRS_C_FLAGS=${{ env.NEKRS_COMPILER_FLAGS }} \
+            -DNEKRS_Fortran_FLAGS=${{ env.NEKRS_COMPILER_FLAGS }} \
+            -DCMAKE_INSTALL_PREFIX=${{ env.NEKRS_HOME }} \
+            -DOCCA_CXXFLAGS=${{ env.NEKRS_COMPILER_FLAGS }}
+          cmake --build build --target install -j 4
+
+      - name: Configure examples
+        working-directory: ${{ env.NEKRS_EXAMPLES }}
+        run: cmake -S . -B build
+
+      - name: Run two-fluid periodic-pipe test
+        working-directory: ${{ env.NEKRS_EXAMPLES }}/build
+        run: ctest --output-on-failure -V -R "^twoFluidPeriodicPipe_1$"
+
+      - name: Run two-fluid inlet-outlet test
+        working-directory: ${{ env.NEKRS_EXAMPLES }}/build
+        run: ctest --output-on-failure -V -R "^twoFluidInletOutletPipe_1$"
+
+      - name: Run single-fluid regression smoke test
+        working-directory: ${{ env.NEKRS_EXAMPLES }}/build
+        run: ctest --output-on-failure -R "^lowMach_1$"
