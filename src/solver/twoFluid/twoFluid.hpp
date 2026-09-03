@@ -50,6 +50,8 @@ public:
   dfloat mixtureContinuityTolerance = 1e-9;
   int couplingIterations = 2;
   int pressureCorrectors = 2;
+  int pressureMaxIterations = 100;
+  int pressureRestartVectors = 30;
   bool projectionOnly = false;
   bool nativeAlphaScalar = false;
   bool freezeAlpha = false;
@@ -101,7 +103,6 @@ private:
   occa::memory o_pressureCouplingPrevious;
   dfloat alphaCouplingRelativeL2 = 0;
   int currentCouplingIteration = -1;
-  bool pressureOperatorCompared = false;
 
   void phasePressureFlux(fluidSolver_t *phase, occa::memory o_flux);
   void applyHomogeneousVelocityMask(fluidSolver_t *phase,

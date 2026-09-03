@@ -16,6 +16,8 @@ void parseTwoFluidSection(const int rank, setupAide &options, inipp::Ini *ini)
   options.setArgs("TWO FLUID MIXTURE CONTINUITY TOLERANCE", "1e-9");
   options.setArgs("TWO FLUID COUPLING ITERATIONS", "2");
   options.setArgs("TWO FLUID PRESSURE CORRECTORS", "2");
+  options.setArgs("TWO FLUID PRESSURE MAX ITERATIONS", "100");
+  options.setArgs("TWO FLUID PRESSURE RESTART VECTORS", "30");
   options.setArgs("TWO FLUID PROJECTION ONLY", "FALSE");
   options.setArgs("TWO FLUID NATIVE ALPHA SCALAR", "FALSE");
   options.setArgs("TWO FLUID FREEZE ALPHA", "FALSE");
@@ -65,6 +67,14 @@ void parseTwoFluidSection(const int rank, setupAide &options, inipp::Ini *ini)
   int pressureCorrectors;
   if (ini->extract("two fluid", "pressurecorrectors", pressureCorrectors))
     options.setArgs("TWO FLUID PRESSURE CORRECTORS", std::to_string(pressureCorrectors));
+
+  int pressureMaxIterations;
+  if (ini->extract("two fluid", "pressuremaxiterations", pressureMaxIterations))
+    options.setArgs("TWO FLUID PRESSURE MAX ITERATIONS", std::to_string(pressureMaxIterations));
+
+  int pressureRestartVectors;
+  if (ini->extract("two fluid", "pressurerestartvectors", pressureRestartVectors))
+    options.setArgs("TWO FLUID PRESSURE RESTART VECTORS", std::to_string(pressureRestartVectors));
 
   bool projectionOnly;
   if (ini->extract("two fluid", "projectiononly", projectionOnly))

@@ -31,3 +31,5 @@ gravityY = 0.0
 gravityZ = 0.0
 couplingIterations = 1
 pressureCorrectors = 1
+pressureMaxIterations = 200
+pressureRestartVectors = 40
