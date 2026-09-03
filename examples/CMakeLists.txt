@@ -118,6 +118,8 @@ add("ethier" 2 "ethier.par" "22" ON "${dir}" "${BUILD_ONLY}")
 
 add("lowMach" 2 "lowMach.par" "1" "${USE_FP32}" "${dir}" "${BUILD_ONLY}")
 
+add("eulerEulerTemplate" 2 "eulerEulerTemplate.par" "1" "${USE_FP32}" "${dir}" "${BUILD_ONLY}")
+
 add("mv_cyl" 2 "mv_cyl.par" "1;2;3;5;6" "${USE_FP32}" "${dir}" "${BUILD_ONLY}")
 add("mv_cyl_derived_bc" 2 "mv_cyl_derived_bc.par" "1;2;3;5;6" "${USE_FP32}" "${EXAMPLES_DIR}/mv_cyl" "${BUILD_ONLY}")
 

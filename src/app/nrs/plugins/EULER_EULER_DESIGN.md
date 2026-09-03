@@ -88,11 +88,17 @@ has no other forcing path yet.
    clip bound. A grid-Peclet-based sizing rule for the diffusivity is
    `nu_art ~ |u|*h/(2N)` (h = element size, N = polynomial order) -- start
    there and tune per case.
-4. **Not compiled/tested.** This sandboxed environment has no build toolchain
-   (no cmake/g++/nvcc/mpicc), so none of this has been compiled. The code was
-   written by directly reading the real APIs in this checkout
-   (`solver.hpp`, `fluidSolver.hpp`, `scalarSolver.hpp`, `nrs.hpp`,
-   `lowMach.cpp`/`.hpp`), but it must be build-verified before trusting it.
+4. **Compile-verification now runs in CI, but is a smoke test only.**
+   `.github/workflows/ci.yml` now has an `eulerEulerTemplate` job (triggered
+   automatically on push to `ee_claude`, same as `master`) that builds
+   `libnekrs` -- with `eulerEuler.cpp` now correctly listed in
+   `cmake/nekrs.cmake`'s `APP_SOURCES` -- and runs a short (20-step) instance
+   of `examples/eulerEulerTemplate` via `examples/eulerEulerTemplate/ci.inc`.
+   That harness only checks that the run completes without diverging (both
+   phase velocities stay finite, alpha stays within `[0,1]`) -- there is no
+   verified reference solution to regress against yet, since the physics
+   hasn't been validated. A green CI run means "compiles and doesn't blow up
+   for this short run," not "physically correct."
 
 ## Wiring a case (see `examples/eulerEulerTemplate/`)
 

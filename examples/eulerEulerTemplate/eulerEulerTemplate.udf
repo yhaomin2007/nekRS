@@ -4,6 +4,7 @@
 // boundary layout lowMach.udf uses -- adjust to your actual mesh.
 
 #include "eulerEuler.hpp"
+#include "ci.inc"
 
 static dfloat RHO_DISPERSED;
 static dfloat NU_CONTINUOUS;
@@ -35,6 +36,11 @@ void UDF_LoadKernels(deviceKernelProperties &kernelInfo)
 
 void UDF_Setup0(MPI_Comm comm, setupAide &options)
 {
+  options.getArgs("CI-MODE", ciMode);
+  if (ciMode) {
+    ciSetup(comm, options);
+  }
+
   platform->par->extract("casedata", "rho_dispersed", RHO_DISPERSED);
   platform->par->extract("casedata", "nu_continuous", NU_CONTINUOUS);
   platform->par->extract("casedata", "particle_diameter", PARTICLE_DIAMETER);
@@ -82,4 +88,8 @@ void UDF_Setup()
 void UDF_ExecuteStep(double time, int tstep)
 {
   eulerEuler::step(time, tstep);
+
+  if (ciMode) {
+    ciTestErrors(nrs, time, tstep);
+  }
 }
