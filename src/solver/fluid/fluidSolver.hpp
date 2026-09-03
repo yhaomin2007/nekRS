@@ -93,10 +93,9 @@ public:
 
   void solve(double time, int stage) override
   {
-    // In two-fluid mode the coordinator owns the shared-pressure correction.
-    // Each phase solve here is therefore momentum-only; this avoids running an
-    // independent NekRS pressure predictor in addition to the mixture-pressure
-    // correction performed later in the coupling iteration.
+    // In two-fluid mode the coordinator solves the shared pressure before
+    // calling either phase. Each phase call here is therefore momentum-only;
+    // this avoids running a second, independent pressure solve.
     if (createPressureSolver && !twoFluid) solvePressure(time, stage);
     solveVelocity(time, stage);
   };

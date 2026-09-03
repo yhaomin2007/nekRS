@@ -1928,15 +1928,22 @@ bool nrs_t::runInnerStep(std::function<bool(int)> convergenceCheck, int iter, bo
         twoFluid->correctMixtureContinuity(timeNew);
       } else {
         // Deliberately use a single segregated pass per physical time step:
-        // native alpha scalar -> gas momentum -> liquid momentum -> shared
-        // pressure correction. Nonlinear inner iterations obscure which
+        // native alpha scalar -> shared pressure -> gas momentum -> liquid
+        // momentum. Nonlinear inner iterations obscure which
         // equation first becomes unstable and are not needed for the current
         // inlet-outlet verification case.
         twoFluid->advanceVolumeFraction(0);
         twoFluid->refreshCouplingForcing(timeNew, tstep);
+        // Form and solve the shared pressure equation from the two phase
+        // momentum right-hand sides before either Helmholtz velocity solve.
+        // For frozen alpha, equal properties, zero drag and identical phase
+        // data this reduces algebraically to the native single-fluid NekRS
+        // pressure-before-velocity sequence.
+        twoFluid->solvePressure(timeNew, iter);
         gas->solve(timeNew, iter);
         fluid->solve(timeNew, iter);
-        twoFluid->correctMixtureContinuity(timeNew);
+        twoFluid->updateDiagnostics();
+        twoFluid->reportContinuity("nativePressureSequence");
         twoFluid->finalizeCouplingForcing();
       }
       // Native constant-flow control acts on the carrier liquid. Reproject

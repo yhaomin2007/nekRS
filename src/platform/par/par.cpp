@@ -257,8 +257,6 @@ static std::vector<std::string> twoFluidKeys = {
     {"mixtureContinuityTolerance"},
     {"couplingIterations"},
     {"pressureCorrectors"},
-    {"pressureMaxIterations"},
-    {"pressureRestartVectors"},
     {"projectionOnly"},
     {"gasBoundaryTypeMap"},
     {"nativeAlphaScalar"},

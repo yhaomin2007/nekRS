@@ -19,7 +19,69 @@ void UDF_Setup()
 
 void UDF_ExecuteStep(double time, int tstep)
 {
+  auto mesh = nrs->meshV;
+  const auto comm = platform->comm.mpiComm();
+  const auto o_Uz = nrs->fluid->o_U.slice(2*nrs->fieldOffset,
+                                         mesh->Nlocal);
+  const dfloat uzMin = platform->linAlg->min(mesh->Nlocal, o_Uz, comm);
+  const dfloat uzMax = platform->linAlg->max(mesh->Nlocal, o_Uz, comm);
+  const dfloat uzMean = platform->linAlg->innerProd(mesh->Nlocal,
+                                                    mesh->o_LMM,
+                                                    o_Uz,
+                                                    comm)/mesh->volume;
+  const dfloat velocityL2 = platform->linAlg->weightedNorm2Many(
+      mesh->Nlocal,
+      mesh->dim,
+      nrs->fieldOffset,
+      mesh->o_LMM,
+      nrs->fluid->o_U,
+      comm)/sqrt(mesh->volume);
+  const dfloat pressureMin = platform->linAlg->min(mesh->Nlocal,
+                                                   nrs->fluid->o_P,
+                                                   comm);
+  const dfloat pressureMax = platform->linAlg->max(mesh->Nlocal,
+                                                   nrs->fluid->o_P,
+                                                   comm);
+  const dfloat pressureMean = platform->linAlg->innerProd(mesh->Nlocal,
+                                                          mesh->o_LMM,
+                                                          nrs->fluid->o_P,
+                                                          comm)/mesh->volume;
+  const dfloat pressureL2 = platform->linAlg->weightedNorm2(
+      mesh->Nlocal,
+      mesh->o_LMM,
+      nrs->fluid->o_P,
+      comm)/sqrt(mesh->volume);
+
   if (platform->comm.mpiRank() == 0 && (tstep == 0 || nrs->lastStep)) {
-    printf("OpenFOAM-bubbleColumn A0 step=%d time=%g\n", tstep, time);
+    printf("OpenFOAM-bubbleColumn A0 step=%d time=%g "
+           "UzL=[%.8e,%.8e] meanUzL=%.8e "
+           "L2(UL)=%.8e p=[%.8e,%.8e] pMean=%.8e L2(p)=%.8e\n",
+           tstep, time, uzMin, uzMax, uzMean, velocityL2,
+           pressureMin, pressureMax, pressureMean, pressureL2);
+  }
+
+  if (nrs->gas && (tstep == 0 || nrs->lastStep)) {
+    auto o_phaseDifference = platform->deviceMemoryPool.reserve<dfloat>(
+        nrs->fluid->fieldOffsetSum);
+    o_phaseDifference.copyFrom(nrs->gas->o_U,
+                               nrs->fluid->fieldOffsetSum);
+    platform->linAlg->axpbyMany(mesh->Nlocal,
+                                mesh->dim,
+                                nrs->fieldOffset,
+                                -1.0,
+                                nrs->fluid->o_U,
+                                1.0,
+                                o_phaseDifference);
+    const dfloat phaseDifference = platform->linAlg->weightedNorm2Many(
+        mesh->Nlocal,
+        mesh->dim,
+        nrs->fieldOffset,
+        mesh->o_LMM,
+        o_phaseDifference,
+        comm)/sqrt(mesh->volume);
+    if (platform->comm.mpiRank() == 0) {
+      printf("OpenFOAM-bubbleColumn A0 phase L2(UG-UL)=%.8e\n",
+             phaseDifference);
+    }
   }
 }

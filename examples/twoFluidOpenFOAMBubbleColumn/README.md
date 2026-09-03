@@ -34,6 +34,25 @@ Acceptance:
 - U_g and U_l stay equal when initialized/equipped identically;
 - the solution collapses to the native single-fluid nekRS result.
 
+Run `bubbleColumnA0.par` for the equal-phase two-fluid result and
+`bubbleColumnA0SingleFluid.par` for the native NekRS reference. Both cases use
+the same mesh, time step, initial condition, velocity boundary conditions,
+density and viscosity. Compare the reported `UzL` and `p` ranges and means,
+then compare the checkpoint velocity and pressure fields directly. Equality
+of the two phase velocities alone is not an acceptance criterion.
+
+Generate the shared mesh once and run both cases from this directory:
+
+```bash
+genbox <<<'input.box'
+nekrs --setup bubbleColumnA0SingleFluid.par
+nekrs --setup bubbleColumnA0.par
+```
+
+The first comparison is deliberately limited to Stage A0. Do not enable drag,
+gravity, unequal properties or alpha transport until the two runs produce the
+same liquid velocity and pressure fields to solver tolerance.
+
 ### Stage A1: inlet/outlet kinematic test
 
 Keep K=0 and frozen alpha, but use the OpenFOAM inlet topology. This tests the common-pressure boundary handling without adding interfacial physics.
