@@ -113,6 +113,8 @@ private:
   void pressureCorrectionOperator(const occa::memory &o_phi,
                                   occa::memory o_Aphi);
   void updatePhaseFluxes();
+  void strongDivergence(const occa::memory &o_velocity,
+                        occa::memory o_divergence);
   void weakDivergence(const occa::memory &o_velocity, occa::memory o_divergence);
   void updatePressureResponse(bool scaleForMomentumPredictor);
   void reportCouplingIteration(int couplingIteration);

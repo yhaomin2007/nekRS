@@ -7,6 +7,7 @@
 #include "bdryBase.hpp"
 #include "linAlg.hpp"
 #include "linearSolverFactory.hpp"
+#include "opSEM.hpp"
 #include "registerKernels.hpp"
 #include "scalarSolver.hpp"
 
@@ -699,7 +700,12 @@ void twoFluid_t::pressureCorrectionOperator(const occa::memory &o_phi,
                          o_deltaLiquid,
                          o_deltaGas,
                          o_deltaMixture);
-  weakDivergence(o_deltaMixture, o_Aphi);
+  // The velocity response is M^{-1} G^T phi.  Close the Schur
+  // complement with NekRS's strong divergence D, not with a second weak
+  // derivative.  The latter would form G^T M^{-1} G^T and is neither the
+  // native pressure operator nor the divergence of the applied velocity
+  // correction.
+  strongDivergence(o_deltaMixture, o_Aphi);
   platform->linAlg->scale(mesh->Nlocal, -1.0, o_Aphi);
   liquid->ellipticSolverP->applyMask(o_Aphi);
 }
@@ -718,7 +724,7 @@ void twoFluid_t::correctMixtureContinuity(double time, const char *stageLabel)
     updatePhaseFluxes();
 
     auto o_preRm = platform->deviceMemoryPool.reserve<dfloat>(liquid->fieldOffset);
-    weakDivergence(o_mixtureVelocity, o_preRm);
+    strongDivergence(o_mixtureVelocity, o_preRm);
     const dfloat preL2 = volumeScale * platform->linAlg->weightedNorm2(
         mesh->Nlocal, mesh->o_LMM, o_preRm, comm);
     const dfloat preMax = platform->linAlg->amax(mesh->Nlocal, o_preRm, comm);
@@ -875,7 +881,7 @@ void twoFluid_t::correctMixtureContinuity(double time, const char *stageLabel)
     pressureCorrectionOperator(o_phi, o_Aphi);
     auto o_divCorrection = platform->deviceMemoryPool.reserve<dfloat>(
         liquid->fieldOffset);
-    weakDivergence(o_deltaMixture, o_divCorrection);
+    strongDivergence(o_deltaMixture, o_divCorrection);
     liquid->ellipticSolverP->applyMask(o_divCorrection);
     platform->linAlg->axpby(mesh->Nlocal,
                             1.0,
@@ -890,7 +896,7 @@ void twoFluid_t::correctMixtureContinuity(double time, const char *stageLabel)
 
     updatePhaseFluxes();
     auto o_postRm = platform->deviceMemoryPool.reserve<dfloat>(liquid->fieldOffset);
-    weakDivergence(o_mixtureVelocity, o_postRm);
+    strongDivergence(o_mixtureVelocity, o_postRm);
     dfloat postL2 = volumeScale * platform->linAlg->weightedNorm2(
         mesh->Nlocal, mesh->o_LMM, o_postRm, comm);
     dfloat postMax = platform->linAlg->amax(mesh->Nlocal, o_postRm, comm);
@@ -969,10 +975,10 @@ void twoFluid_t::updateDiagnostics()
                o_drag,
                o_slipVelocity,
                o_interphaseForce);
-  weakDivergence(liquid->o_U, o_divergenceLiquid);
-  weakDivergence(gas->o_U, o_divergenceGas);
-  weakDivergence(o_phaseFluxLiquid, o_divergencePhaseFluxLiquid);
-  weakDivergence(o_phaseFluxGas, o_divergencePhaseFluxGas);
+  strongDivergence(liquid->o_U, o_divergenceLiquid);
+  strongDivergence(gas->o_U, o_divergenceGas);
+  strongDivergence(o_phaseFluxLiquid, o_divergencePhaseFluxLiquid);
+  strongDivergence(o_phaseFluxGas, o_divergencePhaseFluxGas);
   launchKernel("twoFluid::massResidual",
                mesh->Nlocal,
                1.0 / liquid->dt[0],
@@ -983,6 +989,15 @@ void twoFluid_t::updateDiagnostics()
                o_liquidContinuityResidual,
                o_gasContinuityResidual,
                o_continuityResidual);
+}
+
+void twoFluid_t::strongDivergence(const occa::memory &o_velocity,
+                                  occa::memory o_divergence)
+{
+  opSEM::strongDivergence(liquid->mesh,
+                          liquid->fieldOffset,
+                          o_velocity,
+                          o_divergence);
 }
 
 void twoFluid_t::weakDivergence(const occa::memory &o_velocity,
