@@ -17,7 +17,7 @@ residualTol = 1e-04
 boundaryTypeMap = udfDirichlet, zeroNeumann, zeroDirichlet
 rho = 1.0
 viscosity = 1/19000
-residualTol = 1e-06
+residualTol = 1e-10
 
 [CASEDATA]
 NSLABS = 60
