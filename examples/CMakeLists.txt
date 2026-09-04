@@ -15,7 +15,7 @@ set(LAUNCHER "${NEKRS_HOME}/bin/nrsmpi" CACHE STRING "Path to the launcher execu
 set(NRANKS "0" CACHE STRING "Number of MPI ranks to run a test")
 set(TESTS "")
 
- message(STATUS "backend: ${BACKEND}")
+message(STATUS "backend: ${BACKEND}")
 if(NRANKS GREATER 0)
   message(STATUS "numer of MPI ranks to run tests: ${NRANKS}")
 endif()
@@ -45,17 +45,17 @@ function(add target num_processes par_file cimodes fp32 working_directory build_
 
   foreach(cimode ${cimodes})
     set (name "${target}_${cimode}")
-    list(APPEND TESTS ${test_name}) 
+    list(APPEND TESTS ${test_name})
     message(STATUS "adding test ${name}")
- 
+
     if(NOT TARGET ${target})
       add_custom_target(${target})
     endif()
- 
+
     if(NRANKS GREATER 0)
       set(num_processes ${NRANKS})
     endif()
- 
+
     if(build_only)
       add_test(NAME ${name} WORKING_DIRECTORY ${working_directory}
                COMMAND ${LAUNCHER} ${par_file} ${num_processes} --cimode ${cimode} --build-only ${num_processes})
@@ -64,7 +64,7 @@ function(add target num_processes par_file cimodes fp32 working_directory build_
                COMMAND ${LAUNCHER} ${par_file} ${num_processes} --cimode ${cimode})
     endif()
 
-    if("${name}" STREQUAL "ethier_14") 
+    if("${name}" STREQUAL "ethier_14")
       set_tests_properties(${name} PROPERTIES ENVIRONMENT "NEKRS_MPI_THREAD_MULTIPLE=1")
     endif()
 
@@ -78,7 +78,7 @@ set(BUILD_ONLY OFF)
 set(dir "")
 
 function(add_eddy_neknek)
-  set(name "eddyNekNek") 
+  set(name "eddyNekNek")
 
   if(NRANKS GREATER 0 AND NOT NRANKS EQUAL 2)
     message (STATUS "disabling test ${name}")
@@ -90,7 +90,7 @@ function(add_eddy_neknek)
 endfunction()
 
 function(add_eddy_nekneknek)
-  set(name "eddyNekNekNek") 
+  set(name "eddyNekNekNek")
   set(dir "${EXAMPLES_DIR}/eddyNekNek")
 
   if(NRANKS GREATER 0 AND NOT NRANKS EQUAL 3)
@@ -130,6 +130,16 @@ add("shlChannel" 2 "channel.par" "1;2" "${USE_FP32}" "${dir}" "${BUILD_ONLY}")
 add("ktauChannel" 2 "channel.par" "1;2" "${USE_FP32}" "${dir}" "${BUILD_ONLY}")
 
 add("periodicHill" 2 "periodicHill.par" "1;2;3" "${USE_FP32}" "${dir}" "${BUILD_ONLY}")
+
+# Euler-Euler development regression: execute a short eeTurbPipe run and make
+# the identical-phase reduction a hard CI gate. The wrapper streams the solver
+# output and fails unless the final ug-ul relL2 and maxAbs are both < 1e-4.
+add_test(NAME eeTurbPipe_1
+         WORKING_DIRECTORY "${EXAMPLES_DIR}/eeTurbPipe"
+         COMMAND bash "${EXAMPLES_DIR}/eeTurbPipe/check_reduction.sh"
+                 ${LAUNCHER} eeTurbPipe.ci.par 2 1)
+set_tests_properties(eeTurbPipe_1 PROPERTIES ENVIRONMENT "FP32=0")
+set_tests_properties(eeTurbPipe_1 PROPERTIES RESOURCE_LOCK "${EXAMPLES_DIR}/eeTurbPipe")
 
 add_eddy_neknek()
 add_eddy_nekneknek()

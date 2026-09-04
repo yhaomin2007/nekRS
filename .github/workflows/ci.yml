@@ -4,6 +4,10 @@ on:
   # allows us to run workflows manually
   workflow_dispatch:
 
+  pull_request:
+    branches:
+      - master
+
   push:
     branches:
       - master 
@@ -53,10 +57,55 @@ jobs:
         path: ${{ env.NEKRS_HOME }}
         if-no-files-found: error
 
-#    - name: Setup tmate session
-#      uses: mxschmitt/action-tmate@v3
-#      timeout-minutes: 3 
-#      if: ${{ github.event_name == 'workflow_dispatch' }}
+  eeTurbPipe:
+    needs: install
+    runs-on: ubuntu-22.04
+    steps:
+
+    - uses: actions/checkout@v4
+      with:
+        clean: true
+
+    - name: APT dependencies
+      run: |
+        sudo apt -y update
+        sudo apt install -y mpich libmpich-dev
+
+    - name: Download install dir
+      uses: actions/download-artifact@v4
+      with:
+        name: install-dir
+        path: ${{ env.NEKRS_HOME }}
+
+    - name: Set install dir permissions
+      run: chmod -R 755 ${{ env.NEKRS_HOME }}
+
+    - name: Stage eeTurbPipe CI case files
+      run: |
+        cd "${NEKRS_EXAMPLES}/eeTurbPipe"
+        ln -sf ../turbPipe/turbPipe.re2 eeTurbPipe.ci.re2
+        ln -sf eeTurbPipe.udf eeTurbPipe.ci.udf
+
+    - name: 'eeTurbPipe short runtime regression'
+      working-directory: ${{ env.NEKRS_EXAMPLES }}/build
+      run: ctest --output-on-failure -R '^eeTurbPipe_1$'
+
+    - name: Show eeTurbPipe diagnostics
+      if: always()
+      run: |
+        if [ -f "${NEKRS_EXAMPLES}/eeTurbPipe/logfile" ]; then
+          echo "===== eeTurbPipe logfile tail ====="
+          tail -n 250 "${NEKRS_EXAMPLES}/eeTurbPipe/logfile"
+        fi
+
+    - name: Upload eeTurbPipe logfile
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: eeTurbPipe-logfile
+        retention-days: 7
+        path: ${{ env.NEKRS_EXAMPLES }}/eeTurbPipe/logfile
+        if-no-files-found: warn
 
   ethier:
     needs: install

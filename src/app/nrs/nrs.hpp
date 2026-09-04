@@ -28,7 +28,7 @@ public:
   std::string id() const override
   {
     return "nrs";
-  };
+  }
 
   void registerKernels(occa::properties kernelInfoBC) override;
   void setDefaultSettings(setupAide &options) override;
@@ -91,7 +91,7 @@ public:
 
   bool fieldsToSolveContains(const std::string& value) {
     return std::find(fieldsToSolve().begin(), fieldsToSolve().end(), value) != fieldsToSolve().end();
-  };
+  }
 
   void saveSolutionState();
   void restoreSolutionState();
@@ -141,6 +141,11 @@ public:
   std::unique_ptr<fluidSolver_t> fluid = nullptr;
   std::unique_ptr<geomSolver_t> geom = nullptr;
   std::unique_ptr<scalar_t> scalar = nullptr;
+
+  // Euler-Euler development: the existing fluid velocity is the liquid
+  // velocity u_l.  Only the additional gas velocity u_g is stored here.
+  // alpha_g is fixed at 0.1 for the first verification stage.
+  deviceMemory<dfloat> o_Ug;
 
   dfloat flowRateScaleFactor();
 
@@ -196,7 +201,7 @@ public:
     std::unique_ptr<tavg> _rm2;
   };
   friend class nrs_t::tavgLegacy_t; 
-  std::unique_ptr<nrs_t::tavgLegacy_t> tavgLegacy = nullptr;
+  std::unique_ptr<tavgLegacy_t> tavgLegacy = nullptr;
 
   class bdry : public bdryBase
   {
