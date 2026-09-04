@@ -236,11 +236,9 @@ void UDF_Setup()
     }
   };
 
-  nrs->addUserCheckpointField(
-      "eeGasVelocity",
-      {nrs->o_Ug.slice(0 * nrs->fluid->fieldOffset, mesh->Nlocal),
-       nrs->o_Ug.slice(1 * nrs->fluid->fieldOffset, mesh->Nlocal),
-       nrs->o_Ug.slice(2 * nrs->fluid->fieldOffset, mesh->Nlocal)});
+  // Do not register u_g with the legacy Nek checkpoint writer in this
+  // reduction test: iofldNek only accepts its built-in variable names.
+  // The CI regression validates u_g through the per-step norms below.
 }
 
 void UDF_ExecuteStep(double time, int tstep)
