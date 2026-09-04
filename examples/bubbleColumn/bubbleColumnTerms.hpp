@@ -37,7 +37,9 @@ static occa::kernel buildMixtureForceKernel;
 inline void registerKernels(deviceKernelProperties &kernelInfo)
 {
   const std::string request = "bubbleColumn::equations";
-  const std::string fileName = "bubbleColumnEquations.oudf";
+  // This is standalone OKL source.  The .okl suffix is required so OCCA
+  // translates @kernel/@globalPtr before invoking the HIP compiler.
+  const std::string fileName = "bubbleColumnEquations.okl";
   if (platform->options.compareArgs("REGISTER ONLY", "TRUE")) {
     platform->kernelRequests.add(request, fileName, kernelInfo);
   } else {

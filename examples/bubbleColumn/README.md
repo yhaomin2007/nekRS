@@ -13,7 +13,7 @@ The column axis and upward inlet-flow direction are (+z); gravity acts in
 | 3 | wall | no slip | zero normal gradient | no slip (`u_g=0`) |
 
 The standard entry files stay small. `bubbleColumnTerms.hpp` owns device fields
-and SEM operators; `bubbleColumnEquations.oudf` contains equation kernels; and
+and SEM operators; `bubbleColumnEquations.okl` contains equation kernels; and
 `bubbleColumnBoundary.oudf` contains boundary data.
 The equation kernels are registered as a separate OCCA request, so they are not
 injected into every native nekRS boundary-kernel translation unit.
