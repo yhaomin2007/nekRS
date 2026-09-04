@@ -90,9 +90,6 @@ static void applyGasDirichlet(double time)
     return;
   }
 
-  // Evaluate the physical velocity BC directly for the gas field. This avoids
-  // copying already-solved liquid values onto the gas mask and gives u_g an
-  // independent BC evaluation path while retaining the same BC definitions.
   static constexpr dfloat TINY = -1e30;
   auto o_dirichletValues = platform->deviceMemoryPool.reserve<dfloat>(fluid->fieldOffsetSum);
 
@@ -137,9 +134,6 @@ static void applyGasDirichlet(double time)
                nrs->o_Ug);
 }
 
-// First E-E reduction test: pressure and physical coefficients remain shared,
-// while the gas phase owns its velocity elliptic solve, extrapolated state and
-// Dirichlet evaluation. Predictor forcing is separated in the next gate.
 static void solveGasVelocity(double time)
 {
   auto fluid = nrs->fluid.get();
@@ -179,7 +173,7 @@ static void solveGasVelocity(double time)
                mesh->Nlocal,
                fieldOffset,
                fluid->o_rho,
-               fluid->o_JwF,
+               o_JwFg,
                o_gradMueDiv,
                o_gradP,
                o_rhs);
@@ -358,8 +352,12 @@ void UDF_ExecuteStep(double time, int tstep)
 
   o_Uge.copyFrom(nrs->o_Ug, nrs->fluid->fieldOffsetSum);
 
-  // Solve u_g before refreshing usrwrk so the gas solve sees the same recycled
-  // boundary data that was used by the just-completed liquid solve.
+  // Route the gas momentum RHS through its owned forcing buffer.  At this
+  // checkpoint the buffer is seeded from the liquid predictor solely to keep
+  // the identical-phase reduction test bitwise-close while the gas advection
+  // and BDF/EXT forcing assembly are migrated in the next gate.
+  o_JwFg.copyFrom(nrs->fluid->o_JwF, nrs->fluid->fieldOffsetSum);
+
   solveGasVelocity(time);
 
   auto mesh = nrs->fluid->mesh;
@@ -399,7 +397,8 @@ void UDF_ExecuteStep(double time, int tstep)
       std::cout << "eeTurbPipe: gas owns a distinct velocity elliptic solver and mask set" << std::endl;
       std::cout << "eeTurbPipe: gas Dirichlet values are evaluated independently from the common physical BC" << std::endl;
       std::cout << "eeTurbPipe: gas Neumann state uses dedicated o_Uge, not fluid->o_Ue" << std::endl;
-      std::cout << "eeTurbPipe: dedicated gas history/extrapolation/advection/explicit/JwF/Urst buffers allocated"
+      std::cout << "eeTurbPipe: gas velocity RHS now consumes dedicated o_JwFg storage" << std::endl;
+      std::cout << "eeTurbPipe: o_JwFg is still temporarily seeded from the liquid predictor until gas-owned subcycling/forcing is wired"
                 << std::endl;
     }
     std::cout << "eeTurbPipe: step=" << tstep
