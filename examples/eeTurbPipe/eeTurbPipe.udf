@@ -57,9 +57,6 @@ static void setupGasEllipticSolver()
   auto fluid = nrs->fluid.get();
   auto mesh = fluid->mesh;
 
-  // eeTurbPipe intentionally follows the reference turbPipe block velocity
-  // solver. Keep this restriction explicit until the standalone gas solver is
-  // promoted from the reduction test into generic E-E infrastructure.
   nekrsCheck(fluid->ellipticSolver.size() != 1 || fluid->ellipticSolver.at(0)->Nfields() <= 1,
              platform->comm.mpiComm(),
              EXIT_FAILURE,
@@ -73,18 +70,76 @@ static void setupGasEllipticSolver()
                           0.0,
                           o_lambda1);
 
-  gasEllipticSolver =
-      new elliptic(fluid->velocityName, mesh, fluid->fieldOffset, fluid->o_mue, o_lambda1);
+  gasEllipticSolver = new elliptic(fluid->velocityName,
+                                   mesh,
+                                   fluid->fieldOffset,
+                                   fluid->o_mue,
+                                   o_lambda1);
 
   if (platform->comm.mpiRank() == 0) {
     std::cout << "eeTurbPipe: created independent gas velocity elliptic solver" << std::endl;
   }
 }
 
-// First E-E reduction test: the pressure and physical coefficients are shared,
-// while the gas phase owns its velocity elliptic solve and extrapolated state.
-// The predictor forcing is still shared in this checkpoint; it is separated in
-// the next incremental gates.
+static void applyGasDirichlet(double time)
+{
+  auto fluid = nrs->fluid.get();
+  auto mesh = fluid->mesh;
+
+  if (!gasEllipticSolver || !gasEllipticSolver->Nmasked()) {
+    return;
+  }
+
+  // Evaluate the physical velocity BC directly for the gas field. This avoids
+  // copying already-solved liquid values onto the gas mask and gives u_g an
+  // independent BC evaluation path while retaining the same BC definitions.
+  static constexpr dfloat TINY = -1e30;
+  auto o_dirichletValues = platform->deviceMemoryPool.reserve<dfloat>(fluid->fieldOffsetSum);
+
+  for (int sweep = 0; sweep < 2; ++sweep) {
+    platform->linAlg->fill(o_dirichletValues.size(), TINY, o_dirichletValues);
+
+    launchKernel("fluidSolver_t::velocityDirichletBCHex3D",
+                 fluid->o_velocityName,
+                 mesh->Nelements,
+                 fluid->fieldOffset,
+                 time,
+                 mesh->o_sgeo,
+                 mesh->o_x,
+                 mesh->o_y,
+                 mesh->o_z,
+                 mesh->o_vmapM,
+                 mesh->o_EToB,
+                 fluid->o_EToB,
+                 fluid->o_rho,
+                 fluid->o_mue,
+                 0,
+                 o_NULL,
+                 o_NULL,
+                 platform->app->bc->o_usrwrk,
+                 nrs->o_Ug,
+                 o_dirichletValues);
+
+    oogs::startFinish(o_dirichletValues,
+                      mesh->dim,
+                      fluid->fieldOffset,
+                      ogsDfloat,
+                      (sweep == 0) ? ogsMax : ogsMin,
+                      mesh->oogs3);
+  }
+
+  launchKernel("core-maskCopy",
+               gasEllipticSolver->Nmasked(),
+               0,
+               0,
+               gasEllipticSolver->o_maskIds(),
+               o_dirichletValues,
+               nrs->o_Ug);
+}
+
+// First E-E reduction test: pressure and physical coefficients remain shared,
+// while the gas phase owns its velocity elliptic solve, extrapolated state and
+// Dirichlet evaluation. Predictor forcing is separated in the next gate.
 static void solveGasVelocity(double time)
 {
   auto fluid = nrs->fluid.get();
@@ -148,18 +203,7 @@ static void solveGasVelocity(double time)
                o_Uge,
                o_rhs);
 
-  // Use the gas solver's own essential mask. The prescribed values are still
-  // identical to liquid in this reduction test; independent BC evaluation is
-  // the next milestone-1 increment.
-  if (gasEllipticSolver->Nmasked()) {
-    launchKernel("core-maskCopy",
-                 gasEllipticSolver->Nmasked(),
-                 0,
-                 0,
-                 gasEllipticSolver->o_maskIds(),
-                 fluid->o_U,
-                 nrs->o_Ug);
-  }
+  applyGasDirichlet(time);
 
   auto o_lambda1 = platform->deviceMemoryPool.reserve<dfloat>(mesh->Nlocal);
   platform->linAlg->axpby(mesh->Nlocal, g0idt, fluid->o_rho, 0.0, o_lambda1);
@@ -303,9 +347,6 @@ void UDF_Setup()
       }
     }
   };
-
-  // Do not register u_g with the legacy Nek checkpoint writer in this
-  // reduction test: iofldNek only accepts its built-in variable names.
 }
 
 void UDF_ExecuteStep(double time, int tstep)
@@ -315,10 +356,6 @@ void UDF_ExecuteStep(double time, int tstep)
     return;
   }
 
-  // Until the dedicated gas lag/extrapolation update is wired into the core
-  // timestep sequence, use the gas field itself as its own first-order
-  // extrapolated state. This is independent of fluid->o_Ue and is exact for
-  // the identical-phase reduction test at the point this callback executes.
   o_Uge.copyFrom(nrs->o_Ug, nrs->fluid->fieldOffsetSum);
 
   // Solve u_g before refreshing usrwrk so the gas solve sees the same recycled
@@ -360,7 +397,8 @@ void UDF_ExecuteStep(double time, int tstep)
       std::cout << "eeTurbPipe: fixed alpha_g=0.1, alpha_l=0.9; fluid->o_U is u_l; nrs->o_Ug is independently solved u_g"
                 << std::endl;
       std::cout << "eeTurbPipe: gas owns a distinct velocity elliptic solver and mask set" << std::endl;
-      std::cout << "eeTurbPipe: gas Neumann state now uses dedicated o_Uge, not fluid->o_Ue" << std::endl;
+      std::cout << "eeTurbPipe: gas Dirichlet values are evaluated independently from the common physical BC" << std::endl;
+      std::cout << "eeTurbPipe: gas Neumann state uses dedicated o_Uge, not fluid->o_Ue" << std::endl;
       std::cout << "eeTurbPipe: dedicated gas history/extrapolation/advection/explicit/JwF/Urst buffers allocated"
                 << std::endl;
     }
