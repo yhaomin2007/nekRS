@@ -1,0 +1,100 @@
+@kernel void packGasVelocity(const dlong N,
+                             const dlong offset,
+                             @ restrict const dfloat *ugx,
+                             @ restrict const dfloat *ugy,
+                             @ restrict const dfloat *ugz,
+                             @ restrict dfloat *ug)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    ug[n + 0 * offset] = ugx[n];
+    ug[n + 1 * offset] = ugy[n];
+    ug[n + 2 * offset] = ugz[n];
+  }
+}
+
+@kernel void buildEquationTerms(const dlong N,
+                                const dlong offset,
+                                const dfloat rhoLiquid,
+                                const dfloat rhoGas,
+                                const dfloat muLiquid,
+                                const dfloat muGas,
+                                const dfloat alphaFloor,
+                                const dfloat dragCoefficient,
+                                const dfloat gravityX,
+                                const dfloat gravityY,
+                                const dfloat gravityZ,
+                                @ restrict const dfloat *alpha,
+                                @ restrict const dfloat *um,
+                                @ restrict const dfloat *ug,
+                                @ restrict const dfloat *gradAlpha,
+                                @ restrict const dfloat *gradUg,
+                                @ restrict const dfloat *gradP,
+                                @ restrict dfloat *rhoMField,
+                                @ restrict dfloat *muMField,
+                                @ restrict dfloat *divSource,
+                                @ restrict dfloat *driftStress,
+                                @ restrict dfloat *alphaSource,
+                                @ restrict dfloat *ugSource)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    const dfloat a = max(alphaFloor, min(1.0 - alphaFloor, alpha[n]));
+    const dfloat beta = 1.0 - a;
+    const dfloat rhoM = beta * rhoLiquid + a * rhoGas;
+    const dfloat muM = beta * muLiquid + a * muGas;
+
+    dfloat d[3];
+    for (int i = 0; i < 3; ++i) d[i] = ug[n + i * offset] - um[n + i * offset];
+
+    const dfloat divUg = gradUg[n + (0 * 3 + 0) * offset]
+                         + gradUg[n + (1 * 3 + 1) * offset]
+                         + gradUg[n + (2 * 3 + 2) * offset];
+    dfloat slipGradAlpha = 0.0;
+    for (int j = 0; j < 3; ++j) slipGradAlpha += d[j] * gradAlpha[n + j * offset];
+
+    rhoMField[n] = rhoM;
+    muMField[n] = muM;
+
+    // Eq. (15): prescribed divergence of the density-averaged mixture velocity.
+    divSource[n] = (rhoGas - rhoLiquid) / rhoM * (slipGradAlpha + a * divUg);
+
+    // Eq. (20): rho-weighted drift stress, tau_d.
+    const dfloat driftScale = a * rhoGas * rhoM / (beta * rhoLiquid);
+    for (int i = 0; i < 3; ++i)
+      for (int j = 0; j < 3; ++j)
+        driftStress[n + (3 * i + j) * offset] = driftScale * d[i] * d[j];
+
+    // Eq. (27): source needed because nekRS advects passive scalars with u_m.
+    alphaSource[n] = -slipGradAlpha - a * divUg;
+
+    // Eq. (29): gas-velocity source. Pressure is intentionally lagged one pass.
+    // The alpha-weighted gas viscous stress is not yet added in this scaffold.
+    const dfloat g[3] = {gravityX, gravityY, gravityZ};
+    for (int i = 0; i < 3; ++i) {
+      dfloat slipAdvection = 0.0;
+      for (int j = 0; j < 3; ++j)
+        slipAdvection += d[j] * gradUg[n + (3 * i + j) * offset];
+
+      // Minimal algebraic interphase closure. Set dragCoefficient=0 to disable.
+      const dfloat dragAcceleration = -dragCoefficient * d[i] / (a * rhoGas);
+      ugSource[n + i * offset] = -slipAdvection - gradP[n + i * offset] / rhoGas
+                                 + g[i] + dragAcceleration;
+    }
+  }
+}
+
+@kernel void buildMixtureForce(const dlong N,
+                               const dlong offset,
+                               const dfloat gravityX,
+                               const dfloat gravityY,
+                               const dfloat gravityZ,
+                               @ restrict const dfloat *rhoM,
+                               @ restrict const dfloat *divDriftStress,
+                               @ restrict dfloat *force)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    const dfloat g[3] = {gravityX, gravityY, gravityZ};
+    for (int i = 0; i < 3; ++i)
+      // Eq. (21): -div(tau_d) + rho_m g. Pressure and viscous terms are native.
+      force[n + i * offset] = -divDriftStress[n + i * offset] + rhoM[n] * g[i];
+  }
+}

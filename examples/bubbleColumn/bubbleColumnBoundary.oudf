@@ -1,0 +1,25 @@
+void udfDirichlet(bcData *bc)
+{
+  if (isField("fluid velocity")) {
+    if (bc->id == 1) {
+      const dfloat rhoM = (1.0 - p_ALPHA_INLET) * p_RHO_LIQUID
+                          + p_ALPHA_INLET * p_RHO_GAS;
+      // Density-averaged inlet velocity; the liquid inlet velocity is zero.
+      bc->uxFluid = 0.0;
+      bc->uyFluid = p_ALPHA_INLET * p_RHO_GAS * p_UG_INLET / rhoM;
+      bc->uzFluid = 0.0;
+    } else if (bc->id == 3) {
+      bc->uxFluid = 0.0;
+      bc->uyFluid = 0.0;
+      bc->uzFluid = 0.0;
+    }
+  } else if (isField("scalar alpha")) {
+    bc->sScalar = p_ALPHA_INLET;
+  } else if (isField("scalar ugx")) {
+    bc->sScalar = 0.0;
+  } else if (isField("scalar ugy")) {
+    bc->sScalar = (bc->id == 1) ? p_UG_INLET : 0.0;
+  } else if (isField("scalar ugz")) {
+    bc->sScalar = 0.0;
+  }
+}

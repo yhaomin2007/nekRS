@@ -1,0 +1,58 @@
+#include "bubbleColumnTerms.hpp"
+
+#ifdef __okl__
+#include "bubbleColumn.oudf"
+#endif
+
+void UDF_LoadKernels(deviceKernelProperties& kernelInfo)
+{
+  kernelInfo.define("p_RHO_LIQUID") = bubbleColumn::p.rhoLiquid;
+  kernelInfo.define("p_RHO_GAS") = bubbleColumn::p.rhoGas;
+  kernelInfo.define("p_ALPHA_INLET") = bubbleColumn::p.alphaInlet;
+  kernelInfo.define("p_UG_INLET") = bubbleColumn::p.ugInlet;
+}
+
+void UDF_Setup0(MPI_Comm, setupAide &)
+{
+  // Enable variable-density pressure projection and prescribed divergence.
+  platform->options.setArgs("LOWMACH", "TRUE");
+  auto &p = bubbleColumn::p;
+  platform->par->extract("casedata", "rholiquid", p.rhoLiquid);
+  platform->par->extract("casedata", "rhogas", p.rhoGas);
+  platform->par->extract("casedata", "muliquid", p.muLiquid);
+  platform->par->extract("casedata", "mugas", p.muGas);
+  platform->par->extract("casedata", "alphainitial", p.alphaInitial);
+  platform->par->extract("casedata", "alphainlet", p.alphaInlet);
+  platform->par->extract("casedata", "gasinletvelocity", p.ugInlet);
+  platform->par->extract("casedata", "gravityx", p.gravity[0]);
+  platform->par->extract("casedata", "gravityy", p.gravity[1]);
+  platform->par->extract("casedata", "gravityz", p.gravity[2]);
+  platform->par->extract("casedata", "alphafloor", p.alphaFloor);
+  platform->par->extract("casedata", "dragcoefficient", p.dragCoefficient);
+}
+
+void UDF_Setup()
+{
+  bubbleColumn::allocate();
+  if (platform->options.getArgs("RESTART FILE NAME").empty()) {
+    auto o_alpha = nrs->scalar->o_solution("alpha");
+    auto o_ugx = nrs->scalar->o_solution("ugx");
+    auto o_ugy = nrs->scalar->o_solution("ugy");
+    auto o_ugz = nrs->scalar->o_solution("ugz");
+    platform->linAlg->fill(nrs->meshV->Nlocal, bubbleColumn::p.alphaInitial, o_alpha);
+    platform->linAlg->fill(nrs->meshV->Nlocal, 0.0, o_ugx);
+    platform->linAlg->fill(nrs->meshV->Nlocal, 0.0, o_ugy);
+    platform->linAlg->fill(nrs->meshV->Nlocal, 0.0, o_ugz);
+  }
+  nrs->userSource = &bubbleColumn::addExplicitSources;
+  nrs->userProperties = &bubbleColumn::updateProperties;
+  nrs->userDivergence = &bubbleColumn::updateDivergence;
+}
+
+void UDF_ExecuteStep(double time, int tstep)
+{
+  if (nrs->checkpointStep) {
+    nrs->copyToNek(time, tstep);
+    nek::userchk();
+  }
+}

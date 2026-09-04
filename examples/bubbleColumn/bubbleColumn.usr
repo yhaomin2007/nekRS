@@ -1,0 +1,70 @@
+c-----------------------------------------------------------------------
+      subroutine uservp(ix,iy,iz,ieg)
+      include 'SIZE'
+      include 'NEKUSE'
+      utrans = 1.0
+      udiff  = 0.0
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine userf(ix,iy,iz,ieg)
+      include 'SIZE'
+      include 'NEKUSE'
+      ffx = 0.0
+      ffy = 0.0
+      ffz = 0.0
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine userq(ix,iy,iz,ieg)
+      include 'SIZE'
+      include 'NEKUSE'
+      qvol = 0.0
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine userchk
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine userbc(ix,iy,iz,iside,ieg)
+      include 'SIZE'
+      include 'NEKUSE'
+      ux = 0.0
+      uy = 0.0
+      uz = 0.0
+      temp = 0.0
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine useric(ix,iy,iz,ieg)
+      include 'SIZE'
+      include 'TSTEP'
+      include 'NEKUSE'
+
+      p0th = 1.0
+      ux = 0.0
+      uy = 0.0
+      uz = 0.0
+      temp = 0.0
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine usrdat0
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine usrdat2
+c     The future mesh must provide exactly these boundary IDs:
+c       1 = gas inlet, 2 = outlet, 3 = solid wall.
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine usrdat3
+      return
+      end
+c-----------------------------------------------------------------------
+      subroutine usrsetvert(glo_num,nel,nx,ny,nz)
+      integer*8 glo_num(1)
+      return
+      end
