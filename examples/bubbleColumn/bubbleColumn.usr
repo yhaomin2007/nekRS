@@ -55,8 +55,25 @@ c-----------------------------------------------------------------------
       end
 c-----------------------------------------------------------------------
       subroutine usrdat2
+
+      include 'SIZE'
+      include 'TOTAL'
+
 c     The future mesh must provide exactly these boundary IDs:
-c       1 = gas inlet, 2 = outlet, 3 = solid wall.
+c       1 = inlet, 2 = outlet, 3 = solid wall.
+c     IDs 4 and 5 are the spanwise periodic pair. Remove them from the
+c     physical boundary-ID map after assigning Nek's periodic CBC.
+
+      do iel=1,nelt
+         do ifc=1,2*ndim
+            if (boundaryID(ifc,iel).eq.4 .or.
+     &          boundaryID(ifc,iel).eq.5) then
+               cbc(ifc,iel,1) = 'P  '
+               boundaryID(ifc,iel) = 0
+            endif
+         enddo
+      enddo
+
       return
       end
 c-----------------------------------------------------------------------
