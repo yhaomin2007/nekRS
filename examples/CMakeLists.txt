@@ -131,6 +131,11 @@ add("ktauChannel" 2 "channel.par" "1;2" "${USE_FP32}" "${dir}" "${BUILD_ONLY}")
 
 add("periodicHill" 2 "periodicHill.par" "1;2;3" "${USE_FP32}" "${dir}" "${BUILD_ONLY}")
 
+# Euler-Euler development: compile the eeTurbPipe UDF and case setup in CI.
+# This is build-only for now because the reduction case currently reuses the
+# turbPipe mesh, which is not duplicated in examples/eeTurbPipe.
+add("eeTurbPipe-buildOnly" 2 "eeTurbPipe.par" "1" "${USE_FP32}" "${EXAMPLES_DIR}/eeTurbPipe" ON)
+
 add_eddy_neknek()
 add_eddy_nekneknek()
 
