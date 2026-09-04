@@ -1,5 +1,7 @@
 #include "tavg.hpp"
 #include "planarCopy.hpp"
+#include "advectionSubCycling.hpp"
+#include "lowPassFilter.hpp"
 #include <cmath>
 
 static int NSLABS;
@@ -10,19 +12,16 @@ static deviceMemory<int> o_bID;
 static planarCopy *recyc = nullptr;
 static dfloat inletArea = 0.0;
 
-// Milestone-1 gas momentum state. These buffers deliberately do not alias the
-// native liquid velocity solver state.
+// Milestone-1 gas momentum state. None of these buffers aliases the native
+// liquid velocity solver state.
 static deviceMemory<dfloat> o_UgHistory;
 static deviceMemory<dfloat> o_Uge;
 static deviceMemory<dfloat> o_ADVg;
 static deviceMemory<dfloat> o_EXTg;
 static deviceMemory<dfloat> o_JwFg;
 static deviceMemory<dfloat> o_relUrstg;
+static occa::memory o_filterRTg;
 
-// The gas phase owns a distinct velocity Helmholtz solver. For the present
-// identical-BC reduction case it uses the same physical velocity field name,
-// coefficients and boundary map as the liquid solver, but it has independent
-// solver/mask/preconditioner state.
 static elliptic *gasEllipticSolver = nullptr;
 
 #ifdef __okl__
@@ -50,9 +49,7 @@ void UDF_Setup0(MPI_Comm comm, setupAide &options)
 
 static void setupGasEllipticSolver()
 {
-  if (gasEllipticSolver) {
-    return;
-  }
+  if (gasEllipticSolver) return;
 
   auto fluid = nrs->fluid.get();
   auto mesh = fluid->mesh;
@@ -64,11 +61,7 @@ static void setupGasEllipticSolver()
              "eeTurbPipe milestone-1 currently requires the NekRS block velocity solver");
 
   auto o_lambda1 = platform->deviceMemoryPool.reserve<dfloat>(mesh->Nlocal);
-  platform->linAlg->axpby(mesh->Nlocal,
-                          *fluid->g0 / fluid->dt[0],
-                          fluid->o_rho,
-                          0.0,
-                          o_lambda1);
+  platform->linAlg->axpby(mesh->Nlocal, *fluid->g0 / fluid->dt[0], fluid->o_rho, 0.0, o_lambda1);
 
   gasEllipticSolver = new elliptic(fluid->velocityName,
                                    mesh,
@@ -76,9 +69,8 @@ static void setupGasEllipticSolver()
                                    fluid->o_mue,
                                    o_lambda1);
 
-  if (platform->comm.mpiRank() == 0) {
+  if (platform->comm.mpiRank() == 0)
     std::cout << "eeTurbPipe: created independent gas velocity elliptic solver" << std::endl;
-  }
 }
 
 static void applyGasDirichlet(double time)
@@ -86,9 +78,7 @@ static void applyGasDirichlet(double time)
   auto fluid = nrs->fluid.get();
   auto mesh = fluid->mesh;
 
-  if (!gasEllipticSolver || !gasEllipticSolver->Nmasked()) {
-    return;
-  }
+  if (!gasEllipticSolver || !gasEllipticSolver->Nmasked()) return;
 
   static constexpr dfloat TINY = -1e30;
   auto o_dirichletValues = platform->deviceMemoryPool.reserve<dfloat>(fluid->fieldOffsetSum);
@@ -114,7 +104,7 @@ static void applyGasDirichlet(double time)
                  o_NULL,
                  o_NULL,
                  platform->app->bc->o_usrwrk,
-                 nrs->o_Ug,
+                 o_Uge,
                  o_dirichletValues);
 
     oogs::startFinish(o_dirichletValues,
@@ -132,6 +122,179 @@ static void applyGasDirichlet(double time)
                gasEllipticSolver->o_maskIds(),
                o_dirichletValues,
                nrs->o_Ug);
+
+  launchKernel("core-maskCopy",
+               gasEllipticSolver->Nmasked(),
+               0,
+               0,
+               gasEllipticSolver->o_maskIds(),
+               o_dirichletValues,
+               o_Uge);
+}
+
+static void extrapolateGasState()
+{
+  auto fluid = nrs->fluid.get();
+  const int nEXT = static_cast<int>(nrs->o_coeffEXT.size());
+
+  launchKernel("core-extrapolate",
+               fluid->mesh->Nlocal,
+               fluid->mesh->dim,
+               nEXT,
+               fluid->fieldOffset,
+               nrs->o_coeffEXT,
+               o_UgHistory,
+               o_Uge);
+}
+
+static void computeGasUrst()
+{
+  auto fluid = nrs->fluid.get();
+  auto mesh = fluid->mesh;
+  int Nsubsteps = 0;
+  platform->options.getArgs("SUBCYCLING STEPS", Nsubsteps);
+
+  if (Nsubsteps) {
+    const auto lagOffset = mesh->dim * fluid->cubatureOffset;
+    for (int s = static_cast<int>(nrs->o_coeffEXT.size()); s > 1; --s)
+      o_relUrstg.copyFrom(o_relUrstg, lagOffset, (s - 1) * lagOffset, (s - 2) * lagOffset);
+  }
+
+  if (platform->options.compareArgs("ADVECTION TYPE", "CUBATURE")) {
+    launchKernel("nrs-UrstCubatureHex3D",
+                 mesh->Nelements,
+                 0,
+                 mesh->o_cubvgeo,
+                 mesh->o_cubInterpT,
+                 fluid->fieldOffset,
+                 0,
+                 fluid->cubatureOffset,
+                 o_UgHistory,
+                 o_NULL,
+                 o_relUrstg);
+  } else {
+    launchKernel("nrs-UrstHex3D",
+                 mesh->Nelements,
+                 0,
+                 mesh->o_vgeo,
+                 fluid->fieldOffset,
+                 0,
+                 o_UgHistory,
+                 o_NULL,
+                 o_relUrstg);
+  }
+}
+
+static void makeGasPredictor(double time, int tstep)
+{
+  auto fluid = nrs->fluid.get();
+  auto mesh = fluid->mesh;
+  const auto fieldOffsetSum = fluid->fieldOffsetSum;
+
+  extrapolateGasState();
+  computeGasUrst();
+
+  int Nsubsteps = 0;
+  platform->options.getArgs("SUBCYCLING STEPS", Nsubsteps);
+
+  if (Nsubsteps) {
+    static occa::kernel advKernel;
+    if (!advKernel.isInitialized()) {
+      if (platform->options.compareArgs("ADVECTION TYPE", "CUBATURE"))
+        advKernel = platform->kernelRequests.load("core-subCycleStrongCubatureVolumeHex3D");
+      else
+        advKernel = platform->kernelRequests.load("core-subCycleStrongVolumeHex3D");
+    }
+
+    platform->linAlg->fill(o_JwFg.size(), 0.0, o_JwFg);
+    const int nEXT = std::min(tstep, static_cast<int>(nrs->o_coeffEXT.size()));
+    advectionSubcyclingRK(mesh,
+                          mesh,
+                          time,
+                          fluid->dt,
+                          Nsubsteps,
+                          nrs->o_coeffBDF,
+                          nEXT,
+                          mesh->dim,
+                          advKernel,
+                          mesh->oogs3,
+                          mesh->fieldOffset,
+                          fluid->fieldOffset,
+                          fluid->cubatureOffset,
+                          fieldOffsetSum,
+                          o_NULL,
+                          o_relUrstg,
+                          o_UgHistory,
+                          o_JwFg);
+  } else {
+    if (platform->options.compareArgs("ADVECTION TYPE", "CUBATURE")) {
+      launchKernel("core-strongAdvectionCubatureVolumeHex3D",
+                   mesh->Nelements,
+                   mesh->o_vgeo,
+                   mesh->o_cubDiffInterpT,
+                   mesh->o_cubInterpT,
+                   mesh->o_cubProjectT,
+                   fluid->fieldOffset,
+                   fluid->cubatureOffset,
+                   o_UgHistory,
+                   o_relUrstg,
+                   o_ADVg);
+    } else {
+      launchKernel("core-strongAdvectionVolumeHex3D",
+                   mesh->Nelements,
+                   mesh->o_vgeo,
+                   mesh->o_D,
+                   fluid->fieldOffset,
+                   o_UgHistory,
+                   o_relUrstg,
+                   o_ADVg);
+    }
+  }
+
+  platform->linAlg->fill(fieldOffsetSum, 0.0, o_EXTg);
+  if (platform->options.compareArgs("FLUID VELOCITY REGULARIZATION METHOD", "HPFRT")) {
+    dfloat strength = 0.0;
+    platform->options.getArgs("FLUID VELOCITY HPFRT STRENGTH", strength);
+    launchKernel("core-vectorFilterRTHex3D",
+                 mesh->Nelements,
+                 o_filterRTg,
+                 strength,
+                 fluid->fieldOffset,
+                 o_UgHistory,
+                 o_EXTg);
+  }
+
+  launchKernel("fluidSolver_t::sumMakef",
+               mesh->Nlocal,
+               mesh->o_Jw,
+               1.0 / fluid->dt[0],
+               nrs->o_coeffEXT,
+               nrs->o_coeffBDF,
+               fluid->fieldOffset,
+               fieldOffsetSum,
+               mesh->fieldOffset,
+               fluid->o_rho,
+               o_UgHistory,
+               o_ADVg,
+               o_EXTg,
+               o_JwFg);
+
+  for (int s = static_cast<int>(nrs->o_coeffEXT.size()); s > 1; --s) {
+    o_EXTg.copyFrom(o_EXTg, fieldOffsetSum, (s - 1) * fieldOffsetSum, (s - 2) * fieldOffsetSum);
+    o_ADVg.copyFrom(o_ADVg, fieldOffsetSum, (s - 1) * fieldOffsetSum, (s - 2) * fieldOffsetSum);
+  }
+}
+
+static void lagGasSolution()
+{
+  auto fluid = nrs->fluid.get();
+  const auto fieldOffsetSum = fluid->fieldOffsetSum;
+  const int nHist = std::max(static_cast<int>(nrs->o_coeffBDF.size()),
+                             static_cast<int>(nrs->o_coeffEXT.size()));
+
+  for (int s = nHist; s > 1; --s)
+    o_UgHistory.copyFrom(o_UgHistory, fieldOffsetSum, (s - 1) * fieldOffsetSum, (s - 2) * fieldOffsetSum);
+  o_UgHistory.copyFrom(nrs->o_Ug, fieldOffsetSum, 0, 0);
 }
 
 static void solveGasVelocity(double time)
@@ -139,9 +302,7 @@ static void solveGasVelocity(double time)
   auto fluid = nrs->fluid.get();
   auto mesh = fluid->mesh;
 
-  if (!nrs->o_Ug.isInitialized() || !gasEllipticSolver) {
-    return;
-  }
+  if (!nrs->o_Ug.isInitialized() || !gasEllipticSolver) return;
 
   const auto fieldOffset = fluid->fieldOffset;
   const auto fieldOffsetSum = fluid->fieldOffsetSum;
@@ -210,9 +371,7 @@ static void solveGasVelocity(double time)
 
 static void updateRecyclingBoundary()
 {
-  if (!recyc) {
-    return;
-  }
+  if (!recyc) return;
 
   auto mesh = nrs->meshV;
   recyc->execute();
@@ -251,6 +410,12 @@ static void initializeGasSolverState()
   platform->linAlg->fill(o_EXTg.size(), 0.0, o_EXTg);
   platform->linAlg->fill(o_JwFg.size(), 0.0, o_JwFg);
   platform->linAlg->fill(o_relUrstg.size(), 0.0, o_relUrstg);
+
+  if (platform->options.compareArgs("FLUID VELOCITY REGULARIZATION METHOD", "HPFRT")) {
+    int nModes = -1;
+    platform->options.getArgs("FLUID VELOCITY HPFRT MODES", nModes);
+    o_filterRTg = lowPassFilterSetup(mesh, nModes);
+  }
 }
 
 static void seedGasHistoryFromLiquid()
@@ -262,9 +427,8 @@ static void seedGasHistoryFromLiquid()
 
   nrs->o_Ug.copyFrom(fluid->o_U, fieldOffsetSum);
   o_Uge.copyFrom(nrs->o_Ug, fieldOffsetSum);
-  for (int s = 0; s < std::max(1, nHist); ++s) {
+  for (int s = 0; s < std::max(1, nHist); ++s)
     o_UgHistory.copyFrom(nrs->o_Ug, fieldOffsetSum, s * fieldOffsetSum, 0);
-  }
 }
 
 void UDF_Setup()
@@ -336,9 +500,8 @@ void UDF_Setup()
       setupGasEllipticSolver();
       gasInitializedFromProjectedLiquid = true;
 
-      if (platform->comm.mpiRank() == 0) {
+      if (platform->comm.mpiRank() == 0)
         std::cout << "eeTurbPipe: initialized independent u_g and gas history state from projected u_l" << std::endl;
-      }
     }
   };
 }
@@ -350,14 +513,9 @@ void UDF_ExecuteStep(double time, int tstep)
     return;
   }
 
-  o_Uge.copyFrom(nrs->o_Ug, nrs->fluid->fieldOffsetSum);
-
-  // Route the gas momentum RHS through its owned forcing buffer.  At this
-  // checkpoint the buffer is seeded from the liquid predictor solely to keep
-  // the identical-phase reduction test bitwise-close while the gas advection
-  // and BDF/EXT forcing assembly are migrated in the next gate.
-  o_JwFg.copyFrom(nrs->fluid->o_JwF, nrs->fluid->fieldOffsetSum);
-
+  // Assemble the gas predictor entirely from gas-owned history, advection,
+  // explicit-term, reference-space velocity and JwF buffers.
+  makeGasPredictor(time, tstep);
   solveGasVelocity(time);
 
   auto mesh = nrs->fluid->mesh;
@@ -392,19 +550,15 @@ void UDF_ExecuteStep(double time, int tstep)
 
   if (platform->comm.mpiRank() == 0) {
     if (tstep == 1) {
-      std::cout << "eeTurbPipe: fixed alpha_g=0.1, alpha_l=0.9; fluid->o_U is u_l; nrs->o_Ug is independently solved u_g"
-                << std::endl;
-      std::cout << "eeTurbPipe: gas owns a distinct velocity elliptic solver and mask set" << std::endl;
-      std::cout << "eeTurbPipe: gas Dirichlet values are evaluated independently from the common physical BC" << std::endl;
-      std::cout << "eeTurbPipe: gas Neumann state uses dedicated o_Uge, not fluid->o_Ue" << std::endl;
-      std::cout << "eeTurbPipe: gas velocity RHS now consumes dedicated o_JwFg storage" << std::endl;
-      std::cout << "eeTurbPipe: o_JwFg is still temporarily seeded from the liquid predictor until gas-owned subcycling/forcing is wired"
-                << std::endl;
+      std::cout << "eeTurbPipe: fixed alpha_g=0.1, alpha_l=0.9" << std::endl;
+      std::cout << "eeTurbPipe: gas owns velocity history, extrapolation, Urst, advection/subcycling, explicit forcing, JwF, BC masks and elliptic solver" << std::endl;
+      std::cout << "eeTurbPipe: gas predictor no longer reads fluid->o_JwF, fluid->o_Ue, fluid advection/history or fluid elliptic solver" << std::endl;
     }
     std::cout << "eeTurbPipe: step=" << tstep
               << " ug-ul relL2=" << relL2
               << " maxAbs=" << maxDiff << std::endl;
   }
 
+  lagGasSolution();
   updateRecyclingBoundary();
 }
