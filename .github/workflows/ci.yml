@@ -80,8 +80,11 @@ jobs:
     - name: Set install dir permissions
       run: chmod -R 755 ${{ env.NEKRS_HOME }}
 
-    - name: Stage turbPipe mesh for eeTurbPipe
-      run: ln -sf ../turbPipe/turbPipe.re2 "${{ env.NEKRS_EXAMPLES }}/eeTurbPipe/eeTurbPipe.re2"
+    - name: Stage eeTurbPipe CI case files
+      run: |
+        cd "${NEKRS_EXAMPLES}/eeTurbPipe"
+        ln -sf ../turbPipe/turbPipe.re2 eeTurbPipe.ci.re2
+        ln -sf eeTurbPipe.udf eeTurbPipe.ci.udf
 
     - name: 'eeTurbPipe short runtime regression'
       working-directory: ${{ env.NEKRS_EXAMPLES }}/build
