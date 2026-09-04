@@ -131,10 +131,10 @@ add("ktauChannel" 2 "channel.par" "1;2" "${USE_FP32}" "${dir}" "${BUILD_ONLY}")
 
 add("periodicHill" 2 "periodicHill.par" "1;2;3" "${USE_FP32}" "${dir}" "${BUILD_ONLY}")
 
-# Euler-Euler development: compile the eeTurbPipe UDF and case setup in CI.
-# This is build-only for now because the reduction case currently reuses the
-# turbPipe mesh, which is not duplicated in examples/eeTurbPipe.
-add("eeTurbPipe-buildOnly" 2 "eeTurbPipe.par" "1" "${USE_FP32}" "${EXAMPLES_DIR}/eeTurbPipe" ON)
+# Euler-Euler development regression: execute a short eeTurbPipe run rather
+# than compile only.  eeTurbPipe.ci.par uses endTime=0.30, which is roughly
+# 50 steps from the initial dt=6e-3, and prints ug-ul diagnostics every step.
+add("eeTurbPipe" 2 "eeTurbPipe.ci.par" "1" "${USE_FP32}" "${EXAMPLES_DIR}/eeTurbPipe" OFF)
 
 add_eddy_neknek()
 add_eddy_nekneknek()
