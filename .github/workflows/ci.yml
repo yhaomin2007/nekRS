@@ -57,11 +57,6 @@ jobs:
         path: ${{ env.NEKRS_HOME }}
         if-no-files-found: error
 
-#    - name: Setup tmate session
-#      uses: mxschmitt/action-tmate@v3
-#      timeout-minutes: 3 
-#      if: ${{ github.event_name == 'workflow_dispatch' }}
-
   eeTurbPipe:
     needs: install
     runs-on: ubuntu-22.04
@@ -88,9 +83,26 @@ jobs:
     - name: Stage turbPipe mesh for eeTurbPipe
       run: ln -sf ../turbPipe/turbPipe.re2 "${{ env.NEKRS_EXAMPLES }}/eeTurbPipe/eeTurbPipe.re2"
 
-    - name: 'eeTurbPipe build-only'
+    - name: 'eeTurbPipe short runtime regression'
       working-directory: ${{ env.NEKRS_EXAMPLES }}/build
-      run: ctest --output-on-failure -R '^eeTurbPipe-buildOnly_1$'
+      run: ctest --output-on-failure -R '^eeTurbPipe_1$'
+
+    - name: Show eeTurbPipe diagnostics
+      if: always()
+      run: |
+        if [ -f "${NEKRS_EXAMPLES}/eeTurbPipe/logfile" ]; then
+          echo "===== eeTurbPipe logfile tail ====="
+          tail -n 250 "${NEKRS_EXAMPLES}/eeTurbPipe/logfile"
+        fi
+
+    - name: Upload eeTurbPipe logfile
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: eeTurbPipe-logfile
+        retention-days: 7
+        path: ${{ env.NEKRS_EXAMPLES }}/eeTurbPipe/logfile
+        if-no-files-found: warn
 
   ethier:
     needs: install
