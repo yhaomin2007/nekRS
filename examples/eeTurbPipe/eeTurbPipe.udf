@@ -6,6 +6,10 @@ static int NSLABS;
 static int NELSLAB;
 static int processAscentYamlFrequency;
 
+static deviceMemory<int> o_bID;
+static planarCopy *recyc = nullptr;
+static dfloat inletArea = 0.0;
+
 #ifdef __okl__
 void udfDirichlet(bcData *bc)
 {
@@ -31,7 +35,7 @@ void UDF_Setup0(MPI_Comm comm, setupAide &options)
 
 // First E-E reduction test: solve a second velocity field with the same
 // momentum operator, coefficients, pressure and BC topology as the standard
-// NekRS liquid velocity.  The predictor forcing is intentionally shared in
+// NekRS liquid velocity. The predictor forcing is intentionally shared in
 // this first stage; gas-specific advection/history is the next incremental
 // change after the two-solve reduction test is verified.
 static void solveGasVelocity(double time)
@@ -47,8 +51,6 @@ static void solveGasVelocity(double time)
   const auto fieldOffsetSum = fluid->fieldOffsetSum;
   const auto g0idt = *fluid->g0 / fluid->dt[0];
 
-  // The pressure is shared by both phases.  Rebuild exactly the velocity RHS
-  // used by the liquid solve, then solve the same Helmholtz operator for u_g.
   auto o_mueDiv = platform->deviceMemoryPool.reserve<dfloat>(fieldOffset);
   platform->linAlg->axmyz(mesh->Nlocal, 1.0 / 3.0, fluid->o_mue, fluid->o_div, o_mueDiv);
 
@@ -80,9 +82,6 @@ static void solveGasVelocity(double time)
                o_gradP,
                o_rhs);
 
-  // turbPipe uses the same physical velocity BCs for both phases.  Reuse the
-  // native NekRS Neumann contribution and the already-evaluated liquid
-  // boundary data.  Dirichlet values are imposed below with the same masks.
   launchKernel("fluidSolver_t::velocityNeumannBCHex3D",
                fluid->o_velocityName,
                fluid->o_pressureName,
@@ -102,9 +101,6 @@ static void solveGasVelocity(double time)
                fluid->o_Ue,
                o_rhs);
 
-  // Apply exactly the same essential velocity constraints to u_g that NekRS
-  // applies to u_l.  For the present case this covers the prescribed/recycle
-  // velocity boundary and the no-slip wall.
   int component = 0;
   for (auto *solver : fluid->ellipticSolver) {
     if (solver->Nmasked()) {
@@ -147,6 +143,26 @@ static void solveGasVelocity(double time)
   }
 }
 
+static void updateRecyclingBoundary()
+{
+  if (!recyc) {
+    return;
+  }
+
+  auto mesh = nrs->meshV;
+  recyc->execute();
+
+  const auto flux = mesh->surfaceAreaNormalMultiplyVectorIntegrate(
+      nrs->fluid->fieldOffset,
+      o_bID,
+      platform->app->bc->o_usrwrk);
+
+  const dfloat uBulk = 1.0;
+  platform->linAlg->scale(nrs->fluid->fieldOffsetSum,
+                          -uBulk * inletArea / flux,
+                          platform->app->bc->o_usrwrk);
+}
+
 void UDF_Setup()
 {
   auto mesh = nrs->meshV;
@@ -181,7 +197,6 @@ void UDF_Setup()
       U[n + 1 * nrs->fluid->fieldOffset] = 0.1 * std::pow(rand[n], 3);
       U[n + 2 * nrs->fluid->fieldOffset] = uz + 0.01 * rand[n];
     }
-    // The standard NekRS fluid velocity is u_l in the E-E development.
     nrs->fluid->o_solution().copyFrom(U.data(), U.size());
   }
 
@@ -189,10 +204,13 @@ void UDF_Setup()
 
   const dfloat zRecycLayer = 0.25 * zLen;
   std::vector<int> bID{1};
-  static deviceMemory<int> o_bID;
   o_bID.resize(bID.size());
   o_bID.copyFrom(bID);
-  static planarCopy *recyc = nullptr;
+
+  deviceMemory<dfloat> o_tmp(mesh->Nlocal);
+  platform->linAlg->fill(o_tmp.size(), 1.0, o_tmp);
+  inletArea = mesh->surfaceAreaMultiplyIntegrate(o_bID, o_tmp);
+
   recyc = new planarCopy(mesh,
                          nrs->fluid->o_solution(),
                          mesh->dim,
@@ -203,9 +221,6 @@ void UDF_Setup()
                          bID[0],
                          platform->app->bc->o_usrwrk);
 
-  // Allocate the independent gas velocity state.  It is copied here so the
-  // checkpoint field is valid immediately; preFluid performs the definitive
-  // one-time initialization after NekRS has projected the liquid IC to C0.
   nrs->o_Ug.resize(nrs->fluid->fieldOffsetSum);
   nrs->o_Ug.copyFrom(nrs->fluid->o_U, nrs->fluid->fieldOffsetSum);
 
@@ -230,6 +245,15 @@ void UDF_Setup()
 
 void UDF_ExecuteStep(double time, int tstep)
 {
+  // Match turbPipe's recycling workflow. The tstep=0 execute prepares the
+  // prescribed inlet field before the first physical solve.
+  if (tstep == 0) {
+    updateRecyclingBoundary();
+    return;
+  }
+
+  // Solve u_g before refreshing usrwrk so the gas solve sees the same recycled
+  // boundary data that was used by the just-completed liquid solve.
   solveGasVelocity(time);
 
   auto mesh = nrs->fluid->mesh;
@@ -271,4 +295,8 @@ void UDF_ExecuteStep(double time, int tstep)
               << " ug-ul relL2=" << relL2
               << " maxAbs=" << maxDiff << std::endl;
   }
+
+  // Prepare the recycled inlet data for the next physical timestep, exactly
+  // as the reference turbPipe example does.
+  updateRecyclingBoundary();
 }
