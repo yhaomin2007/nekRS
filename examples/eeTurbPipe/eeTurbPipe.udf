@@ -11,15 +11,19 @@ static planarCopy *recyc = nullptr;
 static dfloat inletArea = 0.0;
 
 // Milestone-1 gas momentum state. These buffers deliberately do not alias the
-// native liquid velocity solver state. Follow-up commits will switch each gas
-// predictor/solve operation onto these buffers before the mixture pressure
-// projection is introduced.
+// native liquid velocity solver state.
 static deviceMemory<dfloat> o_UgHistory;
 static deviceMemory<dfloat> o_Uge;
 static deviceMemory<dfloat> o_ADVg;
 static deviceMemory<dfloat> o_EXTg;
 static deviceMemory<dfloat> o_JwFg;
 static deviceMemory<dfloat> o_relUrstg;
+
+// The gas phase owns a distinct velocity Helmholtz solver. For the present
+// identical-BC reduction case it uses the same physical velocity field name,
+// coefficients and boundary map as the liquid solver, but it has independent
+// solver/mask/preconditioner state.
+static elliptic *gasEllipticSolver = nullptr;
 
 #ifdef __okl__
 void udfDirichlet(bcData *bc)
@@ -44,17 +48,49 @@ void UDF_Setup0(MPI_Comm comm, setupAide &options)
   platform->par->extract("casedata", "processAscentYamlFrequency", processAscentYamlFrequency);
 }
 
-// First E-E reduction test: solve a second velocity field with the same
-// momentum operator, coefficients, pressure and BC topology as the standard
-// NekRS liquid velocity. The predictor forcing is still shared in this
-// checkpoint; dedicated gas histories/forcing buffers are now allocated and
-// will replace those aliases incrementally.
+static void setupGasEllipticSolver()
+{
+  if (gasEllipticSolver) {
+    return;
+  }
+
+  auto fluid = nrs->fluid.get();
+  auto mesh = fluid->mesh;
+
+  // eeTurbPipe intentionally follows the reference turbPipe block velocity
+  // solver. Keep this restriction explicit until the standalone gas solver is
+  // promoted from the reduction test into generic E-E infrastructure.
+  nekrsCheck(fluid->ellipticSolver.size() != 1 || fluid->ellipticSolver.at(0)->Nfields() <= 1,
+             platform->comm.mpiComm(),
+             EXIT_FAILURE,
+             "%s\n",
+             "eeTurbPipe milestone-1 currently requires the NekRS block velocity solver");
+
+  auto o_lambda1 = platform->deviceMemoryPool.reserve<dfloat>(mesh->Nlocal);
+  platform->linAlg->axpby(mesh->Nlocal,
+                          *fluid->g0 / fluid->dt[0],
+                          fluid->o_rho,
+                          0.0,
+                          o_lambda1);
+
+  gasEllipticSolver =
+      new elliptic(fluid->velocityName, mesh, fluid->fieldOffset, fluid->o_mue, o_lambda1);
+
+  if (platform->comm.mpiRank() == 0) {
+    std::cout << "eeTurbPipe: created independent gas velocity elliptic solver" << std::endl;
+  }
+}
+
+// First E-E reduction test: the pressure and physical coefficients are shared,
+// while the gas phase now owns its velocity elliptic solve. The predictor
+// forcing and extrapolated boundary state are still shared in this checkpoint;
+// those are separated in the next incremental gates.
 static void solveGasVelocity(double time)
 {
   auto fluid = nrs->fluid.get();
   auto mesh = fluid->mesh;
 
-  if (!nrs->o_Ug.isInitialized() || fluid->ellipticSolver.empty()) {
+  if (!nrs->o_Ug.isInitialized() || !gasEllipticSolver) {
     return;
   }
 
@@ -112,46 +148,26 @@ static void solveGasVelocity(double time)
                fluid->o_Ue,
                o_rhs);
 
-  int component = 0;
-  for (auto *solver : fluid->ellipticSolver) {
-    if (solver->Nmasked()) {
-      const auto offset = (fluid->ellipticSolver.size() == 1) ? 0 : component * fieldOffset;
-      launchKernel("core-maskCopy",
-                   solver->Nmasked(),
-                   offset,
-                   offset,
-                   solver->o_maskIds(),
-                   fluid->o_U,
-                   nrs->o_Ug);
-    }
-    component++;
+  // Use the gas solver's own essential mask. The prescribed values are still
+  // identical to liquid in this reduction test; independent BC evaluation is
+  // the next milestone-1 increment.
+  if (gasEllipticSolver->Nmasked()) {
+    launchKernel("core-maskCopy",
+                 gasEllipticSolver->Nmasked(),
+                 0,
+                 0,
+                 gasEllipticSolver->o_maskIds(),
+                 fluid->o_U,
+                 nrs->o_Ug);
   }
 
   auto o_lambda1 = platform->deviceMemoryPool.reserve<dfloat>(mesh->Nlocal);
   platform->linAlg->axpby(mesh->Nlocal, g0idt, fluid->o_rho, 0.0, o_lambda1);
 
-  if (fluid->ellipticSolver.at(0)->Nfields() > 1) {
-    fluid->ellipticSolver.at(0)->solve(fluid->o_mue,
-                                       o_lambda1,
-                                       o_rhs,
-                                       nrs->o_Ug.slice(0, fieldOffsetSum));
-  } else {
-    const auto o_rhsX = o_rhs.slice(0 * fieldOffset, mesh->Nlocal);
-    const auto o_rhsY = o_rhs.slice(1 * fieldOffset, mesh->Nlocal);
-    const auto o_rhsZ = o_rhs.slice(2 * fieldOffset, mesh->Nlocal);
-    fluid->ellipticSolver.at(0)->solve(fluid->o_mue,
-                                       o_lambda1,
-                                       o_rhsX,
-                                       nrs->o_Ug.slice(0 * fieldOffset, mesh->Nlocal));
-    fluid->ellipticSolver.at(1)->solve(fluid->o_mue,
-                                       o_lambda1,
-                                       o_rhsY,
-                                       nrs->o_Ug.slice(1 * fieldOffset, mesh->Nlocal));
-    fluid->ellipticSolver.at(2)->solve(fluid->o_mue,
-                                       o_lambda1,
-                                       o_rhsZ,
-                                       nrs->o_Ug.slice(2 * fieldOffset, mesh->Nlocal));
-  }
+  gasEllipticSolver->solve(fluid->o_mue,
+                           o_lambda1,
+                           o_rhs,
+                           nrs->o_Ug.slice(0, fieldOffsetSum));
 }
 
 static void updateRecyclingBoundary()
@@ -190,9 +206,6 @@ static void initializeGasSolverState()
   o_EXTg.resize(std::max(1, nEXT) * fieldOffsetSum);
   o_JwFg.resize(fieldOffsetSum);
 
-  // Subcycling stores the contravariant convecting velocity on the cubature
-  // grid. Allocate the same amount of state as the native fluid solver but do
-  // not alias fluid->o_relUrst.
   const auto nUrstStates = std::max(1, nHist);
   o_relUrstg.resize(nUrstStates * mesh->dim * fluid->cubatureOffset);
 
@@ -282,6 +295,7 @@ void UDF_Setup()
     static bool gasInitializedFromProjectedLiquid = false;
     if (!gasInitializedFromProjectedLiquid) {
       seedGasHistoryFromLiquid();
+      setupGasEllipticSolver();
       gasInitializedFromProjectedLiquid = true;
 
       if (platform->comm.mpiRank() == 0) {
@@ -292,13 +306,10 @@ void UDF_Setup()
 
   // Do not register u_g with the legacy Nek checkpoint writer in this
   // reduction test: iofldNek only accepts its built-in variable names.
-  // The CI regression validates u_g through the per-step norms below.
 }
 
 void UDF_ExecuteStep(double time, int tstep)
 {
-  // Match turbPipe's recycling workflow. The tstep=0 execute prepares the
-  // prescribed inlet field before the first physical solve.
   if (tstep == 0) {
     updateRecyclingBoundary();
     return;
@@ -342,6 +353,7 @@ void UDF_ExecuteStep(double time, int tstep)
     if (tstep == 1) {
       std::cout << "eeTurbPipe: fixed alpha_g=0.1, alpha_l=0.9; fluid->o_U is u_l; nrs->o_Ug is independently solved u_g"
                 << std::endl;
+      std::cout << "eeTurbPipe: gas owns a distinct velocity elliptic solver and mask set" << std::endl;
       std::cout << "eeTurbPipe: dedicated gas history/extrapolation/advection/explicit/JwF/Urst buffers allocated"
                 << std::endl;
     }
@@ -350,7 +362,5 @@ void UDF_ExecuteStep(double time, int tstep)
               << " maxAbs=" << maxDiff << std::endl;
   }
 
-  // Prepare the recycled inlet data for the next physical timestep, exactly
-  // as the reference turbPipe example does.
   updateRecyclingBoundary();
 }
