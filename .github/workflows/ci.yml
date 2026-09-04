@@ -4,6 +4,10 @@ on:
   # allows us to run workflows manually
   workflow_dispatch:
 
+  pull_request:
+    branches:
+      - master
+
   push:
     branches:
       - master 
@@ -57,6 +61,33 @@ jobs:
 #      uses: mxschmitt/action-tmate@v3
 #      timeout-minutes: 3 
 #      if: ${{ github.event_name == 'workflow_dispatch' }}
+
+  eeTurbPipe:
+    needs: install
+    runs-on: ubuntu-22.04
+    steps:
+
+    - uses: actions/checkout@v4
+      with:
+        clean: true
+
+    - name: APT dependencies
+      run: |
+        sudo apt -y update
+        sudo apt install -y mpich libmpich-dev
+
+    - name: Download install dir
+      uses: actions/download-artifact@v4
+      with:
+        name: install-dir
+        path: ${{ env.NEKRS_HOME }}
+
+    - name: Set install dir permissions
+      run: chmod -R 755 ${{ env.NEKRS_HOME }}
+
+    - name: 'eeTurbPipe build-only'
+      working-directory: ${{ env.NEKRS_EXAMPLES }}/build
+      run: ctest --output-on-failure -R '^eeTurbPipe-buildOnly_1$'
 
   ethier:
     needs: install
