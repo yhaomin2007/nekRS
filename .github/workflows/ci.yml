@@ -85,6 +85,9 @@ jobs:
     - name: Set install dir permissions
       run: chmod -R 755 ${{ env.NEKRS_HOME }}
 
+    - name: Stage turbPipe mesh for eeTurbPipe
+      run: ln -sf ../turbPipe/turbPipe.re2 "${{ env.NEKRS_EXAMPLES }}/eeTurbPipe/eeTurbPipe.re2"
+
     - name: 'eeTurbPipe build-only'
       working-directory: ${{ env.NEKRS_EXAMPLES }}/build
       run: ctest --output-on-failure -R '^eeTurbPipe-buildOnly_1$'
