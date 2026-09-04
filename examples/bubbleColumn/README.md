@@ -3,6 +3,9 @@
 Initial one-pass Eulerian mixture/gas-velocity scaffold for nekRS. No mesh is
 included yet. A future mesh must expose only these boundary IDs:
 
+The column axis and upward inlet-flow direction are (+z); gravity acts in
+(-z).
+
 | ID | Patch | Mixture velocity | `alpha` | Gas velocity |
 |---:|---|---|---|---|
 | 1 | inlet | density-averaged inlet value | fixed inlet value | fixed vertical value |

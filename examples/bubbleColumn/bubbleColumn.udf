@@ -42,8 +42,8 @@ void UDF_Setup()
     auto o_ugz = nrs->scalar->o_solution("ugz");
     platform->linAlg->fill(nrs->meshV->Nlocal, bubbleColumn::p.alphaInitial, o_alpha);
     platform->linAlg->fill(nrs->meshV->Nlocal, 0.0, o_ugx);
-    platform->linAlg->fill(nrs->meshV->Nlocal, bubbleColumn::p.ugInlet, o_ugy);
-    platform->linAlg->fill(nrs->meshV->Nlocal, 0.0, o_ugz);
+    platform->linAlg->fill(nrs->meshV->Nlocal, 0.0, o_ugy);
+    platform->linAlg->fill(nrs->meshV->Nlocal, bubbleColumn::p.ugInlet, o_ugz);
   }
   nrs->userSource = &bubbleColumn::addExplicitSources;
   nrs->userProperties = &bubbleColumn::updateProperties;
