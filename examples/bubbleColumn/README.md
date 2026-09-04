@@ -12,12 +12,15 @@ included yet. A future mesh must expose only these boundary IDs:
 The standard entry files stay small. `bubbleColumnTerms.hpp` owns device fields
 and SEM operators; `bubbleColumnEquations.oudf` contains equation kernels; and
 `bubbleColumnBoundary.oudf` contains boundary data.
+The equation kernels are registered as a separate OCCA request, so they are not
+injected into every native nekRS boundary-kernel translation unit.
 
 ## Equation mapping
 
 - Eq. (15): `divSource`, installed through `nrs->userDivergence`.
 - Eq. (20): `driftStress`.
-- Eq. (21): native pressure/viscosity plus `-div(driftStress)+rhoM*g`.
+- Eq. (21): native pressure/viscosity plus acceleration source
+  `-div(driftStress)/rhoM+g` (nekRS multiplies `o_EXT` by `rhoM`).
 - Eq. (27): `alphaSource` for passive scalar `ALPHA`.
 - Eq. (29): `ugSource` for passive scalars `UGX`, `UGY`, and `UGZ`.
 

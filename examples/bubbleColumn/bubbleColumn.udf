@@ -10,6 +10,7 @@ void UDF_LoadKernels(deviceKernelProperties& kernelInfo)
   kernelInfo.define("p_RHO_GAS") = bubbleColumn::p.rhoGas;
   kernelInfo.define("p_ALPHA_INLET") = bubbleColumn::p.alphaInlet;
   kernelInfo.define("p_UG_INLET") = bubbleColumn::p.ugInlet;
+  bubbleColumn::registerKernels(kernelInfo);
 }
 
 void UDF_Setup0(MPI_Comm, setupAide &)
@@ -41,7 +42,7 @@ void UDF_Setup()
     auto o_ugz = nrs->scalar->o_solution("ugz");
     platform->linAlg->fill(nrs->meshV->Nlocal, bubbleColumn::p.alphaInitial, o_alpha);
     platform->linAlg->fill(nrs->meshV->Nlocal, 0.0, o_ugx);
-    platform->linAlg->fill(nrs->meshV->Nlocal, 0.0, o_ugy);
+    platform->linAlg->fill(nrs->meshV->Nlocal, bubbleColumn::p.ugInlet, o_ugy);
     platform->linAlg->fill(nrs->meshV->Nlocal, 0.0, o_ugz);
   }
   nrs->userSource = &bubbleColumn::addExplicitSources;
