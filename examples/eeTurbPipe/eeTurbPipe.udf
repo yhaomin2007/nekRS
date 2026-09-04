@@ -82,9 +82,9 @@ static void setupGasEllipticSolver()
 }
 
 // First E-E reduction test: the pressure and physical coefficients are shared,
-// while the gas phase now owns its velocity elliptic solve. The predictor
-// forcing and extrapolated boundary state are still shared in this checkpoint;
-// those are separated in the next incremental gates.
+// while the gas phase owns its velocity elliptic solve and extrapolated state.
+// The predictor forcing is still shared in this checkpoint; it is separated in
+// the next incremental gates.
 static void solveGasVelocity(double time)
 {
   auto fluid = nrs->fluid.get();
@@ -145,7 +145,7 @@ static void solveGasVelocity(double time)
                fluid->o_rho,
                fluid->o_mue,
                platform->app->bc->o_usrwrk,
-               fluid->o_Ue,
+               o_Uge,
                o_rhs);
 
   // Use the gas solver's own essential mask. The prescribed values are still
@@ -315,6 +315,12 @@ void UDF_ExecuteStep(double time, int tstep)
     return;
   }
 
+  // Until the dedicated gas lag/extrapolation update is wired into the core
+  // timestep sequence, use the gas field itself as its own first-order
+  // extrapolated state. This is independent of fluid->o_Ue and is exact for
+  // the identical-phase reduction test at the point this callback executes.
+  o_Uge.copyFrom(nrs->o_Ug, nrs->fluid->fieldOffsetSum);
+
   // Solve u_g before refreshing usrwrk so the gas solve sees the same recycled
   // boundary data that was used by the just-completed liquid solve.
   solveGasVelocity(time);
@@ -354,6 +360,7 @@ void UDF_ExecuteStep(double time, int tstep)
       std::cout << "eeTurbPipe: fixed alpha_g=0.1, alpha_l=0.9; fluid->o_U is u_l; nrs->o_Ug is independently solved u_g"
                 << std::endl;
       std::cout << "eeTurbPipe: gas owns a distinct velocity elliptic solver and mask set" << std::endl;
+      std::cout << "eeTurbPipe: gas Neumann state now uses dedicated o_Uge, not fluid->o_Ue" << std::endl;
       std::cout << "eeTurbPipe: dedicated gas history/extrapolation/advection/explicit/JwF/Urst buffers allocated"
                 << std::endl;
     }
