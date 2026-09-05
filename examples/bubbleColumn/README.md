@@ -68,8 +68,15 @@ difference `D_l(u_l)/Dt-D_g(u_g)/Dt`. The history is refreshed after each time
 step. This explicit, one-pass treatment is intentionally not algebraically
 identical to OpenFOAM's implicit virtual-mass coupling and may require a smaller
 time step, especially because `rho_l/rho_g` is large.
-Both switches default to `0.0`, preserving the force-free baseline and allowing
-drag and virtual mass to be activated and tested one at a time.
+Drag defaults to `1.0` for the stabilized test; virtual mass remains `0.0` so
+the two closures can be introduced separately.
+
+The Schiller--Naumann drag is treated semi-implicitly as
+`lambdaD*(um-ug)`: `lambdaD*um` is explicit and `lambdaD*ug` is added to the
+gas-scalar Helmholtz diagonal. The prescribed mixture divergence is constructed
+after the alpha solve from `(alphaNew-alphaOld)/dt + um.grad(alphaNew)`, rather
+than directly differentiating the gas flux. This first-order time difference is
+chosen to improve one-pass discrete compatibility at the moving alpha front.
 
 Lift, turbulent dispersion, and wall lubrication remain zero, matching the
 official OpenFOAM Foundation `multiphaseEuler/bubbleColumn` tutorial. The

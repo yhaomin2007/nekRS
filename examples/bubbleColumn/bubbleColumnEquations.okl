@@ -96,6 +96,29 @@
   }
 }
 
+@kernel void buildDiscreteDivergence(const dlong N,
+                                     const dlong offset,
+                                     const dfloat inverseDt,
+                                     const dfloat rhoLiquid,
+                                     const dfloat rhoGas,
+                                     @ restrict const dfloat *alpha,
+                                     @ restrict const dfloat *alphaPrevious,
+                                     @ restrict const dfloat *um,
+                                     @ restrict const dfloat *gradAlpha,
+                                     @ restrict dfloat *divSource)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    const dfloat aRaw = alpha[n];
+    const dfloat a = (aRaw < 0.0) ? 0.0 : ((aRaw > 1.0) ? 1.0 : aRaw);
+    const dfloat rhoM = (1.0 - a) * rhoLiquid + a * rhoGas;
+    const dfloat dAlphaDt = (alpha[n] - alphaPrevious[n]) * inverseDt;
+    const dfloat advAlpha = um[n + 0 * offset] * gradAlpha[n + 0 * offset]
+                            + um[n + 1 * offset] * gradAlpha[n + 1 * offset]
+                            + um[n + 2 * offset] * gradAlpha[n + 2 * offset];
+    divSource[n] = -(rhoGas - rhoLiquid) / rhoM * (dAlphaDt + advAlpha);
+  }
+}
+
 @kernel void buildEquationTerms(const dlong N,
                                 const dlong offset,
                                 const dfloat rhoLiquid,
@@ -123,7 +146,8 @@
                                 @ restrict dfloat *divSource,
                                 @ restrict dfloat *driftStress,
                                 @ restrict dfloat *alphaSource,
-                                @ restrict dfloat *ugSource)
+                                @ restrict dfloat *ugSource,
+                                @ restrict dfloat *dragLambda)
 {
   for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
     // Keep the physical volume fraction separate from denominator protection.
@@ -190,21 +214,25 @@
         : 0.44 * Re;
     const dfloat Ki = 0.75 * CdRe * muLiquid
                       / (bubbleDiameter * bubbleDiameter);
-    const dfloat K = aSafe * Ki;
-    const dfloat dragScale = -dragEnabled * K / (aSafe * rhoGas);
+    // Since u_l-u_g = rho_m/(alpha_l*rho_l)*(u_m-u_g), drag is
+    // lambda_D*(u_m-u_g). Put +lambda_D*u_m on the RHS and expose
+    // lambda_D for the passive-scalar Helmholtz diagonal.
+    const dfloat lambdaD = dragEnabled * Ki / rhoGas
+                           * rhoM / (betaSafe * rhoLiquid);
+    dragLambda[n] = lambdaD;
     const dfloat virtualMassScale = virtualMassEnabled
                                     * virtualMassCoefficient
                                     * rhoLiquid / rhoGas;
     ugSource[n + 0 * offset] = -advX - gradP[n + 0 * offset] / rhoGas
-                               + gravityX + dragScale * urx
+                               + gravityX + lambdaD * um[n + 0 * offset]
                                + virtualMassScale
                                  * virtualMassRelativeAcceleration[n + 0 * offset];
     ugSource[n + 1 * offset] = -advY - gradP[n + 1 * offset] / rhoGas
-                               + gravityY + dragScale * ury
+                               + gravityY + lambdaD * um[n + 1 * offset]
                                + virtualMassScale
                                  * virtualMassRelativeAcceleration[n + 1 * offset];
     ugSource[n + 2 * offset] = -advZ - gradP[n + 2 * offset] / rhoGas
-                               + gravityZ + dragScale * urz
+                               + gravityZ + lambdaD * um[n + 2 * offset]
                                + virtualMassScale
                                  * virtualMassRelativeAcceleration[n + 2 * offset];
   }

@@ -63,6 +63,7 @@ void UDF_Setup()
   }
   bubbleColumn::initializeHistory();
   nrs->userSource = &bubbleColumn::addExplicitSources;
+  nrs->scalar->userImplicitLinearTerm = &bubbleColumn::implicitGasDrag;
   nrs->userProperties = &bubbleColumn::updateProperties;
   nrs->userDivergence = &bubbleColumn::updateDivergence;
 }
