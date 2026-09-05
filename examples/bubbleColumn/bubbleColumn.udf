@@ -28,6 +28,8 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   platform->par->extract("casedata", "alphainitial", p.alphaInitial);
   platform->par->extract("casedata", "alphainlet", p.alphaInlet);
   platform->par->extract("casedata", "gasinletvelocity", p.ugInlet);
+  platform->par->extract("casedata", "initialplumeheight", p.initialPlumeHeight);
+  platform->par->extract("casedata", "initialplumethickness", p.initialPlumeThickness);
   platform->par->extract("casedata", "gravityx", p.gravity[0]);
   platform->par->extract("casedata", "gravityy", p.gravity[1]);
   platform->par->extract("casedata", "gravityz", p.gravity[2]);
@@ -43,19 +45,21 @@ void UDF_Setup()
   bubbleColumn::allocate();
   if (platform->options.getArgs("RESTART FILE NAME").empty()) {
     const auto &p = bubbleColumn::p;
-    const dfloat rhoM = (1.0 - p.alphaInlet) * p.rhoLiquid
-                        + p.alphaInlet * p.rhoGas;
-    const dfloat umz = p.alphaInlet * p.rhoGas * p.ugInlet / rhoM;
-    auto o_alpha = nrs->scalar->o_solution("alpha");
-    auto o_ugx = nrs->scalar->o_solution("ugx");
-    auto o_ugy = nrs->scalar->o_solution("ugy");
-    auto o_ugz = nrs->scalar->o_solution("ugz");
-    platform->linAlg->fill(nrs->meshV->Nlocal, p.alphaInitial, o_alpha);
-    platform->linAlg->fill(nrs->meshV->Nlocal, 0.0, o_ugx);
-    platform->linAlg->fill(nrs->meshV->Nlocal, 0.0, o_ugy);
-    platform->linAlg->fill(nrs->meshV->Nlocal, p.ugInlet, o_ugz);
-    auto o_umz = nrs->fluid->o_U.slice(2 * nrs->fieldOffset, nrs->fieldOffset);
-    platform->linAlg->fill(nrs->meshV->Nlocal, umz, o_umz);
+    bubbleColumn::initializePlumeKernel(
+        nrs->meshV->Nlocal,
+        nrs->fieldOffset,
+        p.rhoLiquid,
+        p.rhoGas,
+        p.alphaInlet,
+        p.ugInlet,
+        p.initialPlumeHeight,
+        p.initialPlumeThickness,
+        nrs->meshV->o_z,
+        nrs->scalar->o_solution("alpha"),
+        nrs->scalar->o_solution("ugx"),
+        nrs->scalar->o_solution("ugy"),
+        nrs->scalar->o_solution("ugz"),
+        nrs->fluid->o_U);
   }
   bubbleColumn::initializeHistory();
   nrs->userSource = &bubbleColumn::addExplicitSources;

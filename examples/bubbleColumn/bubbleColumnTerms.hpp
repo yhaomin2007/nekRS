@@ -12,6 +12,8 @@ struct Parameters {
   dfloat alphaInitial;
   dfloat alphaInlet;
   dfloat ugInlet;
+  dfloat initialPlumeHeight;
+  dfloat initialPlumeThickness;
   dfloat gravity[3];
   dfloat alphaFloor;
   dfloat dragEnabled;
@@ -39,6 +41,7 @@ static deviceMemory<dfloat> o_alphaSource;
 static deviceMemory<dfloat> o_ugSource;
 static deviceMemory<dfloat> o_mixtureForce;
 static occa::kernel packGasVelocityKernel;
+static occa::kernel initializePlumeKernel;
 static occa::kernel buildLiquidVelocityKernel;
 static occa::kernel updateVirtualMassHistoryKernel;
 static occa::kernel buildEquationTermsKernel;
@@ -54,6 +57,7 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
     platform->kernelRequests.add(request, fileName, kernelInfo);
   } else {
     packGasVelocityKernel = platform->kernelRequests.load(request, "packGasVelocity");
+    initializePlumeKernel = platform->kernelRequests.load(request, "initializePlume");
     buildLiquidVelocityKernel = platform->kernelRequests.load(request, "buildLiquidVelocity");
     updateVirtualMassHistoryKernel =
         platform->kernelRequests.load(request, "updateVirtualMassHistory");

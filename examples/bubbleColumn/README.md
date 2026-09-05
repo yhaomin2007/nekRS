@@ -6,8 +6,14 @@ included yet. A future mesh must expose only these boundary IDs:
 The column axis and upward inlet-flow direction are (+z); gravity acts in
 (-z).
 
-For a fresh run, the mixture z-velocity is initialized to the inlet value
-`alphaInlet*rhoGas*gasInletVelocity/rhoM`; its x- and y-components remain zero.
+For a fresh run, a smooth gas plume is initialized above the inlet at `z=0`:
+
+`profile=0.5*(1-tanh((z-initialPlumeHeight)/initialPlumeThickness))`.
+
+Both `alpha` and `ugz` use this profile. The mixture z-velocity is initialized
+consistently as `alpha*rhoGas*ugz/rhoM`, corresponding to stationary liquid;
+all x- and y-velocity components remain zero. The plume height and transition
+thickness are adjustable in `[CASEDATA]`.
 
 | ID | Patch | Mixture velocity | `alpha` | Gas velocity |
 |---:|---|---|---|---|

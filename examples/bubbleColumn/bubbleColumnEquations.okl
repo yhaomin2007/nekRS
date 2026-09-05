@@ -12,6 +12,38 @@
   }
 }
 
+@kernel void initializePlume(const dlong N,
+                             const dlong offset,
+                             const dfloat rhoLiquid,
+                             const dfloat rhoGas,
+                             const dfloat alphaInlet,
+                             const dfloat gasInletVelocity,
+                             const dfloat plumeHeight,
+                             const dfloat plumeThickness,
+                             @ restrict const dfloat *z,
+                             @ restrict dfloat *alpha,
+                             @ restrict dfloat *ugx,
+                             @ restrict dfloat *ugy,
+                             @ restrict dfloat *ugz,
+                             @ restrict dfloat *um)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    const dfloat profile =
+        0.5 * (1.0 - tanh((z[n] - plumeHeight) / plumeThickness));
+    const dfloat a = alphaInlet * profile;
+    const dfloat ugVertical = gasInletVelocity * profile;
+    const dfloat rhoM = (1.0 - a) * rhoLiquid + a * rhoGas;
+
+    alpha[n] = a;
+    ugx[n] = 0.0;
+    ugy[n] = 0.0;
+    ugz[n] = ugVertical;
+    um[n + 0 * offset] = 0.0;
+    um[n + 1 * offset] = 0.0;
+    um[n + 2 * offset] = a * rhoGas * ugVertical / rhoM;
+  }
+}
+
 @kernel void buildLiquidVelocity(const dlong N,
                                  const dlong offset,
                                  const dfloat rhoLiquid,
