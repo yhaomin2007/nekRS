@@ -12,6 +12,58 @@
   }
 }
 
+@kernel void buildLiquidVelocity(const dlong N,
+                                 const dlong offset,
+                                 const dfloat rhoLiquid,
+                                 const dfloat rhoGas,
+                                 const dfloat alphaFloor,
+                                 @ restrict const dfloat *alpha,
+                                 @ restrict const dfloat *um,
+                                 @ restrict const dfloat *ug,
+                                 @ restrict dfloat *ul)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    const dfloat aRaw = alpha[n];
+    const dfloat a = (aRaw < 0.0) ? 0.0 : ((aRaw > 1.0) ? 1.0 : aRaw);
+    const dfloat beta = 1.0 - a;
+    const dfloat betaSafe = (beta > alphaFloor) ? beta : alphaFloor;
+    const dfloat rhoM = beta * rhoLiquid + a * rhoGas;
+    for (int i = 0; i < 3; ++i) {
+      ul[n + i * offset] =
+          (rhoM * um[n + i * offset] - a * rhoGas * ug[n + i * offset])
+          / (betaSafe * rhoLiquid);
+    }
+  }
+}
+
+@kernel void updateVirtualMassHistory(const dlong N,
+                                      const dlong offset,
+                                      const dfloat inverseDt,
+                                      @ restrict const dfloat *ug,
+                                      @ restrict const dfloat *ul,
+                                      @ restrict dfloat *ulPrevious,
+                                      @ restrict dfloat *ugPrevious,
+                                      @ restrict const dfloat *gradUl,
+                                      @ restrict const dfloat *gradUg,
+                                      @ restrict dfloat *relativeAcceleration)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    for (int i = 0; i < 3; ++i) {
+      dfloat liquidAcceleration =
+          (ul[n + i * offset] - ulPrevious[n + i * offset]) * inverseDt;
+      dfloat gasAcceleration =
+          (ug[n + i * offset] - ugPrevious[n + i * offset]) * inverseDt;
+      for (int j = 0; j < 3; ++j) {
+        liquidAcceleration += ul[n + j * offset] * gradUl[n + (3 * i + j) * offset];
+        gasAcceleration += ug[n + j * offset] * gradUg[n + (3 * i + j) * offset];
+      }
+      relativeAcceleration[n + i * offset] = liquidAcceleration - gasAcceleration;
+      ulPrevious[n + i * offset] = ul[n + i * offset];
+      ugPrevious[n + i * offset] = ug[n + i * offset];
+    }
+  }
+}
+
 @kernel void buildEquationTerms(const dlong N,
                                 const dlong offset,
                                 const dfloat rhoLiquid,
@@ -19,15 +71,20 @@
                                 const dfloat muLiquid,
                                 const dfloat muGas,
                                 const dfloat alphaFloor,
-                                const dfloat dragCoefficient,
+                                const dfloat dragEnabled,
+                                const dfloat bubbleDiameter,
+                                const dfloat virtualMassEnabled,
+                                const dfloat virtualMassCoefficient,
                                 const dfloat gravityX,
                                 const dfloat gravityY,
                                 const dfloat gravityZ,
                                 @ restrict const dfloat *alpha,
                                 @ restrict const dfloat *um,
                                 @ restrict const dfloat *ug,
+                                @ restrict const dfloat *ul,
                                 @ restrict const dfloat *gradAlpha,
                                 @ restrict const dfloat *gradUg,
+                                @ restrict const dfloat *virtualMassRelativeAcceleration,
                                 @ restrict const dfloat *gradP,
                                 @ restrict dfloat *rhoMField,
                                 @ restrict dfloat *muMField,
@@ -49,6 +106,9 @@
     const dfloat dx = ug[n + 0 * offset] - um[n + 0 * offset];
     const dfloat dy = ug[n + 1 * offset] - um[n + 1 * offset];
     const dfloat dz = ug[n + 2 * offset] - um[n + 2 * offset];
+    const dfloat urx = ug[n + 0 * offset] - ul[n + 0 * offset];
+    const dfloat ury = ug[n + 1 * offset] - ul[n + 1 * offset];
+    const dfloat urz = ug[n + 2 * offset] - ul[n + 2 * offset];
 
     const dfloat divUg = gradUg[n + (0 * 3 + 0) * offset]
                          + gradUg[n + (1 * 3 + 1) * offset]
@@ -90,14 +150,31 @@
                          + dy * gradUg[n + 7 * offset]
                          + dz * gradUg[n + 8 * offset];
 
-    // Minimal placeholder only; the production drag closure must use u_g-u_l.
-    const dfloat dragScale = -dragCoefficient / (aSafe * rhoGas);
+    // OpenFOAM Schiller-Naumann dispersed-gas drag.
+    const dfloat magUr = sqrt(urx * urx + ury * ury + urz * urz);
+    const dfloat Re = rhoLiquid * bubbleDiameter * magUr / muLiquid;
+    const dfloat CdRe = (Re < 1000.0)
+        ? 24.0 * (1.0 + 0.15 * pow(Re, 0.687))
+        : 0.44 * Re;
+    const dfloat Ki = 0.75 * CdRe * muLiquid
+                      / (bubbleDiameter * bubbleDiameter);
+    const dfloat K = aSafe * Ki;
+    const dfloat dragScale = -dragEnabled * K / (aSafe * rhoGas);
+    const dfloat virtualMassScale = virtualMassEnabled
+                                    * virtualMassCoefficient
+                                    * rhoLiquid / rhoGas;
     ugSource[n + 0 * offset] = -advX - gradP[n + 0 * offset] / rhoGas
-                               + gravityX + dragScale * dx;
+                               + gravityX + dragScale * urx
+                               + virtualMassScale
+                                 * virtualMassRelativeAcceleration[n + 0 * offset];
     ugSource[n + 1 * offset] = -advY - gradP[n + 1 * offset] / rhoGas
-                               + gravityY + dragScale * dy;
+                               + gravityY + dragScale * ury
+                               + virtualMassScale
+                                 * virtualMassRelativeAcceleration[n + 1 * offset];
     ugSource[n + 2 * offset] = -advZ - gradP[n + 2 * offset] / rhoGas
-                               + gravityZ + dragScale * dz;
+                               + gravityZ + dragScale * urz
+                               + virtualMassScale
+                                 * virtualMassRelativeAcceleration[n + 2 * offset];
   }
 }
 

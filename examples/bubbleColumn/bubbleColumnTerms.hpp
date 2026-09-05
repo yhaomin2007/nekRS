@@ -14,11 +14,19 @@ struct Parameters {
   dfloat ugInlet;
   dfloat gravity[3];
   dfloat alphaFloor;
-  dfloat dragCoefficient;
+  dfloat dragEnabled;
+  dfloat bubbleDiameter;
+  dfloat virtualMassEnabled;
+  dfloat virtualMassCoefficient;
 };
 
 static Parameters p;
 static deviceMemory<dfloat> o_ug;
+static deviceMemory<dfloat> o_ul;
+static deviceMemory<dfloat> o_ulPrevious;
+static deviceMemory<dfloat> o_ugPrevious;
+static deviceMemory<dfloat> o_gradUl;
+static deviceMemory<dfloat> o_virtualMassRelativeAcceleration;
 static deviceMemory<dfloat> o_gradAlpha;
 static deviceMemory<dfloat> o_gradUg;
 static deviceMemory<dfloat> o_gradP;
@@ -31,6 +39,8 @@ static deviceMemory<dfloat> o_alphaSource;
 static deviceMemory<dfloat> o_ugSource;
 static deviceMemory<dfloat> o_mixtureForce;
 static occa::kernel packGasVelocityKernel;
+static occa::kernel buildLiquidVelocityKernel;
+static occa::kernel updateVirtualMassHistoryKernel;
 static occa::kernel buildEquationTermsKernel;
 static occa::kernel buildMixtureForceKernel;
 
@@ -44,6 +54,9 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
     platform->kernelRequests.add(request, fileName, kernelInfo);
   } else {
     packGasVelocityKernel = platform->kernelRequests.load(request, "packGasVelocity");
+    buildLiquidVelocityKernel = platform->kernelRequests.load(request, "buildLiquidVelocity");
+    updateVirtualMassHistoryKernel =
+        platform->kernelRequests.load(request, "updateVirtualMassHistory");
     buildEquationTermsKernel = platform->kernelRequests.load(request, "buildEquationTerms");
     buildMixtureForceKernel = platform->kernelRequests.load(request, "buildMixtureForce");
   }
@@ -53,6 +66,11 @@ inline void allocate()
 {
   const dlong offset = nrs->fieldOffset;
   o_ug.resize(3 * offset);
+  o_ul.resize(3 * offset);
+  o_ulPrevious.resize(3 * offset);
+  o_ugPrevious.resize(3 * offset);
+  o_gradUl.resize(9 * offset);
+  o_virtualMassRelativeAcceleration.resize(3 * offset);
   o_gradAlpha.resize(3 * offset);
   o_gradUg.resize(9 * offset);
   o_gradP.resize(3 * offset);
@@ -78,8 +96,18 @@ inline void evaluatePointwiseTerms()
                         nrs->scalar->o_solution("ugy"),
                         nrs->scalar->o_solution("ugz"),
                         o_ug);
+  buildLiquidVelocityKernel(mesh->Nlocal,
+                            offset,
+                            p.rhoLiquid,
+                            p.rhoGas,
+                            p.alphaFloor,
+                            alpha,
+                            nrs->fluid->o_U,
+                            o_ug,
+                            o_ul);
   opSEM::strongGrad(mesh, offset, alpha, o_gradAlpha);
   opSEM::strongGradVec(mesh, offset, o_ug, o_gradUg);
+  opSEM::strongGradVec(mesh, offset, o_ul, o_gradUl);
   opSEM::strongGrad(mesh, offset, nrs->fluid->o_P, o_gradP);
 
   buildEquationTermsKernel(mesh->Nlocal,
@@ -89,15 +117,20 @@ inline void evaluatePointwiseTerms()
                            p.muLiquid,
                            p.muGas,
                            p.alphaFloor,
-                           p.dragCoefficient,
+                           p.dragEnabled,
+                           p.bubbleDiameter,
+                           p.virtualMassEnabled,
+                           p.virtualMassCoefficient,
                            p.gravity[0],
                            p.gravity[1],
                            p.gravity[2],
                            alpha,
                            nrs->fluid->o_U,
                            o_ug,
+                           o_ul,
                            o_gradAlpha,
                            o_gradUg,
+                           o_virtualMassRelativeAcceleration,
                            o_gradP,
                            o_rhoM,
                            o_muM,
@@ -105,6 +138,50 @@ inline void evaluatePointwiseTerms()
                            o_driftStress,
                            o_alphaSource,
                            o_ugSource);
+}
+
+inline void initializeHistory()
+{
+  evaluatePointwiseTerms();
+  const dlong offset = nrs->fieldOffset;
+  o_ulPrevious.copyFrom(o_ul, 3 * offset);
+  o_ugPrevious.copyFrom(o_ug, 3 * offset);
+  platform->linAlg->fill(3 * offset, 0.0, o_virtualMassRelativeAcceleration);
+}
+
+inline void updateVirtualMassHistory()
+{
+  auto mesh = nrs->meshV;
+  const dlong offset = nrs->fieldOffset;
+  auto alpha = nrs->scalar->o_solution("alpha");
+
+  packGasVelocityKernel(mesh->Nlocal,
+                        offset,
+                        nrs->scalar->o_solution("ugx"),
+                        nrs->scalar->o_solution("ugy"),
+                        nrs->scalar->o_solution("ugz"),
+                        o_ug);
+  buildLiquidVelocityKernel(mesh->Nlocal,
+                            offset,
+                            p.rhoLiquid,
+                            p.rhoGas,
+                            p.alphaFloor,
+                            alpha,
+                            nrs->fluid->o_U,
+                            o_ug,
+                            o_ul);
+  opSEM::strongGradVec(mesh, offset, o_ug, o_gradUg);
+  opSEM::strongGradVec(mesh, offset, o_ul, o_gradUl);
+  updateVirtualMassHistoryKernel(mesh->Nlocal,
+                                 offset,
+                                 1.0 / nrs->dt[0],
+                                 o_ug,
+                                 o_ul,
+                                 o_ulPrevious,
+                                 o_ugPrevious,
+                                 o_gradUl,
+                                 o_gradUg,
+                                 o_virtualMassRelativeAcceleration);
 }
 
 inline void evaluateMixtureForce()

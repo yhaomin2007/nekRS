@@ -29,7 +29,10 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   platform->par->extract("casedata", "gravityy", p.gravity[1]);
   platform->par->extract("casedata", "gravityz", p.gravity[2]);
   platform->par->extract("casedata", "alphafloor", p.alphaFloor);
-  platform->par->extract("casedata", "dragcoefficient", p.dragCoefficient);
+  platform->par->extract("casedata", "dragenabled", p.dragEnabled);
+  platform->par->extract("casedata", "bubblediameter", p.bubbleDiameter);
+  platform->par->extract("casedata", "virtualmassenabled", p.virtualMassEnabled);
+  platform->par->extract("casedata", "virtualmasscoefficient", p.virtualMassCoefficient);
 }
 
 void UDF_Setup()
@@ -45,6 +48,7 @@ void UDF_Setup()
     platform->linAlg->fill(nrs->meshV->Nlocal, 0.0, o_ugy);
     platform->linAlg->fill(nrs->meshV->Nlocal, bubbleColumn::p.ugInlet, o_ugz);
   }
+  bubbleColumn::initializeHistory();
   nrs->userSource = &bubbleColumn::addExplicitSources;
   nrs->userProperties = &bubbleColumn::updateProperties;
   nrs->userDivergence = &bubbleColumn::updateDivergence;
@@ -52,6 +56,9 @@ void UDF_Setup()
 
 void UDF_ExecuteStep(double time, int tstep)
 {
+  if (tstep > 0 && bubbleColumn::p.virtualMassEnabled != 0.0) {
+    bubbleColumn::updateVirtualMassHistory();
+  }
   if (nrs->checkpointStep) {
     nrs->copyToNek(time, tstep);
     nek::userchk();

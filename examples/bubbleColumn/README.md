@@ -40,9 +40,24 @@ or extrapolated pressure), not the pressure produced later in the same step.
 Using same-step pressure would require a second scalar pass or core orchestration
 changes, both intentionally excluded here.
 
-The current drag term is a clearly isolated placeholder controlled by
-`dragCoefficient`; its default is zero. Replace it with the selected interphase
-momentum-transfer closure before treating the case as a physical model.
-The alpha-weighted gas viscous-stress contribution in Eq. (29) is likewise left
-as an explicit next closure; the tiny scalar diffusivity is numerical, not a
-claim that this physical term has been modeled.
+## Interphase momentum transfer
+
+`dragEnabled` and `virtualMassEnabled` in `[CASEDATA]` are numeric switches:
+use `1.0` to enable a term and `0.0` to disable it independently. Drag uses the
+OpenFOAM dispersed-gas Schiller--Naumann model with constant `bubbleDiameter`.
+The physical slip is reconstructed from the density-averaged mixture velocity,
+
+`u_l=(rho_m*u_m-alpha*rho_g*u_g)/((1-alpha)*rho_l)`.
+
+Virtual mass uses `virtualMassCoefficient` and the lagged material-acceleration
+difference `D_l(u_l)/Dt-D_g(u_g)/Dt`. The history is refreshed after each time
+step. This explicit, one-pass treatment is intentionally not algebraically
+identical to OpenFOAM's implicit virtual-mass coupling and may require a smaller
+time step, especially because `rho_l/rho_g` is large.
+Both switches default to `0.0`, preserving the force-free baseline and allowing
+drag and virtual mass to be activated and tested one at a time.
+
+Lift, turbulent dispersion, and wall lubrication remain zero, matching the
+official OpenFOAM Foundation `multiphaseEuler/bubbleColumn` tutorial. The
+alpha-weighted gas viscous-stress contribution in Eq. (29) is still absent; the
+tiny scalar diffusivity is numerical, not a physical model.
