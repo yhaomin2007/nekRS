@@ -27,6 +27,11 @@ injected into every native nekRS boundary-kernel translation unit.
 - Eq. (27): `alphaSource` for passive scalar `ALPHA`.
 - Eq. (29): `ugSource` for passive scalars `UGX`, `UGY`, and `UGZ`.
 
+The prescribed mixture divergence uses `nrs->userDivergence` directly; the
+thermodynamic `LOWMACH` option remains disabled because it would require a
+thermodynamic pressure `p0th`. The variable mixture density is retained in the
+pressure operator through `FLUID PRESSURE ELLIPTIC COEFF FIELD`.
+
 The scalar diffusivities are set to `1e-12` only to retain well-posed scalar
 Helmholtz solves. They approximate the desired nondiffusive transport.
 

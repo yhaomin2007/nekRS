@@ -15,8 +15,11 @@ void UDF_LoadKernels(deviceKernelProperties& kernelInfo)
 
 void UDF_Setup0(MPI_Comm, setupAide &)
 {
-  // Enable variable-density pressure projection and prescribed divergence.
-  platform->options.setArgs("LOWMACH", "TRUE");
+  // userDivergence does not require thermodynamic LOWMACH mode. Keep that
+  // mode disabled (and therefore avoid its p0th requirement), while retaining
+  // the variable 1/rho_m coefficient in the pressure projection.
+  platform->options.setArgs("LOWMACH", "FALSE");
+  platform->options.setArgs("FLUID PRESSURE ELLIPTIC COEFF FIELD", "TRUE");
   auto &p = bubbleColumn::p;
   platform->par->extract("casedata", "rholiquid", p.rhoLiquid);
   platform->par->extract("casedata", "rhogas", p.rhoGas);
