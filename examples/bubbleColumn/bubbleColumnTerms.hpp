@@ -207,14 +207,20 @@ inline void addExplicitSources(double)
 {
   evaluatePointwiseTerms();
   evaluateMixtureForce();
-  nrs->scalar->o_explicitTerms("alpha").copyFrom(o_alphaSource);
-  nrs->scalar->o_explicitTerms("ugx").copyFrom(
-      o_ugSource.slice(0 * nrs->fieldOffset, nrs->fieldOffset));
-  nrs->scalar->o_explicitTerms("ugy").copyFrom(
-      o_ugSource.slice(1 * nrs->fieldOffset, nrs->fieldOffset));
-  nrs->scalar->o_explicitTerms("ugz").copyFrom(
-      o_ugSource.slice(2 * nrs->fieldOffset, nrs->fieldOffset));
-  nrs->fluid->o_explicitTerms().copyFrom(o_mixtureForce);
+  const dlong Nlocal = nrs->meshV->Nlocal;
+  const dlong offset = nrs->fieldOffset;
+
+  // Copy only entries written by the pointwise kernels. Avoid whole-view
+  // copies because scalar and fluid fields may have different padded extents.
+  nrs->scalar->o_explicitTerms("alpha").copyFrom(o_alphaSource, Nlocal);
+  nrs->scalar->o_explicitTerms("ugx").copyFrom(o_ugSource, Nlocal, 0, 0 * offset);
+  nrs->scalar->o_explicitTerms("ugy").copyFrom(o_ugSource, Nlocal, 0, 1 * offset);
+  nrs->scalar->o_explicitTerms("ugz").copyFrom(o_ugSource, Nlocal, 0, 2 * offset);
+
+  auto fluidTerms = nrs->fluid->o_explicitTerms();
+  for (int i = 0; i < 3; ++i) {
+    fluidTerms.copyFrom(o_mixtureForce, Nlocal, i * offset, i * offset);
+  }
 }
 
 inline void updateProperties(double)
