@@ -42,14 +42,22 @@ void UDF_Setup()
 {
   bubbleColumn::allocate();
   if (platform->options.getArgs("RESTART FILE NAME").empty()) {
+    const auto &p = bubbleColumn::p;
+    const dfloat rhoM = (1.0 - p.alphaInlet) * p.rhoLiquid
+                        + p.alphaInlet * p.rhoGas;
+    const dfloat umz = p.alphaInlet * p.rhoGas * p.ugInlet / rhoM;
     auto o_alpha = nrs->scalar->o_solution("alpha");
     auto o_ugx = nrs->scalar->o_solution("ugx");
     auto o_ugy = nrs->scalar->o_solution("ugy");
     auto o_ugz = nrs->scalar->o_solution("ugz");
-    platform->linAlg->fill(nrs->meshV->Nlocal, bubbleColumn::p.alphaInitial, o_alpha);
+    platform->linAlg->fill(nrs->meshV->Nlocal, p.alphaInitial, o_alpha);
     platform->linAlg->fill(nrs->meshV->Nlocal, 0.0, o_ugx);
     platform->linAlg->fill(nrs->meshV->Nlocal, 0.0, o_ugy);
-    platform->linAlg->fill(nrs->meshV->Nlocal, bubbleColumn::p.ugInlet, o_ugz);
+    platform->linAlg->fill(nrs->meshV->Nlocal, p.ugInlet, o_ugz);
+    platform->linAlg->fill(
+        nrs->meshV->Nlocal,
+        umz,
+        nrs->fluid->o_U.slice(2 * nrs->fieldOffset, nrs->fieldOffset));
   }
   bubbleColumn::initializeHistory();
   nrs->userSource = &bubbleColumn::addExplicitSources;

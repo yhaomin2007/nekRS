@@ -6,6 +6,9 @@ included yet. A future mesh must expose only these boundary IDs:
 The column axis and upward inlet-flow direction are (+z); gravity acts in
 (-z).
 
+For a fresh run, the mixture z-velocity is initialized to the inlet value
+`alphaInlet*rhoGas*gasInletVelocity/rhoM`; its x- and y-components remain zero.
+
 | ID | Patch | Mixture velocity | `alpha` | Gas velocity |
 |---:|---|---|---|---|
 | 1 | inlet | density-averaged inlet value | fixed inlet value | fixed vertical value |
