@@ -54,10 +54,8 @@ void UDF_Setup()
     platform->linAlg->fill(nrs->meshV->Nlocal, 0.0, o_ugx);
     platform->linAlg->fill(nrs->meshV->Nlocal, 0.0, o_ugy);
     platform->linAlg->fill(nrs->meshV->Nlocal, p.ugInlet, o_ugz);
-    platform->linAlg->fill(
-        nrs->meshV->Nlocal,
-        umz,
-        nrs->fluid->o_U.slice(2 * nrs->fieldOffset, nrs->fieldOffset));
+    auto o_umz = nrs->fluid->o_U.slice(2 * nrs->fieldOffset, nrs->fieldOffset);
+    platform->linAlg->fill(nrs->meshV->Nlocal, umz, o_umz);
   }
   bubbleColumn::initializeHistory();
   nrs->userSource = &bubbleColumn::addExplicitSources;
