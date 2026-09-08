@@ -1,0 +1,244 @@
+@kernel void packGasVelocity(const dlong N,
+                             const dlong offset,
+                             @ restrict const dfloat *ugx,
+                             @ restrict const dfloat *ugy,
+                             @ restrict const dfloat *ugz,
+                             @ restrict dfloat *ug)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    ug[n + 0 * offset] = ugx[n];
+    ug[n + 1 * offset] = ugy[n];
+    ug[n + 2 * offset] = ugz[n];
+  }
+}
+
+@kernel void initializePlume(const dlong N,
+                             const dlong offset,
+                             const dfloat alphaInlet,
+                             const dfloat gasInletVelocity,
+                             const dfloat plumeHeight,
+                             const dfloat plumeThickness,
+                             @ restrict const dfloat *z,
+                             @ restrict dfloat *alpha,
+                             @ restrict dfloat *ugx,
+                             @ restrict dfloat *ugy,
+                             @ restrict dfloat *ugz,
+                             @ restrict dfloat *uv)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    const dfloat profile =
+        0.5 * (1.0 - tanh((z[n] - plumeHeight) / plumeThickness));
+    const dfloat a = alphaInlet * profile;
+    const dfloat ugVertical = gasInletVelocity * profile;
+
+    alpha[n] = a;
+    ugx[n] = 0.0;
+    ugy[n] = 0.0;
+    ugz[n] = ugVertical;
+    uv[n + 0 * offset] = 0.0;
+    uv[n + 1 * offset] = 0.0;
+    uv[n + 2 * offset] = a * ugVertical;
+  }
+}
+
+@kernel void buildLiquidVelocity(const dlong N,
+                                 const dlong offset,
+                                 const dfloat alphaFloor,
+                                 @ restrict const dfloat *alpha,
+                                 @ restrict const dfloat *uv,
+                                 @ restrict const dfloat *ug,
+                                 @ restrict dfloat *ul)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    const dfloat aRaw = alpha[n];
+    const dfloat a = (aRaw < 0.0) ? 0.0 : ((aRaw > 1.0) ? 1.0 : aRaw);
+    const dfloat beta = 1.0 - a;
+    const dfloat betaSafe = (beta > alphaFloor) ? beta : alphaFloor;
+    for (int i = 0; i < 3; ++i) {
+      ul[n + i * offset] =
+          (uv[n + i * offset] - a * ug[n + i * offset]) / betaSafe;
+    }
+  }
+}
+
+@kernel void updateVirtualMassHistory(const dlong N,
+                                      const dlong offset,
+                                      const dfloat inverseDt,
+                                      @ restrict const dfloat *ug,
+                                      @ restrict const dfloat *ul,
+                                      @ restrict dfloat *ulPrevious,
+                                      @ restrict dfloat *ugPrevious,
+                                      @ restrict const dfloat *gradUl,
+                                      @ restrict const dfloat *gradUg,
+                                      @ restrict dfloat *relativeAcceleration)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    for (int i = 0; i < 3; ++i) {
+      dfloat liquidAcceleration =
+          (ul[n + i * offset] - ulPrevious[n + i * offset]) * inverseDt;
+      dfloat gasAcceleration =
+          (ug[n + i * offset] - ugPrevious[n + i * offset]) * inverseDt;
+      for (int j = 0; j < 3; ++j) {
+        liquidAcceleration += ul[n + j * offset] * gradUl[n + (3 * i + j) * offset];
+        gasAcceleration += ug[n + j * offset] * gradUg[n + (3 * i + j) * offset];
+      }
+      relativeAcceleration[n + i * offset] = liquidAcceleration - gasAcceleration;
+      ulPrevious[n + i * offset] = ul[n + i * offset];
+      ugPrevious[n + i * offset] = ug[n + i * offset];
+    }
+  }
+}
+
+@kernel void buildEquationTerms(const dlong N,
+                                const dlong offset,
+                                const dfloat rhoLiquid,
+                                const dfloat rhoGas,
+                                const dfloat muLiquid,
+                                const dfloat muGas,
+                                const dfloat alphaFloor,
+                                const dfloat dragEnabled,
+                                const dfloat bubbleDiameter,
+                                const dfloat virtualMassEnabled,
+                                const dfloat virtualMassCoefficient,
+                                const dfloat gravityX,
+                                const dfloat gravityY,
+                                const dfloat gravityZ,
+                                @ restrict const dfloat *alpha,
+                                @ restrict const dfloat *uv,
+                                @ restrict const dfloat *ug,
+                                @ restrict const dfloat *ul,
+                                @ restrict const dfloat *gradAlpha,
+                                @ restrict const dfloat *gradUg,
+                                @ restrict const dfloat *virtualMassRelativeAcceleration,
+                                @ restrict const dfloat *gradP,
+                                @ restrict dfloat *rhoMField,
+                                @ restrict dfloat *muMField,
+                                @ restrict dfloat *driftStress,
+                                @ restrict dfloat *alphaSource,
+                                @ restrict dfloat *ugSource,
+                                @ restrict dfloat *dragLambda,
+                                @ restrict dfloat *mixtureInterphaseAcceleration)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    // Keep the physical volume fraction separate from denominator protection.
+    const dfloat aRaw = alpha[n];
+    const dfloat a = (aRaw < 0.0) ? 0.0 : ((aRaw > 1.0) ? 1.0 : aRaw);
+    const dfloat beta = 1.0 - a;
+    const dfloat betaSafe = (beta > alphaFloor) ? beta : alphaFloor;
+    // NekRS uses 1/rho in its pressure operator. Store rhoEff so that
+    // 1/rhoEff=(1-alpha)/rho_l+alpha/rho_g, the phase-volume pressure mobility.
+    const dfloat pressureMobility = beta / rhoLiquid + a / rhoGas;
+    const dfloat rhoEff = 1.0 / pressureMobility;
+    const dfloat nuEff = beta * muLiquid / rhoLiquid + a * muGas / rhoGas;
+    const dfloat muEff = rhoEff * nuEff;
+
+    const dfloat dx = ug[n + 0 * offset] - uv[n + 0 * offset];
+    const dfloat dy = ug[n + 1 * offset] - uv[n + 1 * offset];
+    const dfloat dz = ug[n + 2 * offset] - uv[n + 2 * offset];
+    const dfloat urx = ug[n + 0 * offset] - ul[n + 0 * offset];
+    const dfloat ury = ug[n + 1 * offset] - ul[n + 1 * offset];
+    const dfloat urz = ug[n + 2 * offset] - ul[n + 2 * offset];
+
+    const dfloat divUg = gradUg[n + (0 * 3 + 0) * offset]
+                         + gradUg[n + (1 * 3 + 1) * offset]
+                         + gradUg[n + (2 * 3 + 2) * offset];
+    const dfloat slipGradAlpha = dx * gradAlpha[n + 0 * offset]
+                                   + dy * gradAlpha[n + 1 * offset]
+                                   + dz * gradAlpha[n + 2 * offset];
+
+    rhoMField[n] = rhoEff;
+    muMField[n] = muEff;
+
+    // Kinematic drift stress in the phase-volume momentum equation:
+    // alpha*(1-alpha)*(ug-ul)(ug-ul) = alpha/(1-alpha)*(ug-uv)(ug-uv).
+    const dfloat driftScale = a / betaSafe;
+    driftStress[n + 0 * offset] = driftScale * dx * dx;
+    driftStress[n + 1 * offset] = driftScale * dx * dy;
+    driftStress[n + 2 * offset] = driftScale * dx * dz;
+    driftStress[n + 3 * offset] = driftScale * dy * dx;
+    driftStress[n + 4 * offset] = driftScale * dy * dy;
+    driftStress[n + 5 * offset] = driftScale * dy * dz;
+    driftStress[n + 6 * offset] = driftScale * dz * dx;
+    driftStress[n + 7 * offset] = driftScale * dz * dy;
+    driftStress[n + 8 * offset] = driftScale * dz * dz;
+
+    // Source needed because nekRS advects alpha with the volume velocity uv.
+    alphaSource[n] = -slipGradAlpha - a * divUg;
+
+    // Eq. (29): gas-velocity source. Pressure is intentionally lagged one pass.
+    // The alpha-weighted gas viscous stress is not yet added in this scaffold.
+    const dfloat advX = dx * gradUg[n + 0 * offset]
+                         + dy * gradUg[n + 1 * offset]
+                         + dz * gradUg[n + 2 * offset];
+    const dfloat advY = dx * gradUg[n + 3 * offset]
+                         + dy * gradUg[n + 4 * offset]
+                         + dz * gradUg[n + 5 * offset];
+    const dfloat advZ = dx * gradUg[n + 6 * offset]
+                         + dy * gradUg[n + 7 * offset]
+                         + dz * gradUg[n + 8 * offset];
+
+    // OpenFOAM Schiller-Naumann dispersed-gas drag.
+    const dfloat magUr = sqrt(urx * urx + ury * ury + urz * urz);
+    const dfloat Re = rhoLiquid * bubbleDiameter * magUr / muLiquid;
+    const dfloat CdRe = (Re < 1000.0)
+        ? 24.0 * (1.0 + 0.15 * pow(Re, 0.687))
+        : 0.44 * Re;
+    const dfloat Ki = 0.75 * CdRe * muLiquid
+                      / (bubbleDiameter * bubbleDiameter);
+    // Since u_l-u_g = (u_v-u_g)/alpha_l, drag is lambda_D*(u_v-u_g).
+    // Put +lambda_D*u_v on the RHS and expose
+    // lambda_D for the passive-scalar Helmholtz diagonal.
+    const dfloat lambdaD = dragEnabled * Ki / (rhoGas * betaSafe);
+    dragLambda[n] = lambdaD;
+    const dfloat virtualMassScale = virtualMassEnabled
+                                    * virtualMassCoefficient
+                                    * rhoLiquid / rhoGas;
+    const dfloat agInterphaseX = -lambdaD * dx + virtualMassScale
+                                 * virtualMassRelativeAcceleration[n + 0 * offset];
+    const dfloat agInterphaseY = -lambdaD * dy + virtualMassScale
+                                 * virtualMassRelativeAcceleration[n + 1 * offset];
+    const dfloat agInterphaseZ = -lambdaD * dz + virtualMassScale
+                                 * virtualMassRelativeAcceleration[n + 2 * offset];
+    ugSource[n + 0 * offset] = -advX - gradP[n + 0 * offset] / rhoGas
+                               + gravityX + lambdaD * uv[n + 0 * offset]
+                               + virtualMassScale
+                                 * virtualMassRelativeAcceleration[n + 0 * offset];
+    ugSource[n + 1 * offset] = -advY - gradP[n + 1 * offset] / rhoGas
+                               + gravityY + lambdaD * uv[n + 1 * offset]
+                               + virtualMassScale
+                                 * virtualMassRelativeAcceleration[n + 1 * offset];
+    ugSource[n + 2 * offset] = -advZ - gradP[n + 2 * offset] / rhoGas
+                               + gravityZ + lambdaD * uv[n + 2 * offset]
+                               + virtualMassScale
+                                 * virtualMassRelativeAcceleration[n + 2 * offset];
+
+    // Interphase forces cancel in mass-weighted momentum, but not after the
+    // phase equations are divided by density and volume weighted. If a_g^I is
+    // the gas interphase acceleration, the volume-mixture contribution is
+    // alpha*(1-rho_g/rho_l)*a_g^I.
+    const dfloat volumeWeight = a * (1.0 - rhoGas / rhoLiquid);
+    mixtureInterphaseAcceleration[n + 0 * offset] = volumeWeight * agInterphaseX;
+    mixtureInterphaseAcceleration[n + 1 * offset] = volumeWeight * agInterphaseY;
+    mixtureInterphaseAcceleration[n + 2 * offset] = volumeWeight * agInterphaseZ;
+  }
+}
+
+@kernel void buildMixtureForce(const dlong N,
+                               const dlong offset,
+                               const dfloat gravityX,
+                               const dfloat gravityY,
+                               const dfloat gravityZ,
+                               @ restrict const dfloat *divDriftStress,
+                               @ restrict const dfloat *interphaseAcceleration,
+                               @ restrict dfloat *force)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    // o_EXT is acceleration. The drift tensor is already kinematic here.
+    force[n + 0 * offset] = -divDriftStress[n + 0 * offset] + gravityX
+                            + interphaseAcceleration[n + 0 * offset];
+    force[n + 1 * offset] = -divDriftStress[n + 1 * offset] + gravityY
+                            + interphaseAcceleration[n + 1 * offset];
+    force[n + 2 * offset] = -divDriftStress[n + 2 * offset] + gravityZ
+                            + interphaseAcceleration[n + 2 * offset];
+  }
+}

@@ -1,0 +1,76 @@
+#include "bubbleColumn2Terms.hpp"
+
+#ifdef __okl__
+#include "bubbleColumn2.oudf"
+#endif
+
+void UDF_LoadKernels(deviceKernelProperties& kernelInfo)
+{
+  kernelInfo.define("p_ALPHA_INLET") = bubbleColumn2::p.alphaInlet;
+  kernelInfo.define("p_UG_INLET") = bubbleColumn2::p.ugInlet;
+  bubbleColumn2::registerKernels(kernelInfo);
+}
+
+void UDF_Setup0(MPI_Comm, setupAide &)
+{
+  // The phase-volume averaged velocity is exactly divergence free for
+  // incompressible phases without phase change. The variable pressure
+  // coefficient is A_p=(1-alpha)/rho_l+alpha/rho_g.
+  platform->options.setArgs("LOWMACH", "FALSE");
+  platform->options.setArgs("FLUID PRESSURE ELLIPTIC COEFF FIELD", "TRUE");
+  auto &p = bubbleColumn2::p;
+  platform->par->extract("casedata", "rholiquid", p.rhoLiquid);
+  platform->par->extract("casedata", "rhogas", p.rhoGas);
+  platform->par->extract("casedata", "muliquid", p.muLiquid);
+  platform->par->extract("casedata", "mugas", p.muGas);
+  platform->par->extract("casedata", "alphainitial", p.alphaInitial);
+  platform->par->extract("casedata", "alphainlet", p.alphaInlet);
+  platform->par->extract("casedata", "gasinletvelocity", p.ugInlet);
+  platform->par->extract("casedata", "initialplumeheight", p.initialPlumeHeight);
+  platform->par->extract("casedata", "initialplumethickness", p.initialPlumeThickness);
+  platform->par->extract("casedata", "gravityx", p.gravity[0]);
+  platform->par->extract("casedata", "gravityy", p.gravity[1]);
+  platform->par->extract("casedata", "gravityz", p.gravity[2]);
+  platform->par->extract("casedata", "alphafloor", p.alphaFloor);
+  platform->par->extract("casedata", "dragenabled", p.dragEnabled);
+  platform->par->extract("casedata", "bubblediameter", p.bubbleDiameter);
+  platform->par->extract("casedata", "virtualmassenabled", p.virtualMassEnabled);
+  platform->par->extract("casedata", "virtualmasscoefficient", p.virtualMassCoefficient);
+}
+
+void UDF_Setup()
+{
+  bubbleColumn2::allocate();
+  if (platform->options.getArgs("RESTART FILE NAME").empty()) {
+    const auto &p = bubbleColumn2::p;
+    bubbleColumn2::initializePlumeKernel(
+        nrs->meshV->Nlocal,
+        nrs->fieldOffset,
+        p.alphaInlet,
+        p.ugInlet,
+        p.initialPlumeHeight,
+        p.initialPlumeThickness,
+        nrs->meshV->o_z,
+        nrs->scalar->o_solution("alpha"),
+        nrs->scalar->o_solution("ugx"),
+        nrs->scalar->o_solution("ugy"),
+        nrs->scalar->o_solution("ugz"),
+        nrs->fluid->o_U);
+  }
+  bubbleColumn2::initializeHistory();
+  nrs->userSource = &bubbleColumn2::addExplicitSources;
+  nrs->scalar->userImplicitLinearTerm = &bubbleColumn2::implicitGasDrag;
+  nrs->userProperties = &bubbleColumn2::updateProperties;
+  nrs->userDivergence = &bubbleColumn2::enforceZeroDivergence;
+}
+
+void UDF_ExecuteStep(double time, int tstep)
+{
+  if (tstep > 0 && bubbleColumn2::p.virtualMassEnabled != 0.0) {
+    bubbleColumn2::updateVirtualMassHistory();
+  }
+  if (nrs->checkpointStep) {
+    nrs->copyToNek(time, tstep);
+    nek::userchk();
+  }
+}
