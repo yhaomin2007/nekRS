@@ -9,6 +9,9 @@ timeStepper = tombo2
 checkpointInterval = 20
 scalars = ALPHA, UGX, UGY, UGZ
 
+[PROBLEMTYPE]
+equation = navierStokes+variableViscosity
+
 [FLUID PRESSURE]
 residualTol = 1e-8
 initialGuess = previous

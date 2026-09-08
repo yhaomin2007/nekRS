@@ -109,6 +109,8 @@
                                 @ restrict const dfloat *ul,
                                 @ restrict const dfloat *gradAlpha,
                                 @ restrict const dfloat *gradUg,
+                                @ restrict const dfloat *gradUl,
+                                @ restrict const dfloat *gradUv,
                                 @ restrict const dfloat *virtualMassRelativeAcceleration,
                                 @ restrict const dfloat *gradP,
                                 @ restrict dfloat *rhoMField,
@@ -117,7 +119,9 @@
                                 @ restrict dfloat *alphaSource,
                                 @ restrict dfloat *ugSource,
                                 @ restrict dfloat *dragLambda,
-                                @ restrict dfloat *mixtureInterphaseAcceleration)
+                                @ restrict dfloat *mixtureInterphaseAcceleration,
+                                @ restrict dfloat *exactKinematicStress,
+                                @ restrict dfloat *nativeDynamicStress)
 {
   for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
     // Keep the physical volume fraction separate from denominator protection.
@@ -148,6 +152,33 @@
 
     rhoMField[n] = rhoEff;
     muMField[n] = muEff;
+
+    const dfloat divUl = gradUl[n + 0 * offset]
+                         + gradUl[n + 4 * offset]
+                         + gradUl[n + 8 * offset];
+    const dfloat divUv = gradUv[n + 0 * offset]
+                         + gradUv[n + 4 * offset]
+                         + gradUv[n + 8 * offset];
+    for (int i = 0; i < 3; ++i) {
+      for (int j = 0; j < 3; ++j) {
+        const int ij = 3 * i + j;
+        const int ji = 3 * j + i;
+        const dfloat diagonal = (i == j) ? 1.0 : 0.0;
+        const dfloat strainLiquid = gradUl[n + ij * offset]
+                                    + gradUl[n + ji * offset]
+                                    - (2.0 / 3.0) * divUl * diagonal;
+        const dfloat strainGas = gradUg[n + ij * offset]
+                                 + gradUg[n + ji * offset]
+                                 - (2.0 / 3.0) * divUg * diagonal;
+        const dfloat strainVolume = gradUv[n + ij * offset]
+                                    + gradUv[n + ji * offset]
+                                    - (2.0 / 3.0) * divUv * diagonal;
+        exactKinematicStress[n + ij * offset] =
+            beta * muLiquid / rhoLiquid * strainLiquid
+            + a * muGas / rhoGas * strainGas;
+        nativeDynamicStress[n + ij * offset] = muEff * strainVolume;
+      }
+    }
 
     // Kinematic drift stress in the phase-volume momentum equation:
     // alpha*(1-alpha)*(ug-ul)(ug-ul) = alpha/(1-alpha)*(ug-uv)(ug-uv).
@@ -228,17 +259,26 @@
                                const dfloat gravityX,
                                const dfloat gravityY,
                                const dfloat gravityZ,
+                               @ restrict const dfloat *rhoEffective,
                                @ restrict const dfloat *divDriftStress,
+                               @ restrict const dfloat *divExactKinematicStress,
+                               @ restrict const dfloat *divNativeDynamicStress,
                                @ restrict const dfloat *interphaseAcceleration,
                                @ restrict dfloat *force)
 {
   for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
     // o_EXT is acceleration. The drift tensor is already kinematic here.
     force[n + 0 * offset] = -divDriftStress[n + 0 * offset] + gravityX
+                            + divExactKinematicStress[n + 0 * offset]
+                            - divNativeDynamicStress[n + 0 * offset] / rhoEffective[n]
                             + interphaseAcceleration[n + 0 * offset];
     force[n + 1 * offset] = -divDriftStress[n + 1 * offset] + gravityY
+                            + divExactKinematicStress[n + 1 * offset]
+                            - divNativeDynamicStress[n + 1 * offset] / rhoEffective[n]
                             + interphaseAcceleration[n + 1 * offset];
     force[n + 2 * offset] = -divDriftStress[n + 2 * offset] + gravityZ
+                            + divExactKinematicStress[n + 2 * offset]
+                            - divNativeDynamicStress[n + 2 * offset] / rhoEffective[n]
                             + interphaseAcceleration[n + 2 * offset];
   }
 }

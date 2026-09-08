@@ -28,6 +28,7 @@ static deviceMemory<dfloat> o_ul;
 static deviceMemory<dfloat> o_ulPrevious;
 static deviceMemory<dfloat> o_ugPrevious;
 static deviceMemory<dfloat> o_gradUl;
+static deviceMemory<dfloat> o_gradUv;
 static deviceMemory<dfloat> o_virtualMassRelativeAcceleration;
 static deviceMemory<dfloat> o_gradAlpha;
 static deviceMemory<dfloat> o_gradUg;
@@ -36,6 +37,10 @@ static deviceMemory<dfloat> o_rhoM;
 static deviceMemory<dfloat> o_muM;
 static deviceMemory<dfloat> o_driftStress;
 static deviceMemory<dfloat> o_divDriftStress;
+static deviceMemory<dfloat> o_exactKinematicStress;
+static deviceMemory<dfloat> o_nativeDynamicStress;
+static deviceMemory<dfloat> o_divExactKinematicStress;
+static deviceMemory<dfloat> o_divNativeDynamicStress;
 static deviceMemory<dfloat> o_mixtureInterphaseAcceleration;
 static deviceMemory<dfloat> o_alphaSource;
 static deviceMemory<dfloat> o_ugSource;
@@ -75,6 +80,7 @@ inline void allocate()
   o_ulPrevious.resize(3 * offset);
   o_ugPrevious.resize(3 * offset);
   o_gradUl.resize(9 * offset);
+  o_gradUv.resize(9 * offset);
   o_virtualMassRelativeAcceleration.resize(3 * offset);
   o_gradAlpha.resize(3 * offset);
   o_gradUg.resize(9 * offset);
@@ -83,6 +89,10 @@ inline void allocate()
   o_muM.resize(offset);
   o_driftStress.resize(9 * offset);
   o_divDriftStress.resize(3 * offset);
+  o_exactKinematicStress.resize(9 * offset);
+  o_nativeDynamicStress.resize(9 * offset);
+  o_divExactKinematicStress.resize(3 * offset);
+  o_divNativeDynamicStress.resize(3 * offset);
   o_mixtureInterphaseAcceleration.resize(3 * offset);
   o_alphaSource.resize(offset);
   o_ugSource.resize(3 * offset);
@@ -112,6 +122,7 @@ inline void evaluatePointwiseTerms()
   opSEM::strongGrad(mesh, offset, alpha, o_gradAlpha);
   opSEM::strongGradVec(mesh, offset, o_ug, o_gradUg);
   opSEM::strongGradVec(mesh, offset, o_ul, o_gradUl);
+  opSEM::strongGradVec(mesh, offset, nrs->fluid->o_U, o_gradUv);
   opSEM::strongGrad(mesh, offset, nrs->fluid->o_P, o_gradP);
 
   buildEquationTermsKernel(mesh->Nlocal,
@@ -134,6 +145,8 @@ inline void evaluatePointwiseTerms()
                            o_ul,
                            o_gradAlpha,
                            o_gradUg,
+                           o_gradUl,
+                           o_gradUv,
                            o_virtualMassRelativeAcceleration,
                            o_gradP,
                            o_rhoM,
@@ -142,7 +155,9 @@ inline void evaluatePointwiseTerms()
                            o_alphaSource,
                            o_ugSource,
                            o_dragLambda,
-                           o_mixtureInterphaseAcceleration);
+                           o_mixtureInterphaseAcceleration,
+                           o_exactKinematicStress,
+                           o_nativeDynamicStress);
 }
 
 inline void initializeHistory()
@@ -195,13 +210,24 @@ inline void evaluateMixtureForce()
     auto row = o_driftStress.slice(3 * i * offset, 3 * offset);
     auto divRow = o_divDriftStress.slice(i * offset, offset);
     opSEM::strongDivergence(mesh, offset, row, divRow);
+
+    auto exactRow = o_exactKinematicStress.slice(3 * i * offset, 3 * offset);
+    auto divExactRow = o_divExactKinematicStress.slice(i * offset, offset);
+    opSEM::strongDivergence(mesh, offset, exactRow, divExactRow);
+
+    auto nativeRow = o_nativeDynamicStress.slice(3 * i * offset, 3 * offset);
+    auto divNativeRow = o_divNativeDynamicStress.slice(i * offset, offset);
+    opSEM::strongDivergence(mesh, offset, nativeRow, divNativeRow);
   }
   buildMixtureForceKernel(mesh->Nlocal,
                           offset,
                           p.gravity[0],
                           p.gravity[1],
                           p.gravity[2],
+                          o_rhoM,
                           o_divDriftStress,
+                          o_divExactKinematicStress,
+                          o_divNativeDynamicStress,
                           o_mixtureInterphaseAcceleration,
                           o_mixtureForce);
 }

@@ -73,9 +73,26 @@ interphase acceleration, the retained volume-mixture contribution is
 
 `alpha*(1-rhoGas/rhoLiquid)*agI`.
 
-The effective viscosity is presently an interpolation based on
-`(1-alpha)*nuLiquid+alpha*nuGas`. This and the missing alpha-weighted gas
-viscous-stress term remain modeling approximations in the one-pass scaffold.
+NekRS retains an implicit variable-viscosity stress operator based on
+
+`nuEffective=(1-alpha)*muLiquid/rhoLiquid+alpha*muGas/rhoGas`,
+
+`muEffective=rhoEffective*nuEffective`.
+
+The exact volume-mixture viscous acceleration is reconstructed from the two
+phase stresses,
+
+`Vexact=div((1-alpha)*tauLiquid/rhoLiquid+alpha*tauGas/rhoGas)`.
+
+To avoid double counting, the explicit mixture RHS receives only
+
+`Vcorrection=Vexact-div(tauNative)/rhoEffective`.
+
+Here all three stresses use the deviatoric Newtonian form
+`mu*(grad(u)+grad(u)^T-2/3*div(u)*I)`. The `.par` file enables NekRS's
+`navierStokes+variableViscosity` stress formulation so that `tauNative` matches
+the operator being corrected. The correction is time-lagged while the base
+effective diffusion remains implicit.
 
 ## Drag and virtual mass
 
@@ -88,5 +105,7 @@ Schiller--Naumann drag uses the reconstructed physical slip and constant
 approximation defaults off.
 
 The gas equation still uses the previous/extrapolated pressure because scalars
-are solved before mixture pressure in the one-pass NekRS ordering. Lift,
-turbulent dispersion, and wall lubrication remain disabled.
+are solved before mixture pressure in the one-pass NekRS ordering. Its own
+phase-stress operator is not yet included in the passive-scalar gas equation;
+the reconstructed gas stress above contributes to the volume-mixture equation.
+Lift, turbulent dispersion, and wall lubrication remain disabled.
