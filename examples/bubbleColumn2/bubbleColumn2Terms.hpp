@@ -20,6 +20,8 @@ struct Parameters {
   dfloat bubbleDiameter;
   dfloat virtualMassEnabled;
   dfloat virtualMassCoefficient;
+  dfloat subtractAlphaDiffusion;
+  dfloat subtractUgDiffusion[3];
 };
 
 static Parameters p;
@@ -41,6 +43,10 @@ static deviceMemory<dfloat> o_exactKinematicStress;
 static deviceMemory<dfloat> o_nativeDynamicStress;
 static deviceMemory<dfloat> o_divExactKinematicStress;
 static deviceMemory<dfloat> o_divNativeDynamicStress;
+static deviceMemory<dfloat> o_alphaDiffusionFlux;
+static deviceMemory<dfloat> o_ugDiffusionFlux;
+static deviceMemory<dfloat> o_alphaDiffusionDivergence;
+static deviceMemory<dfloat> o_ugDiffusionDivergence;
 static deviceMemory<dfloat> o_mixtureInterphaseAcceleration;
 static deviceMemory<dfloat> o_alphaSource;
 static deviceMemory<dfloat> o_ugSource;
@@ -93,6 +99,10 @@ inline void allocate()
   o_nativeDynamicStress.resize(9 * offset);
   o_divExactKinematicStress.resize(3 * offset);
   o_divNativeDynamicStress.resize(3 * offset);
+  o_alphaDiffusionFlux.resize(3 * offset);
+  o_ugDiffusionFlux.resize(9 * offset);
+  o_alphaDiffusionDivergence.resize(offset);
+  o_ugDiffusionDivergence.resize(3 * offset);
   o_mixtureInterphaseAcceleration.resize(3 * offset);
   o_alphaSource.resize(offset);
   o_ugSource.resize(3 * offset);
@@ -232,9 +242,51 @@ inline void evaluateMixtureForce()
                           o_mixtureForce);
 }
 
+inline void subtractScalarDiffusion()
+{
+  const dlong Nlocal = nrs->meshV->Nlocal;
+  const dlong offset = nrs->fieldOffset;
+
+  if (p.subtractAlphaDiffusion != 0.0) {
+    o_alphaDiffusionFlux.copyFrom(o_gradAlpha, 3 * offset);
+    auto diffusion = nrs->scalar->o_diffusionCoeff("alpha");
+    platform->linAlg->axmyVector(
+        Nlocal, offset, 0, 1.0, diffusion, o_alphaDiffusionFlux);
+    opSEM::strongDivergence(
+        nrs->meshV, offset, o_alphaDiffusionFlux, o_alphaDiffusionDivergence);
+    platform->linAlg->axpby(Nlocal,
+                            -p.subtractAlphaDiffusion,
+                            o_alphaDiffusionDivergence,
+                            1.0,
+                            o_alphaSource);
+  }
+
+  const char *gasNames[3] = {"ugx", "ugy", "ugz"};
+  for (int i = 0; i < 3; ++i) {
+    if (p.subtractUgDiffusion[i] == 0.0) {
+      continue;
+    }
+    auto grad = o_gradUg.slice(3 * i * offset, 3 * offset);
+    auto flux = o_ugDiffusionFlux.slice(3 * i * offset, 3 * offset);
+    flux.copyFrom(grad, 3 * offset);
+    auto diffusion = nrs->scalar->o_diffusionCoeff(gasNames[i]);
+    platform->linAlg->axmyVector(Nlocal, offset, 0, 1.0, diffusion, flux);
+    auto divergence = o_ugDiffusionDivergence.slice(i * offset, offset);
+    opSEM::strongDivergence(nrs->meshV, offset, flux, divergence);
+    platform->linAlg->axpby(Nlocal,
+                            -p.subtractUgDiffusion[i],
+                            divergence,
+                            1.0,
+                            o_ugSource,
+                            0,
+                            i * offset);
+  }
+}
+
 inline void addExplicitSources(double)
 {
   evaluatePointwiseTerms();
+  subtractScalarDiffusion();
   evaluateMixtureForce();
   const dlong Nlocal = nrs->meshV->Nlocal;
   const dlong offset = nrs->fieldOffset;
@@ -258,10 +310,6 @@ inline void updateProperties(double)
   evaluatePointwiseTerms();
   nrs->fluid->o_prop.slice(0 * nrs->fieldOffset, nrs->fieldOffset).copyFrom(o_muM);
   nrs->fluid->o_prop.slice(1 * nrs->fieldOffset, nrs->fieldOffset).copyFrom(o_rhoM);
-  auto o_diffusion = nrs->scalar->o_diffusionCoeff();
-  auto o_transport = nrs->scalar->o_transportCoeff();
-  platform->linAlg->fill(nrs->scalar->fieldOffsetSum, 1e-12, o_diffusion);
-  platform->linAlg->fill(nrs->scalar->fieldOffsetSum, 1.0, o_transport);
 }
 
 inline occa::memory implicitGasDrag(double, int scalarIndex)

@@ -36,6 +36,10 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   platform->par->extract("casedata", "bubblediameter", p.bubbleDiameter);
   platform->par->extract("casedata", "virtualmassenabled", p.virtualMassEnabled);
   platform->par->extract("casedata", "virtualmasscoefficient", p.virtualMassCoefficient);
+  platform->par->extract("casedata", "subtractalphadiffusion", p.subtractAlphaDiffusion);
+  platform->par->extract("casedata", "subtractugxdiffusion", p.subtractUgDiffusion[0]);
+  platform->par->extract("casedata", "subtractugydiffusion", p.subtractUgDiffusion[1]);
+  platform->par->extract("casedata", "subtractugzdiffusion", p.subtractUgDiffusion[2]);
 }
 
 void UDF_Setup()

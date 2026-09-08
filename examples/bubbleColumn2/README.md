@@ -48,6 +48,24 @@ Because `div(uv)=0`, the pointwise correction is
 
 `Salpha=-(ug-uv).grad(alpha)-alpha*div(ug)`.
 
+The scalar `diffusionCoeff` and `transportCoeff` values are read directly from
+their four `.par` sections; `userProperties()` does not overwrite them. Each
+implicit numerical diffusion can be canceled with a lagged explicit volume
+term using the `[CASEDATA]` switches
+
+`subtractAlphaDiffusion`, `subtractUgxDiffusion`,
+`subtractUgyDiffusion`, and `subtractUgzDiffusion`.
+
+For a switch value of one, the corresponding explicit source receives
+
+`-div(diffusionCoeff*grad(s))`.
+
+Thus the new-time diffusion remains implicit for conditioning while its
+previous-time contribution is removed from the intended equation. Set a switch
+to zero to retain that scalar's numerical diffusion. This is an IMEX deferred
+correction: it does not algebraically cancel new-time or boundary diffusion and
+may reduce the stabilization obtained from a large `diffusionCoeff`.
+
 ## Volume-mixture momentum and pressure
 
 Dividing each phase momentum equation by its constant phase density, then

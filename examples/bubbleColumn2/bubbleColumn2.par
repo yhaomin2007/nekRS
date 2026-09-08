@@ -65,3 +65,7 @@ dragEnabled = 1.0
 bubbleDiameter = 3.0e-3
 virtualMassEnabled = 0.0
 virtualMassCoefficient = 0.5
+subtractAlphaDiffusion = 1.0
+subtractUgxDiffusion = 1.0
+subtractUgyDiffusion = 1.0
+subtractUgzDiffusion = 1.0
