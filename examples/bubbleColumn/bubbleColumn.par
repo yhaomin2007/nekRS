@@ -62,3 +62,6 @@ dragEnabled = 1.0
 bubbleDiameter = 3.0e-3
 virtualMassEnabled = 0.0
 virtualMassCoefficient = 0.5
+divergenceFilterEnabled = 1.0
+divergenceFilterModes = 1
+divergenceFilterStrength = 0.25

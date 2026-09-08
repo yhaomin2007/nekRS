@@ -78,6 +78,19 @@ after the alpha solve from `(alphaNew-alphaOld)/dt + um.grad(alphaNew)`, rather
 than directly differentiating the gas flux. This first-order time difference is
 chosen to improve one-pass discrete compatibility at the moving alpha front.
 
+The completed divergence source is optionally filtered directly with nekRS's
+native HPFRT modal matrix before it is copied to `fluid->o_div`:
+
+`qFiltered=qRaw-strength*(qRaw-F(qRaw))`.
+
+`divergenceFilterModes` selects the highest polynomial modes included in the
+filter, and `divergenceFilterStrength` must lie between zero and one. The
+initial settings use one mode and strength `0.25`, which damps only the highest
+mode by 25 percent. Set `divergenceFilterEnabled=0.0` for an unfiltered
+comparison. Because HPFRT retains the constant modal component, this operation
+does not deliberately remove the mean divergence required by mixture mass
+continuity.
+
 Lift, turbulent dispersion, and wall lubrication remain zero, matching the
 official OpenFOAM Foundation `multiphaseEuler/bubbleColumn` tutorial. The
 alpha-weighted gas viscous-stress contribution in Eq. (29) is still absent; the

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "lowPassFilter.hpp"
 #include "opSEM.hpp"
 
 namespace bubbleColumn
@@ -20,6 +21,9 @@ struct Parameters {
   dfloat bubbleDiameter;
   dfloat virtualMassEnabled;
   dfloat virtualMassCoefficient;
+  dfloat divergenceFilterEnabled;
+  int divergenceFilterModes;
+  dfloat divergenceFilterStrength;
 };
 
 static Parameters p;
@@ -36,6 +40,8 @@ static deviceMemory<dfloat> o_alphaPrevious;
 static deviceMemory<dfloat> o_rhoM;
 static deviceMemory<dfloat> o_muM;
 static deviceMemory<dfloat> o_divSource;
+static deviceMemory<dfloat> o_divFilterWork;
+static occa::memory o_divFilterMatrix;
 static deviceMemory<dfloat> o_driftStress;
 static deviceMemory<dfloat> o_divDriftStress;
 static deviceMemory<dfloat> o_alphaSource;
@@ -74,6 +80,13 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
 inline void allocate()
 {
   const dlong offset = nrs->fieldOffset;
+  nekrsCheck(p.divergenceFilterEnabled != 0.0
+                 && (p.divergenceFilterStrength < 0.0
+                     || p.divergenceFilterStrength > 1.0),
+             platform->comm.mpiComm(),
+             EXIT_FAILURE,
+             "divergenceFilterStrength must be in [0,1], but is %g\n",
+             p.divergenceFilterStrength);
   o_ug.resize(3 * offset);
   o_ul.resize(3 * offset);
   o_ulPrevious.resize(3 * offset);
@@ -87,12 +100,43 @@ inline void allocate()
   o_rhoM.resize(offset);
   o_muM.resize(offset);
   o_divSource.resize(offset);
+  o_divFilterWork.resize(3 * offset);
   o_driftStress.resize(9 * offset);
   o_divDriftStress.resize(3 * offset);
   o_alphaSource.resize(offset);
   o_ugSource.resize(3 * offset);
   o_dragLambda.resize(offset);
   o_mixtureForce.resize(3 * offset);
+
+  if (p.divergenceFilterEnabled != 0.0) {
+    o_divFilterMatrix = lowPassFilterSetup(nrs->meshV, p.divergenceFilterModes);
+  }
+}
+
+inline void filterDivergence()
+{
+  if (p.divergenceFilterEnabled == 0.0) {
+    return;
+  }
+
+  const dlong Nlocal = nrs->meshV->Nlocal;
+  const dlong offset = nrs->fieldOffset;
+
+  // vectorFilterRTHex3D computes
+  //   output += -strength * (input - F(input)).
+  // Initialize the first output component with q_raw so that it becomes
+  //   q_filtered = q_raw - strength * (q_raw - F(q_raw)).
+  // The two unused components remain zero.
+  platform->linAlg->fill(3 * offset, 0.0, o_divFilterWork);
+  o_divFilterWork.copyFrom(o_divSource, Nlocal, 0, 0);
+  launchKernel("core-vectorFilterRTHex3D",
+               nrs->meshV->Nelements,
+               o_divFilterMatrix,
+               p.divergenceFilterStrength,
+               offset,
+               o_divFilterWork,
+               o_divFilterWork);
+  o_divSource.copyFrom(o_divFilterWork, Nlocal, 0, 0);
 }
 
 inline void evaluatePointwiseTerms()
@@ -254,6 +298,7 @@ inline void updateProperties(double)
                                 nrs->fluid->o_U,
                                 o_gradAlpha,
                                 o_divSource);
+  filterDivergence();
   nrs->fluid->o_prop.slice(0 * nrs->fieldOffset, nrs->fieldOffset).copyFrom(o_muM);
   nrs->fluid->o_prop.slice(1 * nrs->fieldOffset, nrs->fieldOffset).copyFrom(o_rhoM);
   auto o_diffusion = nrs->scalar->o_diffusionCoeff();
