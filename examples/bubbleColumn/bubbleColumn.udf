@@ -41,6 +41,8 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   platform->par->extract("casedata", "divergencefilterenabled", p.divergenceFilterEnabled);
   platform->par->extract("casedata", "divergencefiltermodes", p.divergenceFilterModes);
   platform->par->extract("casedata", "divergencefilterstrength", p.divergenceFilterStrength);
+  platform->par->extract(
+      "casedata", "divergenceextrapolationenabled", p.divergenceExtrapolationEnabled);
 }
 
 void UDF_Setup()
@@ -73,6 +75,9 @@ void UDF_Setup()
 
 void UDF_ExecuteStep(double time, int tstep)
 {
+  if (tstep > 0) {
+    bubbleColumn::updateDivergenceHistory();
+  }
   if (tstep > 0 && bubbleColumn::p.virtualMassEnabled != 0.0) {
     bubbleColumn::updateVirtualMassHistory();
   }

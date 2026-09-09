@@ -12,6 +12,10 @@ scalars = ALPHA, UGX, UGY, UGZ
 [FLUID PRESSURE]
 residualTol = 1e-8
 initialGuess = previous
+solver = gmres + flexible + nVector=30 + maxIter=200
+preconditioner = multigrid
+smootherType = ASM + FourthOptChebyshev + degree=3
+coarseSolver = boomerAMG + cpu
 
 [FLUID VELOCITY]
 # Boundary IDs: 1=inlet, 2=outlet, 3=wall
@@ -19,6 +23,7 @@ boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
 residualTol = 1e-8
 rho = 998.2
 viscosity = 1.0e-3
+regularization = hpfrt + nModes=1 + scalingCoeff=1.0
 
 [SCALAR ALPHA]
 boundaryTypeMap = udfDirichlet, zeroNeumann, zeroNeumann
@@ -70,3 +75,4 @@ virtualMassCoefficient = 0.5
 divergenceFilterEnabled = 0.0
 divergenceFilterModes = 1
 divergenceFilterStrength = 0.25
+divergenceExtrapolationEnabled = 0.0

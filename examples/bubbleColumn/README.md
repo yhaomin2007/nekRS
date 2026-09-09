@@ -109,6 +109,19 @@ filtered divergence is no longer locally identical to the alpha-equation RHS.
 Because HPFRT retains the constant modal component, enabling it does not
 deliberately remove the mean divergence required by mixture mass continuity.
 
+The mixture velocity also exposes nekRS's native HPFRT regularization in the
+`[FLUID VELOCITY]` section. The supplied setting removes one highest mode with
+unit relaxation strength; set `regularization = none` to disable it.
+
+`divergenceExtrapolationEnabled` selects how the divergence supplied to the
+pressure projection is evaluated. With the default value `0.0`, the pressure
+solve uses the divergence reconstructed from the newly solved alpha field.
+With value `1.0`, completed-step divergence histories are used instead: the
+first prediction is EXT1, `q^(n+1)=q^n`, and subsequent predictions are EXT2,
+`q^(n+1)=2*q^n-q^(n-1)`. After a fresh start or restart, the direct current
+divergence is used until history is available. Filtering, when enabled, is
+applied before a divergence field is entered into this history.
+
 Lift, turbulent dispersion, and wall lubrication remain zero, matching the
 official OpenFOAM Foundation `multiphaseEuler/bubbleColumn` tutorial. The
 alpha-weighted gas viscous-stress contribution in Eq. (29) is still absent; the

@@ -24,6 +24,7 @@ struct Parameters {
   dfloat divergenceFilterEnabled;
   int divergenceFilterModes;
   dfloat divergenceFilterStrength;
+  dfloat divergenceExtrapolationEnabled;
 };
 
 static Parameters p;
@@ -39,6 +40,10 @@ static deviceMemory<dfloat> o_gradP;
 static deviceMemory<dfloat> o_rhoM;
 static deviceMemory<dfloat> o_muM;
 static deviceMemory<dfloat> o_divSource;
+static deviceMemory<dfloat> o_divPrevious;
+static deviceMemory<dfloat> o_divOlder;
+static deviceMemory<dfloat> o_divExtrapolated;
+static int divergenceHistoryCount = 0;
 static deviceMemory<dfloat> o_divFilterWork;
 static occa::memory o_divFilterMatrix;
 static deviceMemory<dfloat> o_alphaDiffusionFlux;
@@ -102,6 +107,12 @@ inline void allocate()
   o_rhoM.resize(offset);
   o_muM.resize(offset);
   o_divSource.resize(offset);
+  o_divPrevious.resize(offset);
+  o_divOlder.resize(offset);
+  o_divExtrapolated.resize(offset);
+  platform->linAlg->fill(offset, 0.0, o_divPrevious);
+  platform->linAlg->fill(offset, 0.0, o_divOlder);
+  platform->linAlg->fill(offset, 0.0, o_divExtrapolated);
   o_divFilterWork.resize(3 * offset);
   o_alphaDiffusionFlux.resize(3 * offset);
   o_alphaDiffusionDivergence.resize(offset);
@@ -353,6 +364,36 @@ inline occa::memory implicitGasDrag(double, int scalarIndex)
 
 inline void updateDivergence(double)
 {
-  nrs->fluid->o_div.copyFrom(o_divSource);
+  const dlong Nlocal = nrs->meshV->Nlocal;
+  if (p.divergenceExtrapolationEnabled == 0.0 || divergenceHistoryCount == 0) {
+    nrs->fluid->o_div.copyFrom(o_divSource, Nlocal);
+    return;
+  }
+
+  if (divergenceHistoryCount == 1) {
+    // EXT1 startup: q^{n+1} = q^n.
+    nrs->fluid->o_div.copyFrom(o_divPrevious, Nlocal);
+    return;
+  }
+
+  // EXT2 from completed pressure steps: q^{n+1} = 2 q^n - q^{n-1}.
+  o_divExtrapolated.copyFrom(o_divOlder, Nlocal);
+  platform->linAlg->axpby(
+      Nlocal, 2.0, o_divPrevious, -1.0, o_divExtrapolated);
+  nrs->fluid->o_div.copyFrom(o_divExtrapolated, Nlocal);
+}
+
+inline void updateDivergenceHistory()
+{
+  if (p.divergenceExtrapolationEnabled == 0.0) {
+    return;
+  }
+
+  const dlong Nlocal = nrs->meshV->Nlocal;
+  if (divergenceHistoryCount > 0) {
+    o_divOlder.copyFrom(o_divPrevious, Nlocal);
+  }
+  o_divPrevious.copyFrom(o_divSource, Nlocal);
+  divergenceHistoryCount = std::min(divergenceHistoryCount + 1, 2);
 }
 } // namespace bubbleColumn
