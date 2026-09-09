@@ -17,6 +17,7 @@ struct Parameters {
   dfloat initialPlumeThickness;
   dfloat gravity[3];
   dfloat alphaFloor;
+  dfloat freezeGasVelocityBelowAlphaFloor;
   dfloat gasMomentumCutoff;
   dfloat gasMomentumFullyActive;
   dfloat dragEnabled;
@@ -33,6 +34,7 @@ struct Parameters {
 
 static Parameters p;
 static deviceMemory<dfloat> o_ug;
+static deviceMemory<dfloat> o_ugStepPrevious;
 static deviceMemory<dfloat> o_ul;
 static deviceMemory<dfloat> o_ulPrevious;
 static deviceMemory<dfloat> o_ugPrevious;
@@ -65,6 +67,7 @@ static deviceMemory<dfloat> o_monitorMagnitude;
 static deviceMemory<dfloat> o_gasPressureAccelerationActive;
 static deviceMemory<dfloat> o_gasPressureAccelerationInactive;
 static occa::kernel packGasVelocityKernel;
+static occa::kernel freezeGasVelocityBelowAlphaFloorKernel;
 static occa::kernel initializePlumeKernel;
 static occa::kernel buildLiquidVelocityKernel;
 static occa::kernel updateVirtualMassHistoryKernel;
@@ -83,6 +86,8 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
     platform->kernelRequests.add(request, fileName, kernelInfo);
   } else {
     packGasVelocityKernel = platform->kernelRequests.load(request, "packGasVelocity");
+    freezeGasVelocityBelowAlphaFloorKernel =
+        platform->kernelRequests.load(request, "freezeGasVelocityBelowAlphaFloor");
     initializePlumeKernel = platform->kernelRequests.load(request, "initializePlume");
     buildLiquidVelocityKernel = platform->kernelRequests.load(request, "buildLiquidVelocity");
     updateVirtualMassHistoryKernel =
@@ -115,6 +120,7 @@ inline void allocate()
              p.gasMomentumCutoff,
              p.gasMomentumFullyActive);
   o_ug.resize(3 * offset);
+  o_ugStepPrevious.resize(3 * offset);
   o_ul.resize(3 * offset);
   o_ulPrevious.resize(3 * offset);
   o_ugPrevious.resize(3 * offset);
@@ -245,9 +251,38 @@ inline void initializeHistory()
 {
   evaluatePointwiseTerms();
   const dlong offset = nrs->fieldOffset;
+  o_ugStepPrevious.copyFrom(o_ug, 3 * offset);
   o_ulPrevious.copyFrom(o_ul, 3 * offset);
   o_ugPrevious.copyFrom(o_ug, 3 * offset);
   platform->linAlg->fill(3 * offset, 0.0, o_virtualMassRelativeAcceleration);
+}
+
+inline void freezeGasVelocity()
+{
+  if (p.freezeGasVelocityBelowAlphaFloor == 0.0) {
+    return;
+  }
+
+  freezeGasVelocityBelowAlphaFloorKernel(
+      nrs->meshV->Nlocal,
+      nrs->fieldOffset,
+      p.alphaFloor,
+      nrs->scalar->o_solution("alpha"),
+      o_ugStepPrevious,
+      nrs->scalar->o_solution("ugx"),
+      nrs->scalar->o_solution("ugy"),
+      nrs->scalar->o_solution("ugz"));
+}
+
+inline void storeGasVelocityHistory()
+{
+  packGasVelocityKernel(nrs->meshV->Nlocal,
+                        nrs->fieldOffset,
+                        nrs->scalar->o_solution("ugx"),
+                        nrs->scalar->o_solution("ugy"),
+                        nrs->scalar->o_solution("ugz"),
+                        o_ug);
+  o_ugStepPrevious.copyFrom(o_ug, 3 * nrs->fieldOffset);
 }
 
 inline void updateVirtualMassHistory()
@@ -374,6 +409,7 @@ inline void updateProperties(double)
 {
   // Called after all four scalars advance: refresh density, viscosity, and the
   // mixture divergence implied by the alpha-equation RHS.
+  freezeGasVelocity();
   evaluatePointwiseTerms();
   buildDivergenceFromAlphaRhs();
   filterDivergence();

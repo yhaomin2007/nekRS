@@ -49,6 +49,15 @@ the explicit and implicit parts of drag. The supplied limits are `1e-4` and
 `1e-3`; `alphaFloor` remains the denominator safeguard and mixture
 drift-stress cutoff.
 
+With `freezeGasVelocityBelowAlphaFloor = 1.0`, the completed gas-velocity
+scalar solve is overwritten at nodes satisfying `alpha < alphaFloor` before
+mixture properties and divergence are reconstructed:
+`ug^(n+1) = ug^n`. A dedicated completed-step history is maintained even when
+virtual mass is disabled. NekRS still performs the global scalar solve, but
+the absent-phase degrees of freedom cannot feed their new values back into
+alpha transport, mixture divergence, or drift stress. Set the switch to `0.0`
+to retain the unmodified scalar solution everywhere.
+
 The optional stability monitor prints one global-max line at the configured
 step interval. `max|divTarget|` is the divergence actually supplied to the
 pressure solve after optional filtering/extrapolation. The raw gas pressure
