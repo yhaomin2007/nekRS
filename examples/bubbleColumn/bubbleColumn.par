@@ -79,5 +79,7 @@ divergenceFilterEnabled = 0.0
 divergenceFilterModes = 1
 divergenceFilterStrength = 0.25
 divergenceExtrapolationEnabled = 0.0
+divergenceRampEnabled = 1.0
+divergenceRampTime = 1.0e-2
 stabilityMonitorEnabled = 1.0
 stabilityMonitorInterval = 1

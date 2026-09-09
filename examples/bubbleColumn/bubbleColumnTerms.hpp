@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cmath>
+
 #include "lowPassFilter.hpp"
 #include "opSEM.hpp"
 
@@ -28,6 +30,8 @@ struct Parameters {
   int divergenceFilterModes;
   dfloat divergenceFilterStrength;
   dfloat divergenceExtrapolationEnabled;
+  dfloat divergenceRampEnabled;
+  dfloat divergenceRampTime;
   dfloat stabilityMonitorEnabled;
   int stabilityMonitorInterval;
 };
@@ -118,6 +122,11 @@ inline void allocate()
              "gasMomentumFullyActive must exceed it (cutoff=%g, active=%g)\n",
              p.gasMomentumCutoff,
              p.gasMomentumFullyActive);
+  nekrsCheck(p.divergenceRampEnabled != 0.0 && p.divergenceRampTime <= 0.0,
+             platform->comm.mpiComm(),
+             EXIT_FAILURE,
+             "divergenceRampTime must be positive when the ramp is enabled, but is %g\n",
+             p.divergenceRampTime);
   o_ug.resize(3 * offset);
   o_ul.resize(3 * offset);
   o_ulPrevious.resize(3 * offset);
@@ -411,25 +420,27 @@ inline occa::memory implicitGasDrag(double, int scalarIndex)
   return o_NULL;
 }
 
-inline void updateDivergence(double)
+inline void updateDivergence(double time)
 {
   const dlong Nlocal = nrs->meshV->Nlocal;
   if (p.divergenceExtrapolationEnabled == 0.0 || divergenceHistoryCount == 0) {
     nrs->fluid->o_div.copyFrom(o_divSource, Nlocal);
-    return;
-  }
-
-  if (divergenceHistoryCount == 1) {
+  } else if (divergenceHistoryCount == 1) {
     // EXT1 startup: q^{n+1} = q^n.
     nrs->fluid->o_div.copyFrom(o_divPrevious, Nlocal);
-    return;
+  } else {
+    // EXT2 from completed pressure steps: q^{n+1} = 2 q^n - q^{n-1}.
+    o_divExtrapolated.copyFrom(o_divOlder, Nlocal);
+    platform->linAlg->axpby(
+        Nlocal, 2.0, o_divPrevious, -1.0, o_divExtrapolated);
+    nrs->fluid->o_div.copyFrom(o_divExtrapolated, Nlocal);
   }
 
-  // EXT2 from completed pressure steps: q^{n+1} = 2 q^n - q^{n-1}.
-  o_divExtrapolated.copyFrom(o_divOlder, Nlocal);
-  platform->linAlg->axpby(
-      Nlocal, 2.0, o_divPrevious, -1.0, o_divExtrapolated);
-  nrs->fluid->o_div.copyFrom(o_divExtrapolated, Nlocal);
+  if (p.divergenceRampEnabled != 0.0 && time < p.divergenceRampTime) {
+    const dfloat phase = time > 0.0 ? time / p.divergenceRampTime : 0.0;
+    const dfloat ramp = 0.5 * (1.0 - std::cos(3.14159265358979323846 * phase));
+    platform->linAlg->scale(Nlocal, ramp, nrs->fluid->o_div);
+  }
 }
 
 inline void updateDivergenceHistory()

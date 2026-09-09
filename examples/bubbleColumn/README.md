@@ -154,6 +154,13 @@ first prediction is EXT1, `q^(n+1)=q^n`, and subsequent predictions are EXT2,
 divergence is used until history is available. Filtering, when enabled, is
 applied before a divergence field is entered into this history.
 
+`divergenceRampEnabled` optionally introduces the final divergence target
+gradually during startup. For `0 < time < divergenceRampTime`, the field sent
+to the pressure solver is multiplied by the half-cosine ramp
+`0.5*(1-cos(pi*time/divergenceRampTime))`; it is unmodified after the ramp
+time. The ramp is applied after filtering and optional extrapolation. Set the
+switch to `0.0` to disable it.
+
 Lift, turbulent dispersion, and wall lubrication remain zero, matching the
 official OpenFOAM Foundation `multiphaseEuler/bubbleColumn` tutorial. The
 alpha-weighted gas viscous-stress contribution in Eq. (29) is still absent; the
