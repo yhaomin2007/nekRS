@@ -35,10 +35,8 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   platform->par->extract("casedata", "gravityz", p.gravity[2]);
   platform->par->extract("casedata", "alphafloor", p.alphaFloor);
   platform->par->extract("casedata",
-                         "zerogasvelocitybelowthreshold",
-                         p.zeroGasVelocityBelowThreshold);
-  platform->par->extract(
-      "casedata", "gasvelocityzerothreshold", p.gasVelocityZeroThreshold);
+                         "smoothgasvelocitymaskenabled",
+                         p.smoothGasVelocityMaskEnabled);
   platform->par->extract("casedata", "gasmomentumcutoff", p.gasMomentumCutoff);
   platform->par->extract(
       "casedata", "gasmomentumfullyactive", p.gasMomentumFullyActive);

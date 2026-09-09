@@ -12,20 +12,26 @@
   }
 }
 
-@kernel void zeroGasVelocityBelowThreshold(
+@kernel void smoothMaskGasVelocity(
     const dlong N,
-    const dfloat alphaThreshold,
+    const dfloat alphaCutoff,
+    const dfloat alphaFullyActive,
     @ restrict const dfloat *alpha,
     @ restrict dfloat *ugx,
     @ restrict dfloat *ugy,
     @ restrict dfloat *ugz)
 {
   for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
-    if (alpha[n] < alphaThreshold) {
-      ugx[n] = 0.0;
-      ugy[n] = 0.0;
-      ugz[n] = 0.0;
+    dfloat weight = 0.0;
+    if (alpha[n] > alphaCutoff) {
+      const dfloat ramp = (alpha[n] >= alphaFullyActive)
+          ? 1.0
+          : (alpha[n] - alphaCutoff) / (alphaFullyActive - alphaCutoff);
+      weight = ramp * ramp * (3.0 - 2.0 * ramp);
     }
+    ugx[n] *= weight;
+    ugy[n] *= weight;
+    ugz[n] *= weight;
   }
 }
 

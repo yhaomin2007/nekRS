@@ -17,8 +17,7 @@ struct Parameters {
   dfloat initialPlumeThickness;
   dfloat gravity[3];
   dfloat alphaFloor;
-  dfloat zeroGasVelocityBelowThreshold;
-  dfloat gasVelocityZeroThreshold;
+  dfloat smoothGasVelocityMaskEnabled;
   dfloat gasMomentumCutoff;
   dfloat gasMomentumFullyActive;
   dfloat dragEnabled;
@@ -67,7 +66,7 @@ static deviceMemory<dfloat> o_monitorMagnitude;
 static deviceMemory<dfloat> o_gasPressureAccelerationActive;
 static deviceMemory<dfloat> o_gasPressureAccelerationInactive;
 static occa::kernel packGasVelocityKernel;
-static occa::kernel zeroGasVelocityBelowThresholdKernel;
+static occa::kernel smoothMaskGasVelocityKernel;
 static occa::kernel initializePlumeKernel;
 static occa::kernel buildLiquidVelocityKernel;
 static occa::kernel updateVirtualMassHistoryKernel;
@@ -86,8 +85,8 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
     platform->kernelRequests.add(request, fileName, kernelInfo);
   } else {
     packGasVelocityKernel = platform->kernelRequests.load(request, "packGasVelocity");
-    zeroGasVelocityBelowThresholdKernel =
-        platform->kernelRequests.load(request, "zeroGasVelocityBelowThreshold");
+    smoothMaskGasVelocityKernel =
+        platform->kernelRequests.load(request, "smoothMaskGasVelocity");
     initializePlumeKernel = platform->kernelRequests.load(request, "initializePlume");
     buildLiquidVelocityKernel = platform->kernelRequests.load(request, "buildLiquidVelocity");
     updateVirtualMassHistoryKernel =
@@ -119,11 +118,6 @@ inline void allocate()
              "gasMomentumFullyActive must exceed it (cutoff=%g, active=%g)\n",
              p.gasMomentumCutoff,
              p.gasMomentumFullyActive);
-  nekrsCheck(p.gasVelocityZeroThreshold < 0.0,
-             platform->comm.mpiComm(),
-             EXIT_FAILURE,
-             "gasVelocityZeroThreshold must be nonnegative, but is %g\n",
-             p.gasVelocityZeroThreshold);
   o_ug.resize(3 * offset);
   o_ul.resize(3 * offset);
   o_ulPrevious.resize(3 * offset);
@@ -260,15 +254,16 @@ inline void initializeHistory()
   platform->linAlg->fill(3 * offset, 0.0, o_virtualMassRelativeAcceleration);
 }
 
-inline void zeroGasVelocity()
+inline void smoothMaskGasVelocity()
 {
-  if (p.zeroGasVelocityBelowThreshold == 0.0) {
+  if (p.smoothGasVelocityMaskEnabled == 0.0) {
     return;
   }
 
-  zeroGasVelocityBelowThresholdKernel(
+  smoothMaskGasVelocityKernel(
       nrs->meshV->Nlocal,
-      p.gasVelocityZeroThreshold,
+      p.gasMomentumCutoff,
+      p.gasMomentumFullyActive,
       nrs->scalar->o_solution("alpha"),
       nrs->scalar->o_solution("ugx"),
       nrs->scalar->o_solution("ugy"),
@@ -399,7 +394,7 @@ inline void updateProperties(double)
 {
   // Called after all four scalars advance: refresh density, viscosity, and the
   // mixture divergence implied by the alpha-equation RHS.
-  zeroGasVelocity();
+  smoothMaskGasVelocity();
   evaluatePointwiseTerms();
   buildDivergenceFromAlphaRhs();
   filterDivergence();
@@ -474,7 +469,7 @@ inline void printStabilityMonitors(double time, int tstep)
   platform->linAlg->entrywiseMag(Nlocal, 3, offset, o_gradP, o_monitorMagnitude);
   buildGasPressureAccelerationMonitorKernel(Nlocal,
                                             p.rhoGas,
-                                            p.gasVelocityZeroThreshold,
+                                            p.gasMomentumCutoff,
                                             nrs->scalar->o_solution("alpha"),
                                             o_monitorMagnitude,
                                             o_gasPressureAccelerationActive,
