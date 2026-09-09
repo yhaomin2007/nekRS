@@ -36,12 +36,15 @@ static deviceMemory<dfloat> o_virtualMassRelativeAcceleration;
 static deviceMemory<dfloat> o_gradAlpha;
 static deviceMemory<dfloat> o_gradUg;
 static deviceMemory<dfloat> o_gradP;
-static deviceMemory<dfloat> o_alphaPrevious;
 static deviceMemory<dfloat> o_rhoM;
 static deviceMemory<dfloat> o_muM;
 static deviceMemory<dfloat> o_divSource;
 static deviceMemory<dfloat> o_divFilterWork;
 static occa::memory o_divFilterMatrix;
+static deviceMemory<dfloat> o_alphaDiffusionFlux;
+static deviceMemory<dfloat> o_alphaDiffusionDivergence;
+static deviceMemory<dfloat> o_alphaExplicitBase;
+static deviceMemory<dfloat> o_alphaRegularizationSource;
 static deviceMemory<dfloat> o_driftStress;
 static deviceMemory<dfloat> o_divDriftStress;
 static deviceMemory<dfloat> o_alphaSource;
@@ -52,7 +55,7 @@ static occa::kernel packGasVelocityKernel;
 static occa::kernel initializePlumeKernel;
 static occa::kernel buildLiquidVelocityKernel;
 static occa::kernel updateVirtualMassHistoryKernel;
-static occa::kernel buildDiscreteDivergenceKernel;
+static occa::kernel buildDivergenceFromAlphaRhsKernel;
 static occa::kernel buildEquationTermsKernel;
 static occa::kernel buildMixtureForceKernel;
 
@@ -70,8 +73,8 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
     buildLiquidVelocityKernel = platform->kernelRequests.load(request, "buildLiquidVelocity");
     updateVirtualMassHistoryKernel =
         platform->kernelRequests.load(request, "updateVirtualMassHistory");
-    buildDiscreteDivergenceKernel =
-        platform->kernelRequests.load(request, "buildDiscreteDivergence");
+    buildDivergenceFromAlphaRhsKernel =
+        platform->kernelRequests.load(request, "buildDivergenceFromAlphaRhs");
     buildEquationTermsKernel = platform->kernelRequests.load(request, "buildEquationTerms");
     buildMixtureForceKernel = platform->kernelRequests.load(request, "buildMixtureForce");
   }
@@ -96,17 +99,22 @@ inline void allocate()
   o_gradAlpha.resize(3 * offset);
   o_gradUg.resize(9 * offset);
   o_gradP.resize(3 * offset);
-  o_alphaPrevious.resize(offset);
   o_rhoM.resize(offset);
   o_muM.resize(offset);
   o_divSource.resize(offset);
   o_divFilterWork.resize(3 * offset);
+  o_alphaDiffusionFlux.resize(3 * offset);
+  o_alphaDiffusionDivergence.resize(offset);
+  o_alphaExplicitBase.resize(offset);
+  o_alphaRegularizationSource.resize(offset);
   o_driftStress.resize(9 * offset);
   o_divDriftStress.resize(3 * offset);
   o_alphaSource.resize(offset);
   o_ugSource.resize(3 * offset);
   o_dragLambda.resize(offset);
   o_mixtureForce.resize(3 * offset);
+  platform->linAlg->fill(offset, 0.0, o_alphaExplicitBase);
+  platform->linAlg->fill(offset, 0.0, o_alphaRegularizationSource);
 
   if (p.divergenceFilterEnabled != 0.0) {
     o_divFilterMatrix = lowPassFilterSetup(nrs->meshV, p.divergenceFilterModes);
@@ -202,7 +210,6 @@ inline void initializeHistory()
   const dlong offset = nrs->fieldOffset;
   o_ulPrevious.copyFrom(o_ul, 3 * offset);
   o_ugPrevious.copyFrom(o_ug, 3 * offset);
-  o_alphaPrevious.copyFrom(nrs->scalar->o_solution("alpha"), nrs->meshV->Nlocal);
   platform->linAlg->fill(3 * offset, 0.0, o_virtualMassRelativeAcceleration);
 }
 
@@ -270,13 +277,12 @@ inline void addExplicitSources(double)
   // Copy only entries written by the pointwise kernels. Avoid whole-view
   // copies because scalar and fluid fields may have different padded extents.
   nrs->scalar->o_explicitTerms("alpha").copyFrom(o_alphaSource, Nlocal);
+  // Keep the user-assembled part so updateProperties() can isolate any HPFRT
+  // or GJP contribution subsequently added by scalar_t::makeExplicit().
+  o_alphaExplicitBase.copyFrom(o_alphaSource, Nlocal);
   nrs->scalar->o_explicitTerms("ugx").copyFrom(o_ugSource, Nlocal, 0, 0 * offset);
   nrs->scalar->o_explicitTerms("ugy").copyFrom(o_ugSource, Nlocal, 0, 1 * offset);
   nrs->scalar->o_explicitTerms("ugz").copyFrom(o_ugSource, Nlocal, 0, 2 * offset);
-
-  // Preserve alpha^n immediately before the scalar solve. updateProperties()
-  // uses it with the newly advanced alpha^{n+1} to construct divergence.
-  o_alphaPrevious.copyFrom(nrs->scalar->o_solution("alpha"), Nlocal);
 
   auto fluidTerms = nrs->fluid->o_explicitTerms();
   for (int i = 0; i < 3; ++i) {
@@ -284,27 +290,56 @@ inline void addExplicitSources(double)
   }
 }
 
+inline void buildDivergenceFromAlphaRhs()
+{
+  const dlong Nlocal = nrs->meshV->Nlocal;
+  const dlong offset = nrs->fieldOffset;
+
+  // The native scalar equation is
+  //   d(alpha)/dt + um.grad(alpha)
+  //     = S_alpha + div(D_alpha grad(alpha))
+  // for transportCoeff=1. Construct mixture divergence from this RHS rather
+  // than differentiating alpha in time. The numerical diffusion configured in
+  // [SCALAR ALPHA] is therefore included in mixture-density continuity.
+  o_alphaDiffusionFlux.copyFrom(o_gradAlpha, 3 * offset);
+  auto diffusion = nrs->scalar->o_diffusionCoeff("alpha");
+  platform->linAlg->axmyVector(
+      Nlocal, offset, 0, 1.0, diffusion, o_alphaDiffusionFlux);
+  opSEM::strongDivergence(nrs->meshV,
+                          offset,
+                          o_alphaDiffusionFlux,
+                          o_alphaDiffusionDivergence);
+
+  // scalar_t::makeExplicit() adds HPFRT/GJP to the current explicit-term
+  // buffer after userSource(). Recover that numerical RHS contribution so the
+  // same alpha regularization is represented in mixture-density continuity.
+  o_alphaRegularizationSource.copyFrom(
+      nrs->scalar->o_explicitTerms("alpha"), Nlocal);
+  platform->linAlg->axpby(Nlocal,
+                          -1.0,
+                          o_alphaExplicitBase,
+                          1.0,
+                          o_alphaRegularizationSource);
+
+  buildDivergenceFromAlphaRhsKernel(Nlocal,
+                                    p.rhoLiquid,
+                                    p.rhoGas,
+                                    nrs->scalar->o_solution("alpha"),
+                                    o_alphaSource,
+                                    o_alphaDiffusionDivergence,
+                                    o_alphaRegularizationSource,
+                                    o_divSource);
+}
+
 inline void updateProperties(double)
 {
-  // Called after all four scalars advance: refresh Eqs. (15) and (20).
+  // Called after all four scalars advance: refresh density, viscosity, and the
+  // mixture divergence implied by the alpha-equation RHS.
   evaluatePointwiseTerms();
-  buildDiscreteDivergenceKernel(nrs->meshV->Nlocal,
-                                nrs->fieldOffset,
-                                1.0 / nrs->dt[0],
-                                p.rhoLiquid,
-                                p.rhoGas,
-                                nrs->scalar->o_solution("alpha"),
-                                o_alphaPrevious,
-                                nrs->fluid->o_U,
-                                o_gradAlpha,
-                                o_divSource);
+  buildDivergenceFromAlphaRhs();
   filterDivergence();
   nrs->fluid->o_prop.slice(0 * nrs->fieldOffset, nrs->fieldOffset).copyFrom(o_muM);
   nrs->fluid->o_prop.slice(1 * nrs->fieldOffset, nrs->fieldOffset).copyFrom(o_rhoM);
-  auto o_diffusion = nrs->scalar->o_diffusionCoeff();
-  auto o_transport = nrs->scalar->o_transportCoeff();
-  platform->linAlg->fill(nrs->scalar->fieldOffsetSum, 1e-12, o_diffusion);
-  platform->linAlg->fill(nrs->scalar->fieldOffsetSum, 1.0, o_transport);
 }
 
 inline occa::memory implicitGasDrag(double, int scalarIndex)

@@ -41,8 +41,19 @@ thermodynamic `LOWMACH` option remains disabled because it would require a
 thermodynamic pressure `p0th`. The variable mixture density is retained in the
 pressure operator through `FLUID PRESSURE ELLIPTIC COEFF FIELD`.
 
-The scalar diffusivities are set to `1e-12` only to retain well-posed scalar
-Helmholtz solves. They approximate the desired nondiffusive transport.
+Scalar `diffusionCoeff` and `transportCoeff` values are read directly from the
+four `.par` sections and are no longer overwritten by `userProperties()`. The
+initial alpha diffusivity is `1e-5`; it is an adjustable numerical
+regularization rather than a physical phase-diffusion model.
+
+The four scalar sections also expose nekRS's native HPFRT regularization:
+
+`regularization = hpfrt + nModes=1 + scalingCoeff=1.0`.
+
+The initial setting applies a mild relaxation to only the highest polynomial
+mode of `ALPHA`, `UGX`, `UGY`, and `UGZ`. Set `regularization = none` in an
+individual scalar section to disable HPFRT for that field. This scalar HPFRT is
+independent of the optional direct divergence filter in `[CASEDATA]`.
 
 ## One-pass ordering
 
@@ -74,9 +85,16 @@ the two closures can be introduced separately.
 The Schiller--Naumann drag is treated semi-implicitly as
 `lambdaD*(um-ug)`: `lambdaD*um` is explicit and `lambdaD*ug` is added to the
 gas-scalar Helmholtz diagonal. The prescribed mixture divergence is constructed
-after the alpha solve from `(alphaNew-alphaOld)/dt + um.grad(alphaNew)`, rather
-than directly differentiating the gas flux. This first-order time difference is
-chosen to improve one-pass discrete compatibility at the moving alpha front.
+after the alpha solve from the alpha-equation RHS,
+
+`q=-(rhoGas-rhoLiquid)/rhoM`
+`*(Salpha+div(diffusionCoeff*grad(alpha))+Sregularization)`.
+
+It therefore does not use a separate finite-difference approximation to
+`d(alpha)/dt`, and the alpha numerical-diffusion contribution is retained in
+mixture-density continuity. `Sregularization` is the HPFRT/GJP contribution
+that nekRS adds to the alpha explicit terms. This expression assumes the
+configured alpha `transportCoeff` is one.
 
 The completed divergence source is optionally filtered directly with nekRS's
 native HPFRT modal matrix before it is copied to `fluid->o_div`:
@@ -85,11 +103,11 @@ native HPFRT modal matrix before it is copied to `fluid->o_div`:
 
 `divergenceFilterModes` selects the highest polynomial modes included in the
 filter, and `divergenceFilterStrength` must lie between zero and one. The
-initial settings use one mode and strength `0.25`, which damps only the highest
-mode by 25 percent. Set `divergenceFilterEnabled=0.0` for an unfiltered
-comparison. Because HPFRT retains the constant modal component, this operation
-does not deliberately remove the mean divergence required by mixture mass
-continuity.
+available settings use one mode and strength `0.25`, which damps only the
+highest mode by 25 percent when enabled. Filtering defaults off because a
+filtered divergence is no longer locally identical to the alpha-equation RHS.
+Because HPFRT retains the constant modal component, enabling it does not
+deliberately remove the mean divergence required by mixture mass continuity.
 
 Lift, turbulent dispersion, and wall lubrication remain zero, matching the
 official OpenFOAM Foundation `multiphaseEuler/bubbleColumn` tutorial. The

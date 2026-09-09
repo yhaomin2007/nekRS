@@ -96,26 +96,24 @@
   }
 }
 
-@kernel void buildDiscreteDivergence(const dlong N,
-                                     const dlong offset,
-                                     const dfloat inverseDt,
-                                     const dfloat rhoLiquid,
-                                     const dfloat rhoGas,
-                                     @ restrict const dfloat *alpha,
-                                     @ restrict const dfloat *alphaPrevious,
-                                     @ restrict const dfloat *um,
-                                     @ restrict const dfloat *gradAlpha,
-                                     @ restrict dfloat *divSource)
+@kernel void buildDivergenceFromAlphaRhs(
+    const dlong N,
+    const dfloat rhoLiquid,
+    const dfloat rhoGas,
+    @ restrict const dfloat *alpha,
+    @ restrict const dfloat *alphaSource,
+    @ restrict const dfloat *alphaDiffusionDivergence,
+    @ restrict const dfloat *alphaRegularizationSource,
+    @ restrict dfloat *divSource)
 {
   for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
     const dfloat aRaw = alpha[n];
     const dfloat a = (aRaw < 0.0) ? 0.0 : ((aRaw > 1.0) ? 1.0 : aRaw);
     const dfloat rhoM = (1.0 - a) * rhoLiquid + a * rhoGas;
-    const dfloat dAlphaDt = (alpha[n] - alphaPrevious[n]) * inverseDt;
-    const dfloat advAlpha = um[n + 0 * offset] * gradAlpha[n + 0 * offset]
-                            + um[n + 1 * offset] * gradAlpha[n + 1 * offset]
-                            + um[n + 2 * offset] * gradAlpha[n + 2 * offset];
-    divSource[n] = -(rhoGas - rhoLiquid) / rhoM * (dAlphaDt + advAlpha);
+    const dfloat alphaRhs = alphaSource[n]
+                            + alphaDiffusionDivergence[n]
+                            + alphaRegularizationSource[n];
+    divSource[n] = -(rhoGas - rhoLiquid) / rhoM * alphaRhs;
   }
 }
 

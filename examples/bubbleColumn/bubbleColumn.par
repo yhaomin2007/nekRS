@@ -24,25 +24,30 @@ viscosity = 1.0e-3
 boundaryTypeMap = udfDirichlet, zeroNeumann, zeroNeumann
 residualTol = 1e-8
 transportCoeff = 1.0
-diffusionCoeff = 1e-12
+diffusionCoeff = 1e-5
+# NekRS native high-pass-filter relaxation. Use regularization = none to disable.
+regularization = hpfrt + nModes=1 + scalingCoeff=1.0
 
 [SCALAR UGX]
 boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
 residualTol = 1e-8
 transportCoeff = 1.0
 diffusionCoeff = 1e-12
+regularization = hpfrt + nModes=1 + scalingCoeff=1.0
 
 [SCALAR UGY]
 boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
 residualTol = 1e-8
 transportCoeff = 1.0
 diffusionCoeff = 1e-12
+regularization = hpfrt + nModes=1 + scalingCoeff=1.0
 
 [SCALAR UGZ]
 boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
 residualTol = 1e-8
 transportCoeff = 1.0
 diffusionCoeff = 1e-12
+regularization = hpfrt + nModes=1 + scalingCoeff=1.0
 
 [CASEDATA]
 rhoLiquid = 998.2
@@ -50,7 +55,7 @@ rhoGas = 1.2
 muLiquid = 1.0e-3
 muGas = 1.8e-5
 alphaInitial = 0.0
-alphaInlet = 0.5
+alphaInlet = 0.05
 gasInletVelocity = 0.1
 initialPlumeHeight = 5.0e-2
 initialPlumeThickness = 1.0e-2
@@ -62,6 +67,6 @@ dragEnabled = 1.0
 bubbleDiameter = 3.0e-3
 virtualMassEnabled = 0.0
 virtualMassCoefficient = 0.5
-divergenceFilterEnabled = 1.0
+divergenceFilterEnabled = 0.0
 divergenceFilterModes = 1
 divergenceFilterStrength = 0.25
