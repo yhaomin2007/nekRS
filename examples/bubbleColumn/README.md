@@ -57,6 +57,12 @@ meaningless absent-phase velocity without introducing a hard jump in `u_g`.
 NekRS still performs the global scalar solve; set the switch to `0.0` to retain
 the unmodified scalar solution everywhere.
 
+`gasVelocityClipEnabled = 1.0` additionally caps the post-solve vector
+magnitude at `gasVelocityMaximum` while preserving its direction. The supplied
+limit is `1.0 m/s`. This is a numerical safeguard rather than part of the
+Eulerian--Eulerian model; clipping should be reported and sensitivity-tested
+in validation runs. Set the switch to `0.0` to disable the cap.
+
 The optional stability monitor prints one global-max line at the configured
 step interval. `max|divTarget|` is the divergence actually supplied to the
 pressure solve after optional filtering/extrapolation. The raw gas pressure

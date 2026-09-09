@@ -37,6 +37,8 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   platform->par->extract("casedata",
                          "smoothgasvelocitymaskenabled",
                          p.smoothGasVelocityMaskEnabled);
+  platform->par->extract("casedata", "gasvelocityclipenabled", p.gasVelocityClipEnabled);
+  platform->par->extract("casedata", "gasvelocitymaximum", p.gasVelocityMaximum);
   platform->par->extract("casedata", "gasmomentumcutoff", p.gasMomentumCutoff);
   platform->par->extract(
       "casedata", "gasmomentumfullyactive", p.gasMomentumFullyActive);

@@ -14,6 +14,9 @@
 
 @kernel void smoothMaskGasVelocity(
     const dlong N,
+    const dfloat smoothMaskEnabled,
+    const dfloat velocityClipEnabled,
+    const dfloat velocityMaximum,
     const dfloat alphaCutoff,
     const dfloat alphaFullyActive,
     @ restrict const dfloat *alpha,
@@ -22,16 +25,24 @@
     @ restrict dfloat *ugz)
 {
   for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
-    dfloat weight = 0.0;
-    if (alpha[n] > alphaCutoff) {
-      const dfloat ramp = (alpha[n] >= alphaFullyActive)
-          ? 1.0
-          : (alpha[n] - alphaCutoff) / (alphaFullyActive - alphaCutoff);
+    dfloat weight = 1.0;
+    if (smoothMaskEnabled != 0.0 && alpha[n] <= alphaCutoff) {
+      weight = 0.0;
+    } else if (smoothMaskEnabled != 0.0 && alpha[n] < alphaFullyActive) {
+      const dfloat ramp =
+          (alpha[n] - alphaCutoff) / (alphaFullyActive - alphaCutoff);
       weight = ramp * ramp * (3.0 - 2.0 * ramp);
     }
-    ugx[n] *= weight;
-    ugy[n] *= weight;
-    ugz[n] *= weight;
+    dfloat ux = weight * ugx[n];
+    dfloat uy = weight * ugy[n];
+    dfloat uz = weight * ugz[n];
+    const dfloat speed = sqrt(ux * ux + uy * uy + uz * uz);
+    const dfloat clipScale = (velocityClipEnabled != 0.0 && speed > velocityMaximum)
+        ? velocityMaximum / speed
+        : 1.0;
+    ugx[n] = clipScale * ux;
+    ugy[n] = clipScale * uy;
+    ugz[n] = clipScale * uz;
   }
 }
 

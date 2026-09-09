@@ -20,6 +20,8 @@ struct Parameters {
   dfloat gravity[3];
   dfloat alphaFloor;
   dfloat smoothGasVelocityMaskEnabled;
+  dfloat gasVelocityClipEnabled;
+  dfloat gasVelocityMaximum;
   dfloat gasMomentumCutoff;
   dfloat gasMomentumFullyActive;
   dfloat gasPressureEnabled;
@@ -123,6 +125,11 @@ inline void allocate()
              "gasMomentumFullyActive must exceed it (cutoff=%g, active=%g)\n",
              p.gasMomentumCutoff,
              p.gasMomentumFullyActive);
+  nekrsCheck(p.gasVelocityClipEnabled != 0.0 && p.gasVelocityMaximum <= 0.0,
+             platform->comm.mpiComm(),
+             EXIT_FAILURE,
+             "gasVelocityMaximum must be positive when clipping is enabled, but is %g\n",
+             p.gasVelocityMaximum);
   nekrsCheck(p.divergenceRampEnabled != 0.0 && p.divergenceRampSteps <= 0,
              platform->comm.mpiComm(),
              EXIT_FAILURE,
@@ -265,14 +272,17 @@ inline void initializeHistory()
   platform->linAlg->fill(3 * offset, 0.0, o_virtualMassRelativeAcceleration);
 }
 
-inline void smoothMaskGasVelocity()
+inline void postProcessGasVelocity()
 {
-  if (p.smoothGasVelocityMaskEnabled == 0.0) {
+  if (p.smoothGasVelocityMaskEnabled == 0.0 && p.gasVelocityClipEnabled == 0.0) {
     return;
   }
 
   smoothMaskGasVelocityKernel(
       nrs->meshV->Nlocal,
+      p.smoothGasVelocityMaskEnabled,
+      p.gasVelocityClipEnabled,
+      p.gasVelocityMaximum,
       p.gasMomentumCutoff,
       p.gasMomentumFullyActive,
       nrs->scalar->o_solution("alpha"),
@@ -405,7 +415,7 @@ inline void updateProperties(double)
 {
   // Called after all four scalars advance: refresh density, viscosity, and the
   // mixture divergence implied by the alpha-equation RHS.
-  smoothMaskGasVelocity();
+  postProcessGasVelocity();
   evaluatePointwiseTerms();
   buildDivergenceFromAlphaRhs();
   filterDivergence();
