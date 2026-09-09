@@ -47,6 +47,8 @@ static deviceMemory<dfloat> o_ugPrevious;
 static deviceMemory<dfloat> o_gradUl;
 static deviceMemory<dfloat> o_virtualMassRelativeAcceleration;
 static deviceMemory<dfloat> o_gradAlpha;
+static deviceMemory<dfloat> o_qg;
+static deviceMemory<dfloat> o_gradQg;
 static deviceMemory<dfloat> o_gradUg;
 static deviceMemory<dfloat> o_gradP;
 static deviceMemory<dfloat> o_rhoM;
@@ -64,16 +66,17 @@ static deviceMemory<dfloat> o_alphaExplicitBase;
 static deviceMemory<dfloat> o_alphaRegularizationSource;
 static deviceMemory<dfloat> o_driftStress;
 static deviceMemory<dfloat> o_divDriftStress;
+static deviceMemory<dfloat> o_gasStress;
+static deviceMemory<dfloat> o_divGasStress;
 static deviceMemory<dfloat> o_alphaSource;
-static deviceMemory<dfloat> o_ugSource;
+static deviceMemory<dfloat> o_qgSource;
 static deviceMemory<dfloat> o_dragLambda;
-static deviceMemory<dfloat> o_gasActivation;
 static deviceMemory<dfloat> o_mixtureForce;
 static deviceMemory<dfloat> o_monitorMagnitude;
 static deviceMemory<dfloat> o_gasPressureAccelerationActive;
 static deviceMemory<dfloat> o_gasPressureAccelerationInactive;
-static occa::kernel packGasVelocityKernel;
-static occa::kernel smoothMaskGasVelocityKernel;
+static occa::kernel reconstructGasVelocityKernel;
+static occa::kernel postProcessGasFluxKernel;
 static occa::kernel initializePlumeKernel;
 static occa::kernel buildLiquidVelocityKernel;
 static occa::kernel updateVirtualMassHistoryKernel;
@@ -91,9 +94,10 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
   if (platform->options.compareArgs("REGISTER ONLY", "TRUE")) {
     platform->kernelRequests.add(request, fileName, kernelInfo);
   } else {
-    packGasVelocityKernel = platform->kernelRequests.load(request, "packGasVelocity");
-    smoothMaskGasVelocityKernel =
-        platform->kernelRequests.load(request, "smoothMaskGasVelocity");
+    reconstructGasVelocityKernel =
+        platform->kernelRequests.load(request, "reconstructGasVelocity");
+    postProcessGasFluxKernel =
+        platform->kernelRequests.load(request, "postProcessGasFlux");
     initializePlumeKernel = platform->kernelRequests.load(request, "initializePlume");
     buildLiquidVelocityKernel = platform->kernelRequests.load(request, "buildLiquidVelocity");
     updateVirtualMassHistoryKernel =
@@ -142,6 +146,8 @@ inline void allocate()
   o_gradUl.resize(9 * offset);
   o_virtualMassRelativeAcceleration.resize(3 * offset);
   o_gradAlpha.resize(3 * offset);
+  o_qg.resize(3 * offset);
+  o_gradQg.resize(9 * offset);
   o_gradUg.resize(9 * offset);
   o_gradP.resize(3 * offset);
   o_rhoM.resize(offset);
@@ -160,10 +166,11 @@ inline void allocate()
   o_alphaRegularizationSource.resize(offset);
   o_driftStress.resize(9 * offset);
   o_divDriftStress.resize(3 * offset);
+  o_gasStress.resize(9 * offset);
+  o_divGasStress.resize(3 * offset);
   o_alphaSource.resize(offset);
-  o_ugSource.resize(3 * offset);
+  o_qgSource.resize(3 * offset);
   o_dragLambda.resize(offset);
-  o_gasActivation.resize(offset);
   o_mixtureForce.resize(3 * offset);
   o_monitorMagnitude.resize(offset);
   o_gasPressureAccelerationActive.resize(offset);
@@ -208,12 +215,17 @@ inline void evaluatePointwiseTerms()
   const dlong offset = nrs->fieldOffset;
   auto alpha = nrs->scalar->o_solution("alpha");
 
-  packGasVelocityKernel(mesh->Nlocal,
-                        offset,
-                        nrs->scalar->o_solution("ugx"),
-                        nrs->scalar->o_solution("ugy"),
-                        nrs->scalar->o_solution("ugz"),
-                        o_ug);
+  o_qg.copyFrom(nrs->scalar->o_solution("qgx"), mesh->Nlocal, 0 * offset, 0);
+  o_qg.copyFrom(nrs->scalar->o_solution("qgy"), mesh->Nlocal, 1 * offset, 0);
+  o_qg.copyFrom(nrs->scalar->o_solution("qgz"), mesh->Nlocal, 2 * offset, 0);
+  reconstructGasVelocityKernel(mesh->Nlocal,
+                               offset,
+                               p.alphaFloor,
+                               alpha,
+                               nrs->scalar->o_solution("qgx"),
+                               nrs->scalar->o_solution("qgy"),
+                               nrs->scalar->o_solution("qgz"),
+                               o_ug);
   buildLiquidVelocityKernel(mesh->Nlocal,
                             offset,
                             p.rhoLiquid,
@@ -221,9 +233,10 @@ inline void evaluatePointwiseTerms()
                             p.alphaFloor,
                             alpha,
                             nrs->fluid->o_U,
-                            o_ug,
+                            o_qg,
                             o_ul);
   opSEM::strongGrad(mesh, offset, alpha, o_gradAlpha);
+  opSEM::strongGradVec(mesh, offset, o_qg, o_gradQg);
   opSEM::strongGradVec(mesh, offset, o_ug, o_gradUg);
   opSEM::strongGradVec(mesh, offset, o_ul, o_gradUl);
   opSEM::strongGrad(mesh, offset, nrs->fluid->o_P, o_gradP);
@@ -235,8 +248,6 @@ inline void evaluatePointwiseTerms()
                            p.muLiquid,
                            p.muGas,
                            p.alphaFloor,
-                           p.gasMomentumCutoff,
-                           p.gasMomentumFullyActive,
                            p.gasPressureEnabled,
                            p.dragEnabled,
                            p.bubbleDiameter,
@@ -247,9 +258,11 @@ inline void evaluatePointwiseTerms()
                            p.gravity[2],
                            alpha,
                            nrs->fluid->o_U,
+                           o_qg,
                            o_ug,
                            o_ul,
                            o_gradAlpha,
+                           o_gradQg,
                            o_gradUg,
                            o_virtualMassRelativeAcceleration,
                            o_gradP,
@@ -257,10 +270,23 @@ inline void evaluatePointwiseTerms()
                            o_muM,
                            o_divSource,
                            o_driftStress,
+                           o_gasStress,
                            o_alphaSource,
-                           o_ugSource,
-                           o_dragLambda,
-                           o_gasActivation);
+                           o_qgSource,
+                           o_dragLambda);
+
+  for (int i = 0; i < 3; ++i) {
+    auto stressRow = o_gasStress.slice(3 * i * offset, 3 * offset);
+    auto stressDivergence = o_divGasStress.slice(i * offset, offset);
+    opSEM::strongDivergence(mesh, offset, stressRow, stressDivergence);
+    platform->linAlg->axpby(mesh->Nlocal,
+                            1.0 / p.rhoGas,
+                            stressDivergence,
+                            1.0,
+                            o_qgSource,
+                            0,
+                            i * offset);
+  }
 }
 
 inline void initializeHistory()
@@ -272,23 +298,24 @@ inline void initializeHistory()
   platform->linAlg->fill(3 * offset, 0.0, o_virtualMassRelativeAcceleration);
 }
 
-inline void postProcessGasVelocity()
+inline void postProcessGasFlux()
 {
   if (p.smoothGasVelocityMaskEnabled == 0.0 && p.gasVelocityClipEnabled == 0.0) {
     return;
   }
 
-  smoothMaskGasVelocityKernel(
+  postProcessGasFluxKernel(
       nrs->meshV->Nlocal,
       p.smoothGasVelocityMaskEnabled,
       p.gasVelocityClipEnabled,
       p.gasVelocityMaximum,
+      p.alphaFloor,
       p.gasMomentumCutoff,
       p.gasMomentumFullyActive,
       nrs->scalar->o_solution("alpha"),
-      nrs->scalar->o_solution("ugx"),
-      nrs->scalar->o_solution("ugy"),
-      nrs->scalar->o_solution("ugz"));
+      nrs->scalar->o_solution("qgx"),
+      nrs->scalar->o_solution("qgy"),
+      nrs->scalar->o_solution("qgz"));
 }
 
 inline void updateVirtualMassHistory()
@@ -297,12 +324,17 @@ inline void updateVirtualMassHistory()
   const dlong offset = nrs->fieldOffset;
   auto alpha = nrs->scalar->o_solution("alpha");
 
-  packGasVelocityKernel(mesh->Nlocal,
-                        offset,
-                        nrs->scalar->o_solution("ugx"),
-                        nrs->scalar->o_solution("ugy"),
-                        nrs->scalar->o_solution("ugz"),
-                        o_ug);
+  o_qg.copyFrom(nrs->scalar->o_solution("qgx"), mesh->Nlocal, 0 * offset, 0);
+  o_qg.copyFrom(nrs->scalar->o_solution("qgy"), mesh->Nlocal, 1 * offset, 0);
+  o_qg.copyFrom(nrs->scalar->o_solution("qgz"), mesh->Nlocal, 2 * offset, 0);
+  reconstructGasVelocityKernel(mesh->Nlocal,
+                               offset,
+                               p.alphaFloor,
+                               alpha,
+                               nrs->scalar->o_solution("qgx"),
+                               nrs->scalar->o_solution("qgy"),
+                               nrs->scalar->o_solution("qgz"),
+                               o_ug);
   buildLiquidVelocityKernel(mesh->Nlocal,
                             offset,
                             p.rhoLiquid,
@@ -310,7 +342,7 @@ inline void updateVirtualMassHistory()
                             p.alphaFloor,
                             alpha,
                             nrs->fluid->o_U,
-                            o_ug,
+                            o_qg,
                             o_ul);
   opSEM::strongGradVec(mesh, offset, o_ug, o_gradUg);
   opSEM::strongGradVec(mesh, offset, o_ul, o_gradUl);
@@ -360,9 +392,9 @@ inline void addExplicitSources(double)
   // Keep the user-assembled part so updateProperties() can isolate any HPFRT
   // or GJP contribution subsequently added by scalar_t::makeExplicit().
   o_alphaExplicitBase.copyFrom(o_alphaSource, Nlocal);
-  nrs->scalar->o_explicitTerms("ugx").copyFrom(o_ugSource, Nlocal, 0, 0 * offset);
-  nrs->scalar->o_explicitTerms("ugy").copyFrom(o_ugSource, Nlocal, 0, 1 * offset);
-  nrs->scalar->o_explicitTerms("ugz").copyFrom(o_ugSource, Nlocal, 0, 2 * offset);
+  nrs->scalar->o_explicitTerms("qgx").copyFrom(o_qgSource, Nlocal, 0, 0 * offset);
+  nrs->scalar->o_explicitTerms("qgy").copyFrom(o_qgSource, Nlocal, 0, 1 * offset);
+  nrs->scalar->o_explicitTerms("qgz").copyFrom(o_qgSource, Nlocal, 0, 2 * offset);
 
   auto fluidTerms = nrs->fluid->o_explicitTerms();
   for (int i = 0; i < 3; ++i) {
@@ -415,7 +447,7 @@ inline void updateProperties(double)
 {
   // Called after all four scalars advance: refresh density, viscosity, and the
   // mixture divergence implied by the alpha-equation RHS.
-  postProcessGasVelocity();
+  postProcessGasFlux();
   evaluatePointwiseTerms();
   buildDivergenceFromAlphaRhs();
   filterDivergence();
@@ -425,7 +457,7 @@ inline void updateProperties(double)
 
 inline occa::memory implicitGasDrag(double, int scalarIndex)
 {
-  // Scalar ordering is ALPHA, UGX, UGY, UGZ.
+  // Scalar ordering is ALPHA, QGX, QGY, QGZ.
   if (p.dragEnabled != 0.0 && scalarIndex >= 1 && scalarIndex <= 3) {
     return o_dragLambda;
   }

@@ -15,11 +15,11 @@ void udfDirichlet(bcData *bc)
     }
   } else if (isField("scalar alpha")) {
     bc->sScalar = p_ALPHA_INLET;
-  } else if (isField("scalar ugx")) {
+  } else if (isField("scalar qgx")) {
     bc->sScalar = 0.0;
-  } else if (isField("scalar ugy")) {
+  } else if (isField("scalar qgy")) {
     bc->sScalar = 0.0;
-  } else if (isField("scalar ugz")) {
-    bc->sScalar = (bc->id == 1) ? p_UG_INLET : 0.0;
+  } else if (isField("scalar qgz")) {
+    bc->sScalar = (bc->id == 1) ? p_ALPHA_INLET * p_UG_INLET : 0.0;
   }
 }

@@ -1,6 +1,6 @@
 # bubbleColumn
 
-Initial one-pass Eulerian mixture/gas-velocity scaffold for nekRS. No mesh is
+Initial one-pass Eulerian mixture/gas-flux scaffold for nekRS. No mesh is
 included yet. A future mesh must expose only these boundary IDs:
 
 The column axis and upward inlet-flow direction are (+z); gravity acts in
@@ -10,16 +10,17 @@ For a fresh run, a smooth gas plume is initialized above the inlet at `z=0`:
 
 `profile=0.5*(1-tanh((z-initialPlumeHeight)/initialPlumeThickness))`.
 
-Both `alpha` and `ugz` use this profile. The mixture z-velocity is initialized
-consistently as `alpha*rhoGas*ugz/rhoM`, corresponding to stationary liquid;
+Both `alpha` and the reconstructed `ugz` use this profile, while the transported
+`qgz=alpha*ugz`. The mixture z-velocity is initialized consistently as
+`rhoGas*qgz/rhoM`, corresponding to stationary liquid;
 all x- and y-velocity components remain zero. The plume height and transition
 thickness are adjustable in `[CASEDATA]`.
 
-| ID | Patch | Mixture velocity | `alpha` | Gas velocity |
+| ID | Patch | Mixture velocity | `alpha` | Gas flux `q_g` |
 |---:|---|---|---|---|
 | 1 | inlet | density-averaged inlet value | fixed inlet value | fixed vertical value |
 | 2 | outlet | zero normal gradient | zero normal gradient | zero normal gradient |
-| 3 | wall | no slip | zero normal gradient | no slip (`u_g=0`) |
+| 3 | wall | no slip | zero normal gradient | zero (`q_g=0`) |
 
 The standard entry files stay small. `bubbleColumnTerms.hpp` owns device fields
 and SEM operators; `bubbleColumnEquations.okl` contains equation kernels; and
@@ -41,21 +42,15 @@ masked, preventing the SEM derivative from leaking a neighboring gas-dependent
 source into nodes where the gas phase is numerically absent. Gravity and the
 native mixture pressure/viscosity terms remain active.
 
-Gas-momentum forcing is independently regularized with a smooth activation.
-It is zero at and below `gasMomentumCutoff`, transitions with a cubic
-smoothstep, and is fully active at `gasMomentumFullyActive`. The activation
-multiplies gas pressure, gravity, advection correction, virtual mass, and both
-the explicit and implicit parts of drag. The supplied limits are `1e-4` and
-`1e-3`; `alphaFloor` remains the denominator safeguard and mixture
-drift-stress cutoff.
+Gas velocity is reconstructed as `u_g=q_g/max(alpha,alphaFloor)`. The smooth
+activation is used in postprocessing to suppress reconstructed velocity near
+the absent-phase limit; the conservative pressure, gravity, drag, and virtual
+mass sources retain their physical alpha factors.
 
-With `smoothGasVelocityMaskEnabled = 1.0`, the completed gas-velocity scalar
-solution is multiplied by the same cubic smoothstep used for gas-momentum
-activation. The mask is zero at and below `gasMomentumCutoff`, transitions
-smoothly, and reaches one at `gasMomentumFullyActive`. This damps the
-meaningless absent-phase velocity without introducing a hard jump in `u_g`.
-NekRS still performs the global scalar solve; set the switch to `0.0` to retain
-the unmodified scalar solution everywhere.
+With `smoothGasVelocityMaskEnabled = 1.0`, the completed gas-flux solution is
+converted to velocity, multiplied by the cubic alpha smoothstep, and converted
+back using `q_g=alpha*u_g`. The mask is zero at and below
+`gasMomentumCutoff` and one at `gasMomentumFullyActive`.
 
 `gasVelocityClipEnabled = 1.0` additionally caps the post-solve vector
 magnitude at `gasVelocityMaximum` while preserving its direction. The supplied
@@ -72,7 +67,17 @@ acceleration is reported separately over alpha values above and below
 `max(lambdaD*dt)` measures the drag relaxation over one timestep. Configure it
 with `stabilityMonitorEnabled` and `stabilityMonitorInterval` in `[CASEDATA]`.
 - Eq. (27): `alphaSource` for passive scalar `ALPHA`.
-- Eq. (29): `ugSource` for passive scalars `UGX`, `UGY`, and `UGZ`.
+- Conservative gas momentum: `qgSource` for passive scalars `QGX`, `QGY`, and
+  `QGZ`, where `q_g=alpha*u_g`.
+
+The implemented gas equation is
+
+`d(q_g)/dt + div(q_g*u_g) = -alpha*grad(p)/rho_g`
+`+ div(alpha*tau_g)/rho_g + alpha*g + M_g/rho_g`.
+
+NekRS natively advances each `QG*` scalar with `u_m.grad(q_g)`. The explicit
+correction `-(u_g-u_m).grad(q_g)-q_g*div(u_g)` converts that operator to the
+conservative `div(q_g*u_g)`. A Newtonian Stokes stress is used for `tau_g`.
 
 The prescribed mixture divergence uses `nrs->userDivergence` directly; the
 thermodynamic `LOWMACH` option remains disabled because it would require a
@@ -80,16 +85,16 @@ thermodynamic pressure `p0th`. The variable mixture density is retained in the
 pressure operator through `FLUID PRESSURE ELLIPTIC COEFF FIELD`.
 
 Scalar `diffusionCoeff` and `transportCoeff` values are read directly from the
-four `.par` sections and are no longer overwritten by `userProperties()`. The
-initial alpha diffusivity is `1e-5`; it is an adjustable numerical
-regularization rather than a physical phase-diffusion model.
+four `.par` sections. The `QG*` scalar diffusion is numerical; the physical
+`div(alpha*tau_g)/rho_g` term is assembled explicitly from the reconstructed
+gas-velocity gradient.
 
 The four scalar sections also expose nekRS's native HPFRT regularization:
 
 `regularization = hpfrt + nModes=1 + scalingCoeff=1.0`.
 
 The initial setting applies a mild relaxation to only the highest polynomial
-mode of `ALPHA`, `UGX`, `UGY`, and `UGZ`. Set `regularization = none` in an
+mode of `ALPHA`, `QGX`, `QGY`, and `QGZ`. Set `regularization = none` in an
 individual scalar section to disable HPFRT for that field. This scalar HPFRT is
 independent of the optional direct divergence filter in `[CASEDATA]`.
 
@@ -98,13 +103,13 @@ independent of the optional direct divergence filter in `[CASEDATA]`.
 There are no corrector iterations inside a time step. nekRS first constructs all
 explicit sources, then solves all four scalars, refreshes mixture properties and
 the prescribed divergence, and finally solves mixture velocity/pressure. Thus
-Eq. (29) uses the pressure gradient available at source assembly (the previous
+The gas-flux equation uses the pressure gradient available at source assembly (the previous
 or extrapolated pressure), not the pressure produced later in the same step.
 Using same-step pressure would require a second scalar pass or core orchestration
 changes, both intentionally excluded here.
 
 `gasPressureEnabled` controls only the lagged `-grad(p)/rho_g` contribution in
-the three gas-velocity equations. Use `1.0` for the physical equation or `0.0`
+the three gas-flux equations. Use `1.0` for the physical equation or `0.0`
 for a diagnostic run without gas-pressure forcing. This switch does not alter
 the native mixture pressure projection or its variable-density coefficient.
 
@@ -115,7 +120,7 @@ use `1.0` to enable a term and `0.0` to disable it independently. Drag uses the
 OpenFOAM dispersed-gas Schiller--Naumann model with constant `bubbleDiameter`.
 The physical slip is reconstructed from the density-averaged mixture velocity,
 
-`u_l=(rho_m*u_m-alpha*rho_g*u_g)/((1-alpha)*rho_l)`.
+`u_l=(rho_m*u_m-rho_g*q_g)/((1-alpha)*rho_l)`.
 
 Virtual mass uses `virtualMassCoefficient` and the lagged material-acceleration
 difference `D_l(u_l)/Dt-D_g(u_g)/Dt`. The history is refreshed after each time
@@ -125,9 +130,9 @@ time step, especially because `rho_l/rho_g` is large.
 Drag defaults to `1.0` for the stabilized test; virtual mass remains `0.0` so
 the two closures can be introduced separately.
 
-The Schiller--Naumann drag is treated semi-implicitly as
-`lambdaD*(um-ug)`: `lambdaD*um` is explicit and `lambdaD*ug` is added to the
-gas-scalar Helmholtz diagonal. The prescribed mixture divergence is constructed
+For the conservative gas-flux equation, Schiller--Naumann drag is
+`alpha*Ki*(u_l-u_g)/rho_g`. The `alpha*Ki*u_l/rho_g` part is explicit and
+`Ki*q_g/rho_g` is added to the gas-scalar Helmholtz diagonal. The prescribed mixture divergence is constructed
 after the alpha solve from the alpha-equation RHS,
 
 `q=-(rhoGas-rhoLiquid)/rhoM`
@@ -174,5 +179,6 @@ extrapolation. Set the switch to `0.0` to disable it.
 
 Lift, turbulent dispersion, and wall lubrication remain zero, matching the
 official OpenFOAM Foundation `multiphaseEuler/bubbleColumn` tutorial. The
-alpha-weighted gas viscous-stress contribution in Eq. (29) is still absent; the
-tiny scalar diffusivity is numerical, not a physical model.
+alpha-weighted Newtonian gas stress is included explicitly; the tiny `QG*`
+scalar diffusivity is an additional numerical regularization, not a physical
+model.

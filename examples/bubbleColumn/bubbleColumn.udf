@@ -74,9 +74,9 @@ void UDF_Setup()
         p.initialPlumeThickness,
         nrs->meshV->o_z,
         nrs->scalar->o_solution("alpha"),
-        nrs->scalar->o_solution("ugx"),
-        nrs->scalar->o_solution("ugy"),
-        nrs->scalar->o_solution("ugz"),
+        nrs->scalar->o_solution("qgx"),
+        nrs->scalar->o_solution("qgy"),
+        nrs->scalar->o_solution("qgz"),
         nrs->fluid->o_U);
   }
   bubbleColumn::initializeHistory();
