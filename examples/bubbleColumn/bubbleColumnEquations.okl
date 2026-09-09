@@ -180,7 +180,8 @@
                                 @ restrict const dfloat *ul,
                                 @ restrict const dfloat *gradAlpha,
                                 @ restrict const dfloat *gradQg,
-                                @ restrict const dfloat *gradUg,
+                                @ restrict const dfloat *gradUgAdvection,
+                                @ restrict const dfloat *gradUgStress,
                                 @ restrict const dfloat *virtualMassRelativeAcceleration,
                                 @ restrict const dfloat *gradP,
                                 @ restrict dfloat *rhoMField,
@@ -209,9 +210,12 @@
     const dfloat ury = ug[n + 1 * offset] - ul[n + 1 * offset];
     const dfloat urz = ug[n + 2 * offset] - ul[n + 2 * offset];
 
-    const dfloat divUg = gradUg[n + (0 * 3 + 0) * offset]
-                         + gradUg[n + (1 * 3 + 1) * offset]
-                         + gradUg[n + (2 * 3 + 2) * offset];
+    const dfloat divUg = gradUgAdvection[n + (0 * 3 + 0) * offset]
+                         + gradUgAdvection[n + (1 * 3 + 1) * offset]
+                         + gradUgAdvection[n + (2 * 3 + 2) * offset];
+    const dfloat divUgStress = gradUgStress[n + (0 * 3 + 0) * offset]
+                               + gradUgStress[n + (1 * 3 + 1) * offset]
+                               + gradUgStress[n + (2 * 3 + 2) * offset];
     const dfloat divQg = gradQg[n + (0 * 3 + 0) * offset]
                          + gradQg[n + (1 * 3 + 1) * offset]
                          + gradQg[n + (2 * 3 + 2) * offset];
@@ -262,13 +266,13 @@
 
     // alpha*tau_g with a Newtonian Stokes stress. Its divergence is added
     // outside this pointwise kernel after applying the SEM divergence.
-    const dfloat twoThirdsDivUg = (2.0 / 3.0) * divUg;
+    const dfloat twoThirdsDivUg = (2.0 / 3.0) * divUgStress;
     for (int i = 0; i < 3; ++i) {
       for (int j = 0; j < 3; ++j) {
         const dfloat trace = (i == j) ? twoThirdsDivUg : 0.0;
         gasStress[n + (3 * i + j) * offset] =
-            a * muGas * (gradUg[n + (3 * i + j) * offset]
-                         + gradUg[n + (3 * j + i) * offset] - trace);
+            a * muGas * (gradUgStress[n + (3 * i + j) * offset]
+                         + gradUgStress[n + (3 * j + i) * offset] - trace);
       }
     }
 

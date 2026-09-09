@@ -47,9 +47,11 @@ static deviceMemory<dfloat> o_ugPrevious;
 static deviceMemory<dfloat> o_gradUl;
 static deviceMemory<dfloat> o_virtualMassRelativeAcceleration;
 static deviceMemory<dfloat> o_gradAlpha;
+static deviceMemory<dfloat> o_gradAlphaAdvection;
 static deviceMemory<dfloat> o_qg;
-static deviceMemory<dfloat> o_gradQg;
+static deviceMemory<dfloat> o_gradQgAdvection;
 static deviceMemory<dfloat> o_gradUg;
+static deviceMemory<dfloat> o_gradUgAdvection;
 static deviceMemory<dfloat> o_gradP;
 static deviceMemory<dfloat> o_rhoM;
 static deviceMemory<dfloat> o_muM;
@@ -75,6 +77,9 @@ static deviceMemory<dfloat> o_mixtureForce;
 static deviceMemory<dfloat> o_monitorMagnitude;
 static deviceMemory<dfloat> o_gasPressureAccelerationActive;
 static deviceMemory<dfloat> o_gasPressureAccelerationInactive;
+static deviceMemory<int> o_inletBoundaryID;
+static deviceMemory<dfloat> o_surfaceOne;
+static deviceMemory<dfloat> o_surfaceScalar;
 static occa::kernel reconstructGasVelocityKernel;
 static occa::kernel postProcessGasFluxKernel;
 static occa::kernel initializePlumeKernel;
@@ -149,9 +154,11 @@ inline void allocate()
   o_gradUl.resize(9 * offset);
   o_virtualMassRelativeAcceleration.resize(3 * offset);
   o_gradAlpha.resize(3 * offset);
+  o_gradAlphaAdvection.resize(3 * offset);
   o_qg.resize(3 * offset);
-  o_gradQg.resize(9 * offset);
+  o_gradQgAdvection.resize(9 * offset);
   o_gradUg.resize(9 * offset);
+  o_gradUgAdvection.resize(9 * offset);
   o_gradP.resize(3 * offset);
   o_rhoM.resize(offset);
   o_muM.resize(offset);
@@ -178,6 +185,11 @@ inline void allocate()
   o_monitorMagnitude.resize(offset);
   o_gasPressureAccelerationActive.resize(offset);
   o_gasPressureAccelerationInactive.resize(offset);
+  o_inletBoundaryID.resize(1);
+  o_inletBoundaryID.copyFrom(std::vector<int>{1});
+  o_surfaceOne.resize(nrs->meshV->Nlocal);
+  o_surfaceScalar.resize(nrs->meshV->Nlocal);
+  platform->linAlg->fill(nrs->meshV->Nlocal, 1.0, o_surfaceOne);
   platform->linAlg->fill(offset, 0.0, o_alphaExplicitBase);
   platform->linAlg->fill(offset, 0.0, o_alphaRegularizationSource);
 
@@ -238,9 +250,16 @@ inline void evaluatePointwiseTerms()
                             nrs->fluid->o_U,
                             o_qg,
                             o_ul);
+  // Keep averaged gradients for constitutive terms and diffusion, but use
+  // element-local gradients for advection corrections. NekRS's native scalar
+  // advection kernel differentiates each element locally; using the default
+  // gather-scatter-averaged opSEM gradient here prevents the nominal
+  // u_m.grad(scalar) cancellation from matching node-for-node.
   opSEM::strongGrad(mesh, offset, alpha, o_gradAlpha);
-  opSEM::strongGradVec(mesh, offset, o_qg, o_gradQg);
+  opSEM::strongGrad(mesh, offset, alpha, o_gradAlphaAdvection, false);
+  opSEM::strongGradVec(mesh, offset, o_qg, o_gradQgAdvection, false);
   opSEM::strongGradVec(mesh, offset, o_ug, o_gradUg);
+  opSEM::strongGradVec(mesh, offset, o_ug, o_gradUgAdvection, false);
   opSEM::strongGradVec(mesh, offset, o_ul, o_gradUl);
   opSEM::strongGrad(mesh, offset, nrs->fluid->o_P, o_gradP);
 
@@ -264,8 +283,9 @@ inline void evaluatePointwiseTerms()
                            o_qg,
                            o_ug,
                            o_ul,
-                           o_gradAlpha,
-                           o_gradQg,
+                           o_gradAlphaAdvection,
+                           o_gradQgAdvection,
+                           o_gradUgAdvection,
                            o_gradUg,
                            o_virtualMassRelativeAcceleration,
                            o_gradP,
@@ -570,13 +590,31 @@ inline void printStabilityMonitors(double time, int tstep)
       platform->linAlg->max(Nlocal, o_dragLambda, comm);
   const dfloat maxDragStep = maxDragLambda * nrs->dt[0];
 
+  // Boundary-integrated checks for the alpha inlet.  These distinguish an
+  // incorrectly applied Dirichlet value from a layer that develops in the
+  // first interior element.  qgFlux uses the outward mesh normal, so a gas
+  // inflow through the z=0 face is normally negative.
+  o_surfaceScalar.copyFrom(alpha, Nlocal);
+  const dfloat inletArea = nrs->meshV->surfaceAreaMultiplyIntegrate(
+      o_inletBoundaryID, o_surfaceOne);
+  const dfloat inletAlphaIntegral = nrs->meshV->surfaceAreaMultiplyIntegrate(
+      o_inletBoundaryID, o_surfaceScalar);
+  const dfloat inletAlphaAverage =
+      inletArea > 0.0 ? inletAlphaIntegral / inletArea : 0.0;
+  const dfloat inletQgFlux = nrs->meshV->surfaceAreaNormalMultiplyVectorIntegrate(
+      offset, o_inletBoundaryID, o_qg);
+  const dfloat prescribedQgFluxMagnitude =
+      p.alphaInlet * std::abs(p.ugInlet) * inletArea;
+
   if (platform->comm.mpiRank() == 0) {
     printf("bubbleColumn stability step=%d time=%.8e max|divTarget|=%.8e "
            "min(alpha)=%.8e max(alpha)=%.8e mean(alpha)=%.8e "
            "max|qg|=%.8e max|qg-alpha*ug|=%.8e "
            "maxActive|gradP|/rhoG=%.8e maxInactive|gradP|/rhoG=%.8e "
            "max|ug|=%.8e max|tauDrift|=%.8e "
-           "max(lambdaD*dt)=%.8e\n",
+           "max(lambdaD*dt)=%.8e "
+           "inletArea=%.8e inletMean(alpha)=%.8e "
+           "inletIntegral(qg.n)=%.8e prescribed|inletFlux|=%.8e\n",
            tstep,
            time,
            maxDiv,
@@ -589,7 +627,11 @@ inline void printStabilityMonitors(double time, int tstep)
            maxGasPressureAccelerationInactive,
            maxUg,
            maxDriftStress,
-           maxDragStep);
+           maxDragStep,
+           inletArea,
+           inletAlphaAverage,
+           inletQgFlux,
+           prescribedQgFluxMagnitude);
   }
 }
 } // namespace bubbleColumn

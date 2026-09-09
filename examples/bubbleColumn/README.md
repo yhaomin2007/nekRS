@@ -68,7 +68,12 @@ or postprocessing. The raw gas pressure
 acceleration is reported separately over alpha values above and below
 `gasMomentumCutoff`; `max|ug|` is gas-speed magnitude;
 `max|tauDrift|` is the Frobenius norm of the mixture drift-stress tensor; and
-`max(lambdaD*dt)` measures the drag relaxation over one timestep. Configure it
+`max(lambdaD*dt)` measures the drag relaxation over one timestep.
+`inletMean(alpha)` and `inletIntegral(qg.n)` directly check the alpha
+Dirichlet value and conservative gas-volume flux on boundary ID 1; the latter
+uses the outward normal and is normally negative at the z=0 inlet.
+`prescribed|inletFlux|=alphaInlet*abs(gasInletVelocity)*inletArea` supplies the
+reference magnitude. Configure the monitor
 with `stabilityMonitorEnabled` and `stabilityMonitorInterval` in `[CASEDATA]`.
 - Eq. (27): `alphaSource` for passive scalar `ALPHA`.
 - Conservative gas momentum: `qgSource` for passive scalars `QGX`, `QGY`, and
@@ -81,7 +86,12 @@ The implemented gas equation is
 
 NekRS natively advances each `QG*` scalar with `u_m.grad(q_g)`. The explicit
 correction `-(u_g-u_m).grad(q_g)-q_g*div(u_g)` converts that operator to the
-conservative `div(q_g*u_g)`. A Newtonian Stokes stress is used for `tau_g`.
+conservative `div(q_g*u_g)`. Both this correction and the corresponding
+`u_m.grad(alpha)-div(q_g)` alpha source use element-local SEM gradients so
+their reconstructed native-advection term matches NekRS's element-local
+`strongAdvectionVolumeScalarHex3D` operator. Gather-scatter-averaged gradients
+remain in use for alpha diffusion, gas stress, and other constitutive terms.
+A Newtonian Stokes stress is used for `tau_g`.
 
 The prescribed mixture divergence uses `nrs->userDivergence` directly; the
 thermodynamic `LOWMACH` option remains disabled because it would require a
