@@ -149,6 +149,7 @@
                                 const dfloat alphaFloor,
                                 const dfloat gasMomentumCutoff,
                                 const dfloat gasMomentumFullyActive,
+                                const dfloat gasPressureEnabled,
                                 const dfloat dragEnabled,
                                 const dfloat bubbleDiameter,
                                 const dfloat virtualMassEnabled,
@@ -260,17 +261,23 @@
                                     * virtualMassCoefficient
                                     * rhoLiquid / rhoGas;
     ugSource[n + 0 * offset] = gasWeight
-                               * (-advX - gradP[n + 0 * offset] / rhoGas
+                               * (-advX
+                                  - gasPressureEnabled
+                                    * gradP[n + 0 * offset] / rhoGas
                                   + gravityX + lambdaDRaw * um[n + 0 * offset]
                                   + virtualMassScale
                                     * virtualMassRelativeAcceleration[n + 0 * offset]);
     ugSource[n + 1 * offset] = gasWeight
-                               * (-advY - gradP[n + 1 * offset] / rhoGas
+                               * (-advY
+                                  - gasPressureEnabled
+                                    * gradP[n + 1 * offset] / rhoGas
                                   + gravityY + lambdaDRaw * um[n + 1 * offset]
                                   + virtualMassScale
                                     * virtualMassRelativeAcceleration[n + 1 * offset]);
     ugSource[n + 2 * offset] = gasWeight
-                               * (-advZ - gradP[n + 2 * offset] / rhoGas
+                               * (-advZ
+                                  - gasPressureEnabled
+                                    * gradP[n + 2 * offset] / rhoGas
                                   + gravityZ + lambdaDRaw * um[n + 2 * offset]
                                   + virtualMassScale
                                     * virtualMassRelativeAcceleration[n + 2 * offset]);

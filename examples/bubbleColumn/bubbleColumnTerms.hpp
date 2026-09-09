@@ -22,6 +22,7 @@ struct Parameters {
   dfloat smoothGasVelocityMaskEnabled;
   dfloat gasMomentumCutoff;
   dfloat gasMomentumFullyActive;
+  dfloat gasPressureEnabled;
   dfloat dragEnabled;
   dfloat bubbleDiameter;
   dfloat virtualMassEnabled;
@@ -229,6 +230,7 @@ inline void evaluatePointwiseTerms()
                            p.alphaFloor,
                            p.gasMomentumCutoff,
                            p.gasMomentumFullyActive,
+                           p.gasPressureEnabled,
                            p.dragEnabled,
                            p.bubbleDiameter,
                            p.virtualMassEnabled,

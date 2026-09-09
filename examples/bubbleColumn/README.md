@@ -97,6 +97,11 @@ or extrapolated pressure), not the pressure produced later in the same step.
 Using same-step pressure would require a second scalar pass or core orchestration
 changes, both intentionally excluded here.
 
+`gasPressureEnabled` controls only the lagged `-grad(p)/rho_g` contribution in
+the three gas-velocity equations. Use `1.0` for the physical equation or `0.0`
+for a diagnostic run without gas-pressure forcing. This switch does not alter
+the native mixture pressure projection or its variable-density coefficient.
+
 ## Interphase momentum transfer
 
 `dragEnabled` and `virtualMassEnabled` in `[CASEDATA]` are numeric switches:

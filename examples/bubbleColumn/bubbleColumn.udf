@@ -40,6 +40,7 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   platform->par->extract("casedata", "gasmomentumcutoff", p.gasMomentumCutoff);
   platform->par->extract(
       "casedata", "gasmomentumfullyactive", p.gasMomentumFullyActive);
+  platform->par->extract("casedata", "gaspressureenabled", p.gasPressureEnabled);
   platform->par->extract("casedata", "dragenabled", p.dragEnabled);
   platform->par->extract("casedata", "bubblediameter", p.bubbleDiameter);
   platform->par->extract("casedata", "virtualmassenabled", p.virtualMassEnabled);
