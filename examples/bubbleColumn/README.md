@@ -49,20 +49,20 @@ the explicit and implicit parts of drag. The supplied limits are `1e-4` and
 `1e-3`; `alphaFloor` remains the denominator safeguard and mixture
 drift-stress cutoff.
 
-With `freezeGasVelocityBelowAlphaFloor = 1.0`, the completed gas-velocity
-scalar solve is overwritten at nodes satisfying `alpha < alphaFloor` before
-mixture properties and divergence are reconstructed:
-`ug^(n+1) = ug^n`. A dedicated completed-step history is maintained even when
-virtual mass is disabled. NekRS still performs the global scalar solve, but
-the absent-phase degrees of freedom cannot feed their new values back into
-alpha transport, mixture divergence, or drift stress. Set the switch to `0.0`
-to retain the unmodified scalar solution everywhere.
+With `zeroGasVelocityBelowThreshold = 1.0`, the completed gas-velocity scalar
+solve is overwritten at nodes satisfying
+`alpha < gasVelocityZeroThreshold` before mixture properties and divergence
+are reconstructed: `ug^(n+1) = 0`. The supplied threshold is `1e-3`, separate
+from the smaller denominator safeguard `alphaFloor`. NekRS still performs the
+global scalar solve, but absent-phase values cannot feed back into alpha
+transport, mixture divergence, or drift stress. Set the switch to `0.0` to
+retain the unmodified scalar solution everywhere.
 
 The optional stability monitor prints one global-max line at the configured
 step interval. `max|divTarget|` is the divergence actually supplied to the
 pressure solve after optional filtering/extrapolation. The raw gas pressure
 acceleration is reported separately over alpha values above and below
-`gasMomentumCutoff`; `max|ug|` is gas-speed magnitude;
+`gasVelocityZeroThreshold`; `max|ug|` is gas-speed magnitude;
 `max|tauDrift|` is the Frobenius norm of the mixture drift-stress tensor; and
 `max(lambdaD*dt)` measures the drag relaxation over one timestep. Configure it
 with `stabilityMonitorEnabled` and `stabilityMonitorInterval` in `[CASEDATA]`.

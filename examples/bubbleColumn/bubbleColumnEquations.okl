@@ -12,21 +12,19 @@
   }
 }
 
-@kernel void freezeGasVelocityBelowAlphaFloor(
+@kernel void zeroGasVelocityBelowThreshold(
     const dlong N,
-    const dlong offset,
-    const dfloat alphaFloor,
+    const dfloat alphaThreshold,
     @ restrict const dfloat *alpha,
-    @ restrict const dfloat *ugPrevious,
     @ restrict dfloat *ugx,
     @ restrict dfloat *ugy,
     @ restrict dfloat *ugz)
 {
   for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
-    if (alpha[n] < alphaFloor) {
-      ugx[n] = ugPrevious[n + 0 * offset];
-      ugy[n] = ugPrevious[n + 1 * offset];
-      ugz[n] = ugPrevious[n + 2 * offset];
+    if (alpha[n] < alphaThreshold) {
+      ugx[n] = 0.0;
+      ugy[n] = 0.0;
+      ugz[n] = 0.0;
     }
   }
 }

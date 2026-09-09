@@ -17,7 +17,8 @@ struct Parameters {
   dfloat initialPlumeThickness;
   dfloat gravity[3];
   dfloat alphaFloor;
-  dfloat freezeGasVelocityBelowAlphaFloor;
+  dfloat zeroGasVelocityBelowThreshold;
+  dfloat gasVelocityZeroThreshold;
   dfloat gasMomentumCutoff;
   dfloat gasMomentumFullyActive;
   dfloat dragEnabled;
@@ -34,7 +35,6 @@ struct Parameters {
 
 static Parameters p;
 static deviceMemory<dfloat> o_ug;
-static deviceMemory<dfloat> o_ugStepPrevious;
 static deviceMemory<dfloat> o_ul;
 static deviceMemory<dfloat> o_ulPrevious;
 static deviceMemory<dfloat> o_ugPrevious;
@@ -67,7 +67,7 @@ static deviceMemory<dfloat> o_monitorMagnitude;
 static deviceMemory<dfloat> o_gasPressureAccelerationActive;
 static deviceMemory<dfloat> o_gasPressureAccelerationInactive;
 static occa::kernel packGasVelocityKernel;
-static occa::kernel freezeGasVelocityBelowAlphaFloorKernel;
+static occa::kernel zeroGasVelocityBelowThresholdKernel;
 static occa::kernel initializePlumeKernel;
 static occa::kernel buildLiquidVelocityKernel;
 static occa::kernel updateVirtualMassHistoryKernel;
@@ -86,8 +86,8 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
     platform->kernelRequests.add(request, fileName, kernelInfo);
   } else {
     packGasVelocityKernel = platform->kernelRequests.load(request, "packGasVelocity");
-    freezeGasVelocityBelowAlphaFloorKernel =
-        platform->kernelRequests.load(request, "freezeGasVelocityBelowAlphaFloor");
+    zeroGasVelocityBelowThresholdKernel =
+        platform->kernelRequests.load(request, "zeroGasVelocityBelowThreshold");
     initializePlumeKernel = platform->kernelRequests.load(request, "initializePlume");
     buildLiquidVelocityKernel = platform->kernelRequests.load(request, "buildLiquidVelocity");
     updateVirtualMassHistoryKernel =
@@ -119,8 +119,12 @@ inline void allocate()
              "gasMomentumFullyActive must exceed it (cutoff=%g, active=%g)\n",
              p.gasMomentumCutoff,
              p.gasMomentumFullyActive);
+  nekrsCheck(p.gasVelocityZeroThreshold < 0.0,
+             platform->comm.mpiComm(),
+             EXIT_FAILURE,
+             "gasVelocityZeroThreshold must be nonnegative, but is %g\n",
+             p.gasVelocityZeroThreshold);
   o_ug.resize(3 * offset);
-  o_ugStepPrevious.resize(3 * offset);
   o_ul.resize(3 * offset);
   o_ulPrevious.resize(3 * offset);
   o_ugPrevious.resize(3 * offset);
@@ -251,38 +255,24 @@ inline void initializeHistory()
 {
   evaluatePointwiseTerms();
   const dlong offset = nrs->fieldOffset;
-  o_ugStepPrevious.copyFrom(o_ug, 3 * offset);
   o_ulPrevious.copyFrom(o_ul, 3 * offset);
   o_ugPrevious.copyFrom(o_ug, 3 * offset);
   platform->linAlg->fill(3 * offset, 0.0, o_virtualMassRelativeAcceleration);
 }
 
-inline void freezeGasVelocity()
+inline void zeroGasVelocity()
 {
-  if (p.freezeGasVelocityBelowAlphaFloor == 0.0) {
+  if (p.zeroGasVelocityBelowThreshold == 0.0) {
     return;
   }
 
-  freezeGasVelocityBelowAlphaFloorKernel(
+  zeroGasVelocityBelowThresholdKernel(
       nrs->meshV->Nlocal,
-      nrs->fieldOffset,
-      p.alphaFloor,
+      p.gasVelocityZeroThreshold,
       nrs->scalar->o_solution("alpha"),
-      o_ugStepPrevious,
       nrs->scalar->o_solution("ugx"),
       nrs->scalar->o_solution("ugy"),
       nrs->scalar->o_solution("ugz"));
-}
-
-inline void storeGasVelocityHistory()
-{
-  packGasVelocityKernel(nrs->meshV->Nlocal,
-                        nrs->fieldOffset,
-                        nrs->scalar->o_solution("ugx"),
-                        nrs->scalar->o_solution("ugy"),
-                        nrs->scalar->o_solution("ugz"),
-                        o_ug);
-  o_ugStepPrevious.copyFrom(o_ug, 3 * nrs->fieldOffset);
 }
 
 inline void updateVirtualMassHistory()
@@ -409,7 +399,7 @@ inline void updateProperties(double)
 {
   // Called after all four scalars advance: refresh density, viscosity, and the
   // mixture divergence implied by the alpha-equation RHS.
-  freezeGasVelocity();
+  zeroGasVelocity();
   evaluatePointwiseTerms();
   buildDivergenceFromAlphaRhs();
   filterDivergence();
@@ -484,7 +474,7 @@ inline void printStabilityMonitors(double time, int tstep)
   platform->linAlg->entrywiseMag(Nlocal, 3, offset, o_gradP, o_monitorMagnitude);
   buildGasPressureAccelerationMonitorKernel(Nlocal,
                                             p.rhoGas,
-                                            p.gasMomentumCutoff,
+                                            p.gasVelocityZeroThreshold,
                                             nrs->scalar->o_solution("alpha"),
                                             o_monitorMagnitude,
                                             o_gasPressureAccelerationActive,
