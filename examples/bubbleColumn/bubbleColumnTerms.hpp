@@ -84,6 +84,7 @@ static occa::kernel buildDivergenceFromAlphaRhsKernel;
 static occa::kernel buildEquationTermsKernel;
 static occa::kernel buildMixtureForceKernel;
 static occa::kernel buildGasPressureAccelerationMonitorKernel;
+static occa::kernel buildGasFluxConsistencyMonitorKernel;
 
 inline void registerKernels(deviceKernelProperties &kernelInfo)
 {
@@ -108,6 +109,8 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
     buildMixtureForceKernel = platform->kernelRequests.load(request, "buildMixtureForce");
     buildGasPressureAccelerationMonitorKernel =
         platform->kernelRequests.load(request, "buildGasPressureAccelerationMonitor");
+    buildGasFluxConsistencyMonitorKernel =
+        platform->kernelRequests.load(request, "buildGasFluxConsistencyMonitor");
   }
 }
 
@@ -537,6 +540,24 @@ inline void printStabilityMonitors(double time, int tstep)
   const dfloat maxGasPressureAccelerationInactive = platform->linAlg->max(
       Nlocal, o_gasPressureAccelerationInactive, comm);
 
+  auto alpha = nrs->scalar->o_solution("alpha");
+  const dfloat minAlpha = platform->linAlg->min(Nlocal, alpha, comm);
+  const dfloat maxAlpha = platform->linAlg->max(Nlocal, alpha, comm);
+  const dfloat meanAlpha = platform->linAlg->innerProd(
+      Nlocal, nrs->meshV->o_LMM, alpha, comm) / nrs->meshV->volume;
+
+  platform->linAlg->entrywiseMag(Nlocal, 3, offset, o_qg, o_monitorMagnitude);
+  const dfloat maxQg = platform->linAlg->max(Nlocal, o_monitorMagnitude, comm);
+
+  buildGasFluxConsistencyMonitorKernel(Nlocal,
+                                       offset,
+                                       alpha,
+                                       o_qg,
+                                       o_ug,
+                                       o_monitorMagnitude);
+  const dfloat maxQgConsistencyError =
+      platform->linAlg->max(Nlocal, o_monitorMagnitude, comm);
+
   platform->linAlg->entrywiseMag(Nlocal, 3, offset, o_ug, o_monitorMagnitude);
   const dfloat maxUg = platform->linAlg->max(Nlocal, o_monitorMagnitude, comm);
 
@@ -551,12 +572,19 @@ inline void printStabilityMonitors(double time, int tstep)
 
   if (platform->comm.mpiRank() == 0) {
     printf("bubbleColumn stability step=%d time=%.8e max|divTarget|=%.8e "
+           "min(alpha)=%.8e max(alpha)=%.8e mean(alpha)=%.8e "
+           "max|qg|=%.8e max|qg-alpha*ug|=%.8e "
            "maxActive|gradP|/rhoG=%.8e maxInactive|gradP|/rhoG=%.8e "
            "max|ug|=%.8e max|tauDrift|=%.8e "
            "max(lambdaD*dt)=%.8e\n",
            tstep,
            time,
            maxDiv,
+           minAlpha,
+           maxAlpha,
+           meanAlpha,
+           maxQg,
+           maxQgConsistencyError,
            maxGasPressureAccelerationActive,
            maxGasPressureAccelerationInactive,
            maxUg,

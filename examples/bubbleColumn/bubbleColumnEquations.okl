@@ -321,6 +321,23 @@
   }
 }
 
+@kernel void buildGasFluxConsistencyMonitor(
+    const dlong N,
+    const dlong offset,
+    @ restrict const dfloat *alpha,
+    @ restrict const dfloat *qg,
+    @ restrict const dfloat *ug,
+    @ restrict dfloat *errorMagnitude)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    const dfloat a = alpha[n] < 0.0 ? 0.0 : (alpha[n] > 1.0 ? 1.0 : alpha[n]);
+    const dfloat ex = qg[n + 0 * offset] - a * ug[n + 0 * offset];
+    const dfloat ey = qg[n + 1 * offset] - a * ug[n + 1 * offset];
+    const dfloat ez = qg[n + 2 * offset] - a * ug[n + 2 * offset];
+    errorMagnitude[n] = sqrt(ex * ex + ey * ey + ez * ez);
+  }
+}
+
 @kernel void buildMixtureForce(const dlong N,
                                const dlong offset,
                                const dfloat alphaFloor,

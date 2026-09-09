@@ -60,7 +60,11 @@ in validation runs. Set the switch to `0.0` to disable the cap.
 
 The optional stability monitor prints one global-max line at the configured
 step interval. `max|divTarget|` is the divergence actually supplied to the
-pressure solve after optional filtering/extrapolation. The raw gas pressure
+pressure solve after optional filtering/extrapolation. `min(alpha)`,
+`max(alpha)`, and `mean(alpha)` track void-fraction boundedness and total gas
+content. `max|qg|` tracks the transported gas volumetric flux, while
+`max|qg-alpha*ug|` detects inconsistency introduced by low-alpha reconstruction
+or postprocessing. The raw gas pressure
 acceleration is reported separately over alpha values above and below
 `gasMomentumCutoff`; `max|ug|` is gas-speed magnitude;
 `max|tauDrift|` is the Frobenius norm of the mixture drift-stress tensor; and
