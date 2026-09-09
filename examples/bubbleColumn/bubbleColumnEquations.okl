@@ -154,6 +154,7 @@
     const dfloat beta = 1.0 - a;
     const dfloat aSafe = (a > alphaFloor) ? a : alphaFloor;
     const dfloat betaSafe = (beta > alphaFloor) ? beta : alphaFloor;
+    const dfloat gasActive = (a >= alphaFloor) ? 1.0 : 0.0;
     const dfloat rhoM = beta * rhoLiquid + a * rhoGas;
     const dfloat muM = beta * muLiquid + a * muGas;
 
@@ -178,7 +179,8 @@
     divSource[n] = (rhoGas - rhoLiquid) / rhoM * (slipGradAlpha + a * divUg);
 
     // Eq. (20): rho-weighted drift stress, tau_d.
-    const dfloat driftScale = a * rhoGas * rhoM / (betaSafe * rhoLiquid);
+    const dfloat driftScale = gasActive * a * rhoGas * rhoM
+                              / (betaSafe * rhoLiquid);
     driftStress[n + 0 * offset] = driftScale * dx * dx;
     driftStress[n + 1 * offset] = driftScale * dx * dy;
     driftStress[n + 2 * offset] = driftScale * dx * dz;
@@ -238,17 +240,27 @@
 
 @kernel void buildMixtureForce(const dlong N,
                                const dlong offset,
+                               const dfloat alphaFloor,
                                const dfloat gravityX,
                                const dfloat gravityY,
                                const dfloat gravityZ,
+                               @ restrict const dfloat *alpha,
                                @ restrict const dfloat *rhoM,
                                @ restrict const dfloat *divDriftStress,
                                @ restrict dfloat *force)
 {
   for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    // The drift-stress divergence is the only mixture-momentum source that
+    // uses u_g. Suppress it wherever the gas phase is numerically absent.
+    // This second mask prevents differentiation of neighboring nonzero drift
+    // stress from leaking a gas-dependent source into alpha < alphaFloor.
+    const dfloat gasActive = (alpha[n] >= alphaFloor) ? 1.0 : 0.0;
     // nekRS o_EXT is acceleration; it is multiplied by rho_m in velocityRhs.
-    force[n + 0 * offset] = -divDriftStress[n + 0 * offset] / rhoM[n] + gravityX;
-    force[n + 1 * offset] = -divDriftStress[n + 1 * offset] / rhoM[n] + gravityY;
-    force[n + 2 * offset] = -divDriftStress[n + 2 * offset] / rhoM[n] + gravityZ;
+    force[n + 0 * offset] = -gasActive * divDriftStress[n + 0 * offset] / rhoM[n]
+                            + gravityX;
+    force[n + 1 * offset] = -gasActive * divDriftStress[n + 1 * offset] / rhoM[n]
+                            + gravityY;
+    force[n + 2 * offset] = -gasActive * divDriftStress[n + 2 * offset] / rhoM[n]
+                            + gravityZ;
   }
 }

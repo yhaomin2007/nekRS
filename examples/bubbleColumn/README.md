@@ -33,6 +33,13 @@ injected into every native nekRS boundary-kernel translation unit.
 - Eq. (20): `driftStress`.
 - Eq. (21): native pressure/viscosity plus acceleration source
   `-div(driftStress)/rhoM+g` (nekRS multiplies `o_EXT` by `rhoM`).
+
+Because the drift stress is the only mixture-momentum source that depends on
+the reconstructed gas velocity, it is suppressed wherever
+`alpha < alphaFloor`. Both the drift tensor and its final divergence source are
+masked, preventing the SEM derivative from leaking a neighboring gas-dependent
+source into nodes where the gas phase is numerically absent. Gravity and the
+native mixture pressure/viscosity terms remain active.
 - Eq. (27): `alphaSource` for passive scalar `ALPHA`.
 - Eq. (29): `ugSource` for passive scalars `UGX`, `UGY`, and `UGZ`.
 

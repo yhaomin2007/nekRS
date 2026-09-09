@@ -270,9 +270,11 @@ inline void evaluateMixtureForce()
   }
   buildMixtureForceKernel(mesh->Nlocal,
                           offset,
+                          p.alphaFloor,
                           p.gravity[0],
                           p.gravity[1],
                           p.gravity[2],
+                          nrs->scalar->o_solution("alpha"),
                           o_rhoM,
                           o_divDriftStress,
                           o_mixtureForce);
