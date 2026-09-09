@@ -25,6 +25,8 @@ struct Parameters {
   int divergenceFilterModes;
   dfloat divergenceFilterStrength;
   dfloat divergenceExtrapolationEnabled;
+  dfloat stabilityMonitorEnabled;
+  int stabilityMonitorInterval;
 };
 
 static Parameters p;
@@ -56,6 +58,7 @@ static deviceMemory<dfloat> o_alphaSource;
 static deviceMemory<dfloat> o_ugSource;
 static deviceMemory<dfloat> o_dragLambda;
 static deviceMemory<dfloat> o_mixtureForce;
+static deviceMemory<dfloat> o_monitorMagnitude;
 static occa::kernel packGasVelocityKernel;
 static occa::kernel initializePlumeKernel;
 static occa::kernel buildLiquidVelocityKernel;
@@ -124,6 +127,7 @@ inline void allocate()
   o_ugSource.resize(3 * offset);
   o_dragLambda.resize(offset);
   o_mixtureForce.resize(3 * offset);
+  o_monitorMagnitude.resize(offset);
   platform->linAlg->fill(offset, 0.0, o_alphaExplicitBase);
   platform->linAlg->fill(offset, 0.0, o_alphaRegularizationSource);
 
@@ -397,5 +401,55 @@ inline void updateDivergenceHistory()
   }
   o_divPrevious.copyFrom(o_divSource, Nlocal);
   divergenceHistoryCount = std::min(divergenceHistoryCount + 1, 2);
+}
+
+inline void printStabilityMonitors(double time, int tstep)
+{
+  if (p.stabilityMonitorEnabled == 0.0
+      || p.stabilityMonitorInterval < 1
+      || tstep % p.stabilityMonitorInterval != 0) {
+    return;
+  }
+
+  // Refresh gas-dependent fields with the completed-step scalar, mixture
+  // velocity, and pressure solutions. updateDivergenceHistory() must be called
+  // first because evaluatePointwiseTerms() also refreshes its scratch source.
+  evaluatePointwiseTerms();
+
+  const dlong Nlocal = nrs->meshV->Nlocal;
+  const dlong offset = nrs->fieldOffset;
+  const MPI_Comm comm = platform->comm.mpiComm();
+
+  const dfloat maxDiv =
+      platform->linAlg->amax(Nlocal, nrs->fluid->o_div, comm);
+
+  platform->linAlg->entrywiseMag(Nlocal, 3, offset, o_gradP, o_monitorMagnitude);
+  const dfloat maxGasPressureAcceleration =
+      platform->linAlg->max(Nlocal, o_monitorMagnitude, comm) / p.rhoGas;
+
+  platform->linAlg->entrywiseMag(Nlocal, 3, offset, o_ug, o_monitorMagnitude);
+  const dfloat maxUg = platform->linAlg->max(Nlocal, o_monitorMagnitude, comm);
+
+  platform->linAlg->entrywiseMag(
+      Nlocal, 9, offset, o_driftStress, o_monitorMagnitude);
+  const dfloat maxDriftStress =
+      platform->linAlg->max(Nlocal, o_monitorMagnitude, comm);
+
+  const dfloat maxDragLambda =
+      platform->linAlg->max(Nlocal, o_dragLambda, comm);
+  const dfloat maxDragStep = maxDragLambda * nrs->dt[0];
+
+  if (platform->comm.mpiRank() == 0) {
+    printf("bubbleColumn stability step=%d time=%.8e max|divTarget|=%.8e "
+           "max|gradP|/rhoG=%.8e max|ug|=%.8e max|tauDrift|=%.8e "
+           "max(lambdaD*dt)=%.8e\n",
+           tstep,
+           time,
+           maxDiv,
+           maxGasPressureAcceleration,
+           maxUg,
+           maxDriftStress,
+           maxDragStep);
+  }
 }
 } // namespace bubbleColumn

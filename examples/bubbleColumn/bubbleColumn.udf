@@ -43,6 +43,8 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   platform->par->extract("casedata", "divergencefilterstrength", p.divergenceFilterStrength);
   platform->par->extract(
       "casedata", "divergenceextrapolationenabled", p.divergenceExtrapolationEnabled);
+  platform->par->extract("casedata", "stabilitymonitorenabled", p.stabilityMonitorEnabled);
+  platform->par->extract("casedata", "stabilitymonitorinterval", p.stabilityMonitorInterval);
 }
 
 void UDF_Setup()
@@ -80,6 +82,9 @@ void UDF_ExecuteStep(double time, int tstep)
   }
   if (tstep > 0 && bubbleColumn::p.virtualMassEnabled != 0.0) {
     bubbleColumn::updateVirtualMassHistory();
+  }
+  if (tstep > 0) {
+    bubbleColumn::printStabilityMonitors(time, tstep);
   }
   if (nrs->checkpointStep) {
     nrs->copyToNek(time, tstep);

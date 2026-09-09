@@ -40,6 +40,14 @@ the reconstructed gas velocity, it is suppressed wherever
 masked, preventing the SEM derivative from leaking a neighboring gas-dependent
 source into nodes where the gas phase is numerically absent. Gravity and the
 native mixture pressure/viscosity terms remain active.
+
+The optional stability monitor prints one global-max line at the configured
+step interval. `max|divTarget|` is the divergence actually supplied to the
+pressure solve after optional filtering/extrapolation; `max|gradP|/rhoG` is
+the gas pressure acceleration; `max|ug|` is gas-speed magnitude;
+`max|tauDrift|` is the Frobenius norm of the mixture drift-stress tensor; and
+`max(lambdaD*dt)` measures the drag relaxation over one timestep. Configure it
+with `stabilityMonitorEnabled` and `stabilityMonitorInterval` in `[CASEDATA]`.
 - Eq. (27): `alphaSource` for passive scalar `ALPHA`.
 - Eq. (29): `ugSource` for passive scalars `UGX`, `UGY`, and `UGZ`.
 
