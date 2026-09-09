@@ -17,6 +17,8 @@ struct Parameters {
   dfloat initialPlumeThickness;
   dfloat gravity[3];
   dfloat alphaFloor;
+  dfloat gasMomentumCutoff;
+  dfloat gasMomentumFullyActive;
   dfloat dragEnabled;
   dfloat bubbleDiameter;
   dfloat virtualMassEnabled;
@@ -57,8 +59,11 @@ static deviceMemory<dfloat> o_divDriftStress;
 static deviceMemory<dfloat> o_alphaSource;
 static deviceMemory<dfloat> o_ugSource;
 static deviceMemory<dfloat> o_dragLambda;
+static deviceMemory<dfloat> o_gasActivation;
 static deviceMemory<dfloat> o_mixtureForce;
 static deviceMemory<dfloat> o_monitorMagnitude;
+static deviceMemory<dfloat> o_gasPressureAccelerationActive;
+static deviceMemory<dfloat> o_gasPressureAccelerationInactive;
 static occa::kernel packGasVelocityKernel;
 static occa::kernel initializePlumeKernel;
 static occa::kernel buildLiquidVelocityKernel;
@@ -66,6 +71,7 @@ static occa::kernel updateVirtualMassHistoryKernel;
 static occa::kernel buildDivergenceFromAlphaRhsKernel;
 static occa::kernel buildEquationTermsKernel;
 static occa::kernel buildMixtureForceKernel;
+static occa::kernel buildGasPressureAccelerationMonitorKernel;
 
 inline void registerKernels(deviceKernelProperties &kernelInfo)
 {
@@ -85,6 +91,8 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
         platform->kernelRequests.load(request, "buildDivergenceFromAlphaRhs");
     buildEquationTermsKernel = platform->kernelRequests.load(request, "buildEquationTerms");
     buildMixtureForceKernel = platform->kernelRequests.load(request, "buildMixtureForce");
+    buildGasPressureAccelerationMonitorKernel =
+        platform->kernelRequests.load(request, "buildGasPressureAccelerationMonitor");
   }
 }
 
@@ -98,6 +106,14 @@ inline void allocate()
              EXIT_FAILURE,
              "divergenceFilterStrength must be in [0,1], but is %g\n",
              p.divergenceFilterStrength);
+  nekrsCheck(p.gasMomentumCutoff < 0.0
+                 || p.gasMomentumFullyActive <= p.gasMomentumCutoff,
+             platform->comm.mpiComm(),
+             EXIT_FAILURE,
+             "gasMomentumCutoff must be nonnegative and "
+             "gasMomentumFullyActive must exceed it (cutoff=%g, active=%g)\n",
+             p.gasMomentumCutoff,
+             p.gasMomentumFullyActive);
   o_ug.resize(3 * offset);
   o_ul.resize(3 * offset);
   o_ulPrevious.resize(3 * offset);
@@ -126,8 +142,11 @@ inline void allocate()
   o_alphaSource.resize(offset);
   o_ugSource.resize(3 * offset);
   o_dragLambda.resize(offset);
+  o_gasActivation.resize(offset);
   o_mixtureForce.resize(3 * offset);
   o_monitorMagnitude.resize(offset);
+  o_gasPressureAccelerationActive.resize(offset);
+  o_gasPressureAccelerationInactive.resize(offset);
   platform->linAlg->fill(offset, 0.0, o_alphaExplicitBase);
   platform->linAlg->fill(offset, 0.0, o_alphaRegularizationSource);
 
@@ -195,6 +214,8 @@ inline void evaluatePointwiseTerms()
                            p.muLiquid,
                            p.muGas,
                            p.alphaFloor,
+                           p.gasMomentumCutoff,
+                           p.gasMomentumFullyActive,
                            p.dragEnabled,
                            p.bubbleDiameter,
                            p.virtualMassEnabled,
@@ -216,7 +237,8 @@ inline void evaluatePointwiseTerms()
                            o_driftStress,
                            o_alphaSource,
                            o_ugSource,
-                           o_dragLambda);
+                           o_dragLambda,
+                           o_gasActivation);
 }
 
 inline void initializeHistory()
@@ -424,8 +446,17 @@ inline void printStabilityMonitors(double time, int tstep)
       platform->linAlg->amax(Nlocal, nrs->fluid->o_div, comm);
 
   platform->linAlg->entrywiseMag(Nlocal, 3, offset, o_gradP, o_monitorMagnitude);
-  const dfloat maxGasPressureAcceleration =
-      platform->linAlg->max(Nlocal, o_monitorMagnitude, comm) / p.rhoGas;
+  buildGasPressureAccelerationMonitorKernel(Nlocal,
+                                            p.rhoGas,
+                                            p.gasMomentumCutoff,
+                                            nrs->scalar->o_solution("alpha"),
+                                            o_monitorMagnitude,
+                                            o_gasPressureAccelerationActive,
+                                            o_gasPressureAccelerationInactive);
+  const dfloat maxGasPressureAccelerationActive = platform->linAlg->max(
+      Nlocal, o_gasPressureAccelerationActive, comm);
+  const dfloat maxGasPressureAccelerationInactive = platform->linAlg->max(
+      Nlocal, o_gasPressureAccelerationInactive, comm);
 
   platform->linAlg->entrywiseMag(Nlocal, 3, offset, o_ug, o_monitorMagnitude);
   const dfloat maxUg = platform->linAlg->max(Nlocal, o_monitorMagnitude, comm);
@@ -441,12 +472,14 @@ inline void printStabilityMonitors(double time, int tstep)
 
   if (platform->comm.mpiRank() == 0) {
     printf("bubbleColumn stability step=%d time=%.8e max|divTarget|=%.8e "
-           "max|gradP|/rhoG=%.8e max|ug|=%.8e max|tauDrift|=%.8e "
+           "maxActive|gradP|/rhoG=%.8e maxInactive|gradP|/rhoG=%.8e "
+           "max|ug|=%.8e max|tauDrift|=%.8e "
            "max(lambdaD*dt)=%.8e\n",
            tstep,
            time,
            maxDiv,
-           maxGasPressureAcceleration,
+           maxGasPressureAccelerationActive,
+           maxGasPressureAccelerationInactive,
            maxUg,
            maxDriftStress,
            maxDragStep);

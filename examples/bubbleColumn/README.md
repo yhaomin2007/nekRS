@@ -41,10 +41,19 @@ masked, preventing the SEM derivative from leaking a neighboring gas-dependent
 source into nodes where the gas phase is numerically absent. Gravity and the
 native mixture pressure/viscosity terms remain active.
 
+Gas-momentum forcing is independently regularized with a smooth activation.
+It is zero at and below `gasMomentumCutoff`, transitions with a cubic
+smoothstep, and is fully active at `gasMomentumFullyActive`. The activation
+multiplies gas pressure, gravity, advection correction, virtual mass, and both
+the explicit and implicit parts of drag. The supplied limits are `1e-4` and
+`1e-3`; `alphaFloor` remains the denominator safeguard and mixture
+drift-stress cutoff.
+
 The optional stability monitor prints one global-max line at the configured
 step interval. `max|divTarget|` is the divergence actually supplied to the
-pressure solve after optional filtering/extrapolation; `max|gradP|/rhoG` is
-the gas pressure acceleration; `max|ug|` is gas-speed magnitude;
+pressure solve after optional filtering/extrapolation. The raw gas pressure
+acceleration is reported separately over alpha values above and below
+`gasMomentumCutoff`; `max|ug|` is gas-speed magnitude;
 `max|tauDrift|` is the Frobenius norm of the mixture drift-stress tensor; and
 `max(lambdaD*dt)` measures the drag relaxation over one timestep. Configure it
 with `stabilityMonitorEnabled` and `stabilityMonitorInterval` in `[CASEDATA]`.

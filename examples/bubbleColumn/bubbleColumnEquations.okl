@@ -124,6 +124,8 @@
                                 const dfloat muLiquid,
                                 const dfloat muGas,
                                 const dfloat alphaFloor,
+                                const dfloat gasMomentumCutoff,
+                                const dfloat gasMomentumFullyActive,
                                 const dfloat dragEnabled,
                                 const dfloat bubbleDiameter,
                                 const dfloat virtualMassEnabled,
@@ -145,7 +147,8 @@
                                 @ restrict dfloat *driftStress,
                                 @ restrict dfloat *alphaSource,
                                 @ restrict dfloat *ugSource,
-                                @ restrict dfloat *dragLambda)
+                                @ restrict dfloat *dragLambda,
+                                @ restrict dfloat *gasActivation)
 {
   for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
     // Keep the physical volume fraction separate from denominator protection.
@@ -157,6 +160,14 @@
     const dfloat gasActive = (a >= alphaFloor) ? 1.0 : 0.0;
     const dfloat rhoM = beta * rhoLiquid + a * rhoGas;
     const dfloat muM = beta * muLiquid + a * muGas;
+    dfloat gasWeight = 0.0;
+    if (a > gasMomentumCutoff) {
+      const dfloat ramp = (a >= gasMomentumFullyActive)
+          ? 1.0
+          : (a - gasMomentumCutoff)
+            / (gasMomentumFullyActive - gasMomentumCutoff);
+      gasWeight = ramp * ramp * (3.0 - 2.0 * ramp);
+    }
 
     const dfloat dx = ug[n + 0 * offset] - um[n + 0 * offset];
     const dfloat dy = ug[n + 1 * offset] - um[n + 1 * offset];
@@ -174,6 +185,7 @@
 
     rhoMField[n] = rhoM;
     muMField[n] = muM;
+    gasActivation[n] = gasWeight;
 
     // Eq. (15): prescribed divergence of the density-averaged mixture velocity.
     divSource[n] = (rhoGas - rhoLiquid) / rhoM * (slipGradAlpha + a * divUg);
@@ -217,24 +229,45 @@
     // Since u_l-u_g = rho_m/(alpha_l*rho_l)*(u_m-u_g), drag is
     // lambda_D*(u_m-u_g). Put +lambda_D*u_m on the RHS and expose
     // lambda_D for the passive-scalar Helmholtz diagonal.
-    const dfloat lambdaD = dragEnabled * Ki / rhoGas
-                           * rhoM / (betaSafe * rhoLiquid);
+    const dfloat lambdaDRaw = dragEnabled * Ki / rhoGas
+                              * rhoM / (betaSafe * rhoLiquid);
+    const dfloat lambdaD = gasWeight * lambdaDRaw;
     dragLambda[n] = lambdaD;
     const dfloat virtualMassScale = virtualMassEnabled
                                     * virtualMassCoefficient
                                     * rhoLiquid / rhoGas;
-    ugSource[n + 0 * offset] = -advX - gradP[n + 0 * offset] / rhoGas
-                               + gravityX + lambdaD * um[n + 0 * offset]
-                               + virtualMassScale
-                                 * virtualMassRelativeAcceleration[n + 0 * offset];
-    ugSource[n + 1 * offset] = -advY - gradP[n + 1 * offset] / rhoGas
-                               + gravityY + lambdaD * um[n + 1 * offset]
-                               + virtualMassScale
-                                 * virtualMassRelativeAcceleration[n + 1 * offset];
-    ugSource[n + 2 * offset] = -advZ - gradP[n + 2 * offset] / rhoGas
-                               + gravityZ + lambdaD * um[n + 2 * offset]
-                               + virtualMassScale
-                                 * virtualMassRelativeAcceleration[n + 2 * offset];
+    ugSource[n + 0 * offset] = gasWeight
+                               * (-advX - gradP[n + 0 * offset] / rhoGas
+                                  + gravityX + lambdaDRaw * um[n + 0 * offset]
+                                  + virtualMassScale
+                                    * virtualMassRelativeAcceleration[n + 0 * offset]);
+    ugSource[n + 1 * offset] = gasWeight
+                               * (-advY - gradP[n + 1 * offset] / rhoGas
+                                  + gravityY + lambdaDRaw * um[n + 1 * offset]
+                                  + virtualMassScale
+                                    * virtualMassRelativeAcceleration[n + 1 * offset]);
+    ugSource[n + 2 * offset] = gasWeight
+                               * (-advZ - gradP[n + 2 * offset] / rhoGas
+                                  + gravityZ + lambdaDRaw * um[n + 2 * offset]
+                                  + virtualMassScale
+                                    * virtualMassRelativeAcceleration[n + 2 * offset]);
+  }
+}
+
+@kernel void buildGasPressureAccelerationMonitor(
+    const dlong N,
+    const dfloat rhoGas,
+    const dfloat gasMomentumCutoff,
+    @ restrict const dfloat *alpha,
+    @ restrict const dfloat *gradPMagnitude,
+    @ restrict dfloat *activeAcceleration,
+    @ restrict dfloat *inactiveAcceleration)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    const dfloat acceleration = gradPMagnitude[n] / rhoGas;
+    const int active = alpha[n] >= gasMomentumCutoff;
+    activeAcceleration[n] = active ? acceleration : 0.0;
+    inactiveAcceleration[n] = active ? 0.0 : acceleration;
   }
 }
 
