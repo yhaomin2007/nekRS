@@ -50,7 +50,7 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   platform->par->extract(
       "casedata", "divergenceextrapolationenabled", p.divergenceExtrapolationEnabled);
   platform->par->extract("casedata", "divergencerampenabled", p.divergenceRampEnabled);
-  platform->par->extract("casedata", "divergenceramptime", p.divergenceRampTime);
+  platform->par->extract("casedata", "divergencerampsteps", p.divergenceRampSteps);
   platform->par->extract("casedata", "stabilitymonitorenabled", p.stabilityMonitorEnabled);
   platform->par->extract("casedata", "stabilitymonitorinterval", p.stabilityMonitorInterval);
 }

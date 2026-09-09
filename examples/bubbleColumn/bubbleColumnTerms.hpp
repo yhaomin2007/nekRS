@@ -31,7 +31,7 @@ struct Parameters {
   dfloat divergenceFilterStrength;
   dfloat divergenceExtrapolationEnabled;
   dfloat divergenceRampEnabled;
-  dfloat divergenceRampTime;
+  int divergenceRampSteps;
   dfloat stabilityMonitorEnabled;
   int stabilityMonitorInterval;
 };
@@ -122,11 +122,11 @@ inline void allocate()
              "gasMomentumFullyActive must exceed it (cutoff=%g, active=%g)\n",
              p.gasMomentumCutoff,
              p.gasMomentumFullyActive);
-  nekrsCheck(p.divergenceRampEnabled != 0.0 && p.divergenceRampTime <= 0.0,
+  nekrsCheck(p.divergenceRampEnabled != 0.0 && p.divergenceRampSteps <= 0,
              platform->comm.mpiComm(),
              EXIT_FAILURE,
-             "divergenceRampTime must be positive when the ramp is enabled, but is %g\n",
-             p.divergenceRampTime);
+             "divergenceRampSteps must be positive when the ramp is enabled, but is %d\n",
+             p.divergenceRampSteps);
   o_ug.resize(3 * offset);
   o_ul.resize(3 * offset);
   o_ulPrevious.resize(3 * offset);
@@ -420,7 +420,7 @@ inline occa::memory implicitGasDrag(double, int scalarIndex)
   return o_NULL;
 }
 
-inline void updateDivergence(double time)
+inline void updateDivergence(double)
 {
   const dlong Nlocal = nrs->meshV->Nlocal;
   if (p.divergenceExtrapolationEnabled == 0.0 || divergenceHistoryCount == 0) {
@@ -436,8 +436,11 @@ inline void updateDivergence(double time)
     nrs->fluid->o_div.copyFrom(o_divExtrapolated, Nlocal);
   }
 
-  if (p.divergenceRampEnabled != 0.0 && time < p.divergenceRampTime) {
-    const dfloat phase = time > 0.0 ? time / p.divergenceRampTime : 0.0;
+  const int tstep = platform->app->tstep;
+  if (p.divergenceRampEnabled != 0.0 && tstep < p.divergenceRampSteps) {
+    const dfloat phase = tstep > 0
+        ? static_cast<dfloat>(tstep) / p.divergenceRampSteps
+        : 0.0;
     const dfloat ramp = 0.5 * (1.0 - std::cos(3.14159265358979323846 * phase));
     platform->linAlg->scale(Nlocal, ramp, nrs->fluid->o_div);
   }
