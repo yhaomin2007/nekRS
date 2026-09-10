@@ -2,10 +2,10 @@ userSections = CASEDATA
 
 [GENERAL]
 polynomialOrder = 7
-startFrom = bubblecolumn0.f00041
+startFrom = bubblecolumn0.f00042
 stopAt = numSteps
 numSteps = 100000
-dt = initial=1.2e-4+targetCFL=0.05+max=1e-2
+dt = initial=1.0e-4+targetCFL=0.05+max=1e-2
 #dt = 1e-3
 timeStepper = tombo2
 checkpointInterval = 1000
@@ -25,7 +25,7 @@ boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
 residualTol = 1e-8
 rho = 998.2
 viscosity = 1.0e-3
-regularization = hpfrt + nModes=1 + scalingCoeff=100.0
+regularization = hpfrt + nModes=1 + scalingCoeff=10.0
 
 [SCALAR ALPHA]
 boundaryTypeMap = udfDirichlet, zeroNeumann, zeroNeumann
@@ -33,28 +33,28 @@ residualTol = 1e-8
 transportCoeff = 1.0
 diffusionCoeff = 1e-5
 # NekRS native high-pass-filter relaxation. Use regularization = none to disable.
-regularization = hpfrt + nModes=1 + scalingCoeff=100.0
+regularization = hpfrt + nModes=1 + scalingCoeff=10.0
 
 [SCALAR QGX]
 boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
 residualTol = 1e-8
 transportCoeff = 1.0
 diffusionCoeff = 1e-5
-regularization = hpfrt + nModes=1 + scalingCoeff=100.0
+regularization = hpfrt + nModes=2 + scalingCoeff=10.0
 
 [SCALAR QGY]
 boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
 residualTol = 1e-8
 transportCoeff = 1.0
 diffusionCoeff = 1e-5
-regularization = hpfrt + nModes=1 + scalingCoeff=100.0
+regularization = hpfrt + nModes=2 + scalingCoeff=10.0
 
 [SCALAR QGZ]
 boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
 residualTol = 1e-8
 transportCoeff = 1.0
 diffusionCoeff = 1e-5
-regularization = hpfrt + nModes=1 + scalingCoeff=100.0
+regularization = hpfrt + nModes=2 + scalingCoeff=10.0
 
 [CASEDATA]
 rhoLiquid = 998.2
