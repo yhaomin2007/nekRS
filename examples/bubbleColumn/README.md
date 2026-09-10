@@ -22,6 +22,11 @@ thickness are adjustable in `[CASEDATA]`.
 | 2 | outlet | zero normal gradient | zero normal gradient | zero normal gradient |
 | 3 | wall | no slip | zero normal gradient | zero (`q_g=0`) |
 
+At outlet ID 2, pressure uses the same smooth turbulent/open-outlet condition
+as the NekRS `turbPipe` example. It approaches zero for outward flow and adds
+the kinetic-pressure correction `-0.5*|u_m|^2` during local backflow, with the
+transition controlled by `0.5*(1-tanh(20*u_m.n))`.
+
 The standard entry files stay small. `bubbleColumnTerms.hpp` owns device fields
 and SEM operators; `bubbleColumnEquations.okl` contains equation kernels; and
 `bubbleColumnBoundary.oudf` contains boundary data.
