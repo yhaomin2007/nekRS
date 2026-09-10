@@ -279,6 +279,24 @@ inline void reconstructGasVelocity()
                                o_ug);
 }
 
+inline void reconstructLiquidVelocity()
+{
+  const dlong Nlocal = nrs->meshV->Nlocal;
+  const dlong offset = nrs->fieldOffset;
+  o_qg.copyFrom(nrs->scalar->o_solution("qgx"), Nlocal, 0 * offset, 0);
+  o_qg.copyFrom(nrs->scalar->o_solution("qgy"), Nlocal, 1 * offset, 0);
+  o_qg.copyFrom(nrs->scalar->o_solution("qgz"), Nlocal, 2 * offset, 0);
+  buildLiquidVelocityKernel(Nlocal,
+                            offset,
+                            p.rhoLiquid,
+                            p.rhoGas,
+                            p.alphaFloor,
+                            nrs->scalar->o_solution("alpha"),
+                            nrs->fluid->o_U,
+                            o_qg,
+                            o_ul);
+}
+
 inline void evaluatePointwiseTerms()
 {
   auto mesh = nrs->meshV;

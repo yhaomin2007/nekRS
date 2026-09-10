@@ -147,6 +147,10 @@ At each checkpoint the normal case file retains the conservative transported
 fields `ALPHA`, `QGX`, `QGY`, and `QGZ` for restart. A second field-file series,
 `ug0.f*****`, stores the postprocessed reconstructed gas velocity as its
 `velocity` vector, so `u_g` can be visualized directly without replacing QG.
+A third field-file series, `ul0.f*****`, stores the liquid velocity reconstructed
+from the current alpha, QG, and density-averaged mixture velocity. Both phase
+velocities are refreshed from the current solved fields immediately before
+checkpoint output.
 
 ## One-pass ordering
 

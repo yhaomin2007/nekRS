@@ -107,9 +107,10 @@ void UDF_ExecuteStep(double time, int tstep)
     bubbleColumn::printStabilityMonitors(time, tstep);
   }
   if (nrs->checkpointStep) {
-    // Write reconstructed gas velocity as a separate vector field without
+    // Write reconstructed phase velocities as separate vector fields without
     // replacing the conservative QG checkpoint variables used for restart.
     bubbleColumn::reconstructGasVelocity();
+    bubbleColumn::reconstructLiquidVelocity();
     const dlong offset = nrs->fieldOffset;
     std::vector<deviceMemory<dfloat>> gasVelocity = {
         bubbleColumn::o_ug.slice(0 * offset, nrs->meshV->Nlocal),
@@ -117,6 +118,12 @@ void UDF_ExecuteStep(double time, int tstep)
         bubbleColumn::o_ug.slice(2 * offset, nrs->meshV->Nlocal)};
     nrs->writeToFile(
         "ug", time, nrs->meshV, {{"velocity", gasVelocity}});
+    std::vector<deviceMemory<dfloat>> liquidVelocity = {
+        bubbleColumn::o_ul.slice(0 * offset, nrs->meshV->Nlocal),
+        bubbleColumn::o_ul.slice(1 * offset, nrs->meshV->Nlocal),
+        bubbleColumn::o_ul.slice(2 * offset, nrs->meshV->Nlocal)};
+    nrs->writeToFile(
+        "ul", time, nrs->meshV, {{"velocity", liquidVelocity}});
     nrs->copyToNek(time, tstep);
     nek::userchk();
   }
