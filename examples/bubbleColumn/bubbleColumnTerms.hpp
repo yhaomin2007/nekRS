@@ -22,6 +22,8 @@ struct Parameters {
   dfloat alphaClippingEnabled;
   dfloat alphaMinimum;
   dfloat alphaMaximum;
+  dfloat subtractAlphaDiffusion;
+  dfloat subtractQgDiffusion[3];
   dfloat smoothGasVelocityMaskEnabled;
   dfloat gasVelocityClipEnabled;
   dfloat gasVelocityMaximum;
@@ -53,6 +55,7 @@ static deviceMemory<dfloat> o_gradAlpha;
 static deviceMemory<dfloat> o_gradAlphaAdvection;
 static deviceMemory<dfloat> o_qg;
 static deviceMemory<dfloat> o_gradQgAdvection;
+static deviceMemory<dfloat> o_gradQgDiffusion;
 static deviceMemory<dfloat> o_gradUg;
 static deviceMemory<dfloat> o_gradUgAdvection;
 static deviceMemory<dfloat> o_gradP;
@@ -67,6 +70,8 @@ static deviceMemory<dfloat> o_divFilterWork;
 static occa::memory o_divFilterMatrix;
 static deviceMemory<dfloat> o_alphaDiffusionFlux;
 static deviceMemory<dfloat> o_alphaDiffusionDivergence;
+static deviceMemory<dfloat> o_qgDiffusionFlux;
+static deviceMemory<dfloat> o_qgDiffusionDivergence;
 static deviceMemory<dfloat> o_alphaExplicitBase;
 static deviceMemory<dfloat> o_alphaRegularizationSource;
 static deviceMemory<dfloat> o_driftStress;
@@ -171,6 +176,7 @@ inline void allocate()
   o_gradAlphaAdvection.resize(3 * offset);
   o_qg.resize(3 * offset);
   o_gradQgAdvection.resize(9 * offset);
+  o_gradQgDiffusion.resize(9 * offset);
   o_gradUg.resize(9 * offset);
   o_gradUgAdvection.resize(9 * offset);
   o_gradP.resize(3 * offset);
@@ -186,6 +192,8 @@ inline void allocate()
   o_divFilterWork.resize(3 * offset);
   o_alphaDiffusionFlux.resize(3 * offset);
   o_alphaDiffusionDivergence.resize(offset);
+  o_qgDiffusionFlux.resize(9 * offset);
+  o_qgDiffusionDivergence.resize(3 * offset);
   o_alphaExplicitBase.resize(offset);
   o_alphaRegularizationSource.resize(offset);
   o_driftStress.resize(9 * offset);
@@ -238,6 +246,18 @@ inline void filterDivergence()
   o_divSource.copyFrom(o_divFilterWork, Nlocal, 0, 0);
 }
 
+inline void reconstructGasVelocity()
+{
+  reconstructGasVelocityKernel(nrs->meshV->Nlocal,
+                               nrs->fieldOffset,
+                               p.alphaFloor,
+                               nrs->scalar->o_solution("alpha"),
+                               nrs->scalar->o_solution("qgx"),
+                               nrs->scalar->o_solution("qgy"),
+                               nrs->scalar->o_solution("qgz"),
+                               o_ug);
+}
+
 inline void evaluatePointwiseTerms()
 {
   auto mesh = nrs->meshV;
@@ -247,14 +267,7 @@ inline void evaluatePointwiseTerms()
   o_qg.copyFrom(nrs->scalar->o_solution("qgx"), mesh->Nlocal, 0 * offset, 0);
   o_qg.copyFrom(nrs->scalar->o_solution("qgy"), mesh->Nlocal, 1 * offset, 0);
   o_qg.copyFrom(nrs->scalar->o_solution("qgz"), mesh->Nlocal, 2 * offset, 0);
-  reconstructGasVelocityKernel(mesh->Nlocal,
-                               offset,
-                               p.alphaFloor,
-                               alpha,
-                               nrs->scalar->o_solution("qgx"),
-                               nrs->scalar->o_solution("qgy"),
-                               nrs->scalar->o_solution("qgz"),
-                               o_ug);
+  reconstructGasVelocity();
   buildLiquidVelocityKernel(mesh->Nlocal,
                             offset,
                             p.rhoLiquid,
@@ -272,6 +285,7 @@ inline void evaluatePointwiseTerms()
   opSEM::strongGrad(mesh, offset, alpha, o_gradAlpha);
   opSEM::strongGrad(mesh, offset, alpha, o_gradAlphaAdvection, false);
   opSEM::strongGradVec(mesh, offset, o_qg, o_gradQgAdvection, false);
+  opSEM::strongGradVec(mesh, offset, o_qg, o_gradQgDiffusion);
   opSEM::strongGradVec(mesh, offset, o_ug, o_gradUg);
   opSEM::strongGradVec(mesh, offset, o_ug, o_gradUgAdvection, false);
   opSEM::strongGradVec(mesh, offset, o_ul, o_gradUl);
@@ -428,9 +442,57 @@ inline void evaluateMixtureForce()
                           o_mixtureForce);
 }
 
+inline void subtractScalarDiffusion()
+{
+  const dlong Nlocal = nrs->meshV->Nlocal;
+  const dlong offset = nrs->fieldOffset;
+
+  // Reconstruct the deferred correction with the same averaged SEM gradient,
+  // pointwise diffusion coefficient, and strong divergence used elsewhere in
+  // this case. The implicit new-time diffusion remains in the native scalar
+  // Helmholtz solve; this explicitly subtracts its lagged counterpart.
+  if (p.subtractAlphaDiffusion != 0.0) {
+    o_alphaDiffusionFlux.copyFrom(o_gradAlpha, 3 * offset);
+    auto diffusion = nrs->scalar->o_diffusionCoeff("alpha");
+    platform->linAlg->axmyVector(
+        Nlocal, offset, 0, 1.0, diffusion, o_alphaDiffusionFlux);
+    opSEM::strongDivergence(nrs->meshV,
+                            offset,
+                            o_alphaDiffusionFlux,
+                            o_alphaDiffusionDivergence);
+    platform->linAlg->axpby(Nlocal,
+                            -p.subtractAlphaDiffusion,
+                            o_alphaDiffusionDivergence,
+                            1.0,
+                            o_alphaSource);
+  }
+
+  const char *qgNames[3] = {"qgx", "qgy", "qgz"};
+  for (int i = 0; i < 3; ++i) {
+    if (p.subtractQgDiffusion[i] == 0.0) {
+      continue;
+    }
+    auto gradient = o_gradQgDiffusion.slice(3 * i * offset, 3 * offset);
+    auto flux = o_qgDiffusionFlux.slice(3 * i * offset, 3 * offset);
+    flux.copyFrom(gradient, 3 * offset);
+    auto diffusion = nrs->scalar->o_diffusionCoeff(qgNames[i]);
+    platform->linAlg->axmyVector(Nlocal, offset, 0, 1.0, diffusion, flux);
+    auto divergence = o_qgDiffusionDivergence.slice(i * offset, offset);
+    opSEM::strongDivergence(nrs->meshV, offset, flux, divergence);
+    platform->linAlg->axpby(Nlocal,
+                            -p.subtractQgDiffusion[i],
+                            divergence,
+                            1.0,
+                            o_qgSource,
+                            0,
+                            i * offset);
+  }
+}
+
 inline void addExplicitSources(double)
 {
   evaluatePointwiseTerms();
+  subtractScalarDiffusion();
   evaluateMixtureForce();
   const dlong Nlocal = nrs->meshV->Nlocal;
   const dlong offset = nrs->fieldOffset;

@@ -99,16 +99,28 @@ thermodynamic pressure `p0th`. The variable mixture density is retained in the
 pressure operator through `FLUID PRESSURE ELLIPTIC COEFF FIELD`.
 
 Scalar `diffusionCoeff` and `transportCoeff` values are read directly from the
-four `.par` sections. The `QG*` scalar diffusion is numerical; the physical
-`div(alpha*tau_g)/rho_g` term is assembled explicitly from the reconstructed
-gas-velocity gradient.
+four `.par` sections. The supplied case uses `diffusionCoeff=1e-5` for `ALPHA`
+and all three `QG*` components. The `QG*` scalar diffusion is numerical; the
+physical `div(alpha*tau_g)/rho_g` term is assembled explicitly from the
+reconstructed gas-velocity gradient.
+
+The `[CASEDATA]` switches `subtractAlphaDiffusion`,
+`subtractQgxDiffusion`, `subtractQgyDiffusion`, and
+`subtractQgzDiffusion` optionally apply an IMEX deferred correction. A value
+of zero retains the corresponding native implicit numerical diffusion. A value
+of one adds the lagged source `-div(diffusionCoeff*grad(s))`, reconstructed
+with the same gather-scatter-averaged SEM gradient, pointwise scalar diffusion
+coefficient, and strong-divergence sequence for all four fields. This does not
+algebraically cancel the new-time Helmholtz or boundary diffusion, and enabling
+it reduces the smoothing supplied by `diffusionCoeff`.
 
 The four scalar sections also expose nekRS's native HPFRT regularization:
 
 `regularization = hpfrt + nModes=1 + scalingCoeff=1.0`.
 
-The initial setting applies a mild relaxation to only the highest polynomial
-mode of `ALPHA`, `QGX`, `QGY`, and `QGZ`. Set `regularization = none` in an
+The initial setting applies `scalingCoeff=100.0` to the highest polynomial
+mode of the mixture velocity, `ALPHA`, `QGX`, `QGY`, and `QGZ`. Set
+`regularization = none` in an
 individual scalar section to disable HPFRT for that field. This scalar HPFRT is
 independent of the optional direct divergence filter in `[CASEDATA]`.
 
@@ -119,6 +131,11 @@ before mixture properties, the alpha-based divergence source, and gas-flux
 postprocessing are evaluated, so those operations all see the bounded field.
 Clipping is a non-conservative numerical safeguard and its effect on total gas
 content should be sensitivity-tested. Set `alphaClipEnabled = 0.0` to disable it.
+
+At each checkpoint the normal case file retains the conservative transported
+fields `ALPHA`, `QGX`, `QGY`, and `QGZ` for restart. A second field-file series,
+`ug0.f*****`, stores the postprocessed reconstructed gas velocity as its
+`velocity` vector, so `u_g` can be visualized directly without replacing QG.
 
 ## One-pass ordering
 

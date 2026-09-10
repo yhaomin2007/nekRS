@@ -23,7 +23,7 @@ boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
 residualTol = 1e-8
 rho = 998.2
 viscosity = 1.0e-3
-regularization = hpfrt + nModes=1 + scalingCoeff=1.0
+regularization = hpfrt + nModes=1 + scalingCoeff=100.0
 
 [SCALAR ALPHA]
 boundaryTypeMap = udfDirichlet, zeroNeumann, zeroNeumann
@@ -31,28 +31,28 @@ residualTol = 1e-8
 transportCoeff = 1.0
 diffusionCoeff = 1e-5
 # NekRS native high-pass-filter relaxation. Use regularization = none to disable.
-regularization = hpfrt + nModes=1 + scalingCoeff=1.0
+regularization = hpfrt + nModes=1 + scalingCoeff=100.0
 
 [SCALAR QGX]
 boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
 residualTol = 1e-8
 transportCoeff = 1.0
-diffusionCoeff = 1e-12
-regularization = hpfrt + nModes=1 + scalingCoeff=1.0
+diffusionCoeff = 1e-5
+regularization = hpfrt + nModes=1 + scalingCoeff=100.0
 
 [SCALAR QGY]
 boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
 residualTol = 1e-8
 transportCoeff = 1.0
-diffusionCoeff = 1e-12
-regularization = hpfrt + nModes=1 + scalingCoeff=1.0
+diffusionCoeff = 1e-5
+regularization = hpfrt + nModes=1 + scalingCoeff=100.0
 
 [SCALAR QGZ]
 boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
 residualTol = 1e-8
 transportCoeff = 1.0
-diffusionCoeff = 1e-12
-regularization = hpfrt + nModes=1 + scalingCoeff=1.0
+diffusionCoeff = 1e-5
+regularization = hpfrt + nModes=1 + scalingCoeff=100.0
 
 [CASEDATA]
 rhoLiquid = 998.2
@@ -71,6 +71,10 @@ alphaFloor = 1e-6
 alphaClipEnabled = 1.0
 alphaMinimum = 0.0
 alphaMaximum = 1.0
+subtractAlphaDiffusion = 0.0
+subtractQgxDiffusion = 0.0
+subtractQgyDiffusion = 0.0
+subtractQgzDiffusion = 0.0
 smoothGasVelocityMaskEnabled = 1.0
 gasVelocityClipEnabled = 1.0
 gasVelocityMaximum = 1.0

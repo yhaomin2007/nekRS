@@ -37,6 +37,11 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   platform->par->extract("casedata", "alphaclippenabled", p.alphaClippingEnabled);
   platform->par->extract("casedata", "alphaminimum", p.alphaMinimum);
   platform->par->extract("casedata", "alphamaximum", p.alphaMaximum);
+  platform->par->extract(
+      "casedata", "subtractalphadiffusion", p.subtractAlphaDiffusion);
+  platform->par->extract("casedata", "subtractqgxdiffusion", p.subtractQgDiffusion[0]);
+  platform->par->extract("casedata", "subtractqgydiffusion", p.subtractQgDiffusion[1]);
+  platform->par->extract("casedata", "subtractqgzdiffusion", p.subtractQgDiffusion[2]);
   platform->par->extract("casedata",
                          "smoothgasvelocitymaskenabled",
                          p.smoothGasVelocityMaskEnabled);
@@ -102,6 +107,16 @@ void UDF_ExecuteStep(double time, int tstep)
     bubbleColumn::printStabilityMonitors(time, tstep);
   }
   if (nrs->checkpointStep) {
+    // Write reconstructed gas velocity as a separate vector field without
+    // replacing the conservative QG checkpoint variables used for restart.
+    bubbleColumn::reconstructGasVelocity();
+    const dlong offset = nrs->fieldOffset;
+    std::vector<deviceMemory<dfloat>> gasVelocity = {
+        bubbleColumn::o_ug.slice(0 * offset, nrs->meshV->Nlocal),
+        bubbleColumn::o_ug.slice(1 * offset, nrs->meshV->Nlocal),
+        bubbleColumn::o_ug.slice(2 * offset, nrs->meshV->Nlocal)};
+    nrs->writeToFile(
+        "ug", time, nrs->meshV, {{"velocity", gasVelocity}});
     nrs->copyToNek(time, tstep);
     nek::userchk();
   }
