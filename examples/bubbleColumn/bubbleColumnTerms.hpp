@@ -19,6 +19,9 @@ struct Parameters {
   dfloat initialPlumeThickness;
   dfloat gravity[3];
   dfloat alphaFloor;
+  dfloat alphaClippingEnabled;
+  dfloat alphaMinimum;
+  dfloat alphaMaximum;
   dfloat smoothGasVelocityMaskEnabled;
   dfloat gasVelocityClipEnabled;
   dfloat gasVelocityMaximum;
@@ -82,6 +85,7 @@ static deviceMemory<dfloat> o_surfaceOne;
 static deviceMemory<dfloat> o_surfaceScalar;
 static occa::kernel reconstructGasVelocityKernel;
 static occa::kernel postProcessGasFluxKernel;
+static occa::kernel clipAlphaKernel;
 static occa::kernel initializePlumeKernel;
 static occa::kernel buildLiquidVelocityKernel;
 static occa::kernel updateVirtualMassHistoryKernel;
@@ -104,6 +108,7 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
         platform->kernelRequests.load(request, "reconstructGasVelocity");
     postProcessGasFluxKernel =
         platform->kernelRequests.load(request, "postProcessGasFlux");
+    clipAlphaKernel = platform->kernelRequests.load(request, "clipAlpha");
     initializePlumeKernel = platform->kernelRequests.load(request, "initializePlume");
     buildLiquidVelocityKernel = platform->kernelRequests.load(request, "buildLiquidVelocity");
     updateVirtualMassHistoryKernel =
@@ -142,6 +147,15 @@ inline void allocate()
              EXIT_FAILURE,
              "gasVelocityMaximum must be positive when clipping is enabled, but is %g\n",
              p.gasVelocityMaximum);
+  nekrsCheck(p.alphaClippingEnabled != 0.0
+                 && (p.alphaMinimum < 0.0 || p.alphaMaximum > 1.0
+                     || p.alphaMaximum <= p.alphaMinimum),
+             platform->comm.mpiComm(),
+             EXIT_FAILURE,
+             "alpha clipping bounds must satisfy 0 <= minimum < maximum <= 1 "
+             "(minimum=%g, maximum=%g)\n",
+             p.alphaMinimum,
+             p.alphaMaximum);
   nekrsCheck(p.divergenceRampEnabled != 0.0 && p.divergenceRampSteps <= 0,
              platform->comm.mpiComm(),
              EXIT_FAILURE,
@@ -339,6 +353,18 @@ inline void postProcessGasFlux()
       nrs->scalar->o_solution("qgx"),
       nrs->scalar->o_solution("qgy"),
       nrs->scalar->o_solution("qgz"));
+}
+
+inline void clipAlpha(double, int)
+{
+  if (p.alphaClippingEnabled == 0.0) {
+    return;
+  }
+
+  clipAlphaKernel(nrs->meshV->Nlocal,
+                  p.alphaMinimum,
+                  p.alphaMaximum,
+                  nrs->scalar->o_solution("alpha"));
 }
 
 inline void updateVirtualMassHistory()

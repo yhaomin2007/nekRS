@@ -16,6 +16,18 @@
   }
 }
 
+@kernel void clipAlpha(const dlong N,
+                       const dfloat alphaMinimum,
+                       const dfloat alphaMaximum,
+                       @ restrict dfloat *alpha)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    alpha[n] = alpha[n] < alphaMinimum
+                   ? alphaMinimum
+                   : (alpha[n] > alphaMaximum ? alphaMaximum : alpha[n]);
+  }
+}
+
 @kernel void postProcessGasFlux(
     const dlong N,
     const dfloat smoothMaskEnabled,

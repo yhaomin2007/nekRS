@@ -112,6 +112,14 @@ mode of `ALPHA`, `QGX`, `QGY`, and `QGZ`. Set `regularization = none` in an
 individual scalar section to disable HPFRT for that field. This scalar HPFRT is
 independent of the optional direct divergence filter in `[CASEDATA]`.
 
+After all four scalar solves, `alphaClipEnabled = 1.0` clips the completed
+void-fraction field to the configurable interval `[alphaMinimum, alphaMaximum]`;
+the supplied physical bounds are `[0,1]`. This happens through `nrs->postScalar`
+before mixture properties, the alpha-based divergence source, and gas-flux
+postprocessing are evaluated, so those operations all see the bounded field.
+Clipping is a non-conservative numerical safeguard and its effect on total gas
+content should be sensitivity-tested. Set `alphaClipEnabled = 0.0` to disable it.
+
 ## One-pass ordering
 
 There are no corrector iterations inside a time step. nekRS first constructs all
