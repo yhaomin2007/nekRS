@@ -116,7 +116,7 @@ it reduces the smoothing supplied by `diffusionCoeff`.
 
 The four scalar sections also expose nekRS's native HPFRT regularization:
 
-`regularization = hpfrt + nModes=1 + scalingCoeff=1.0`.
+`regularization = hpfrt + nModes=1 + scalingCoeff=100.0`.
 
 The initial setting applies `scalingCoeff=100.0` to the highest polynomial
 mode of the mixture velocity, `ALPHA`, `QGX`, `QGY`, and `QGZ`. Set
