@@ -55,6 +55,8 @@ static deviceMemory<dfloat> o_gradAlpha;
 static deviceMemory<dfloat> o_gradAlphaAdvection;
 static deviceMemory<dfloat> o_qg;
 static deviceMemory<dfloat> o_gradQgAdvection;
+static deviceMemory<dfloat> o_qgAdvectionFlux;
+static deviceMemory<dfloat> o_divQgAdvectionFlux;
 static deviceMemory<dfloat> o_gradQgDiffusion;
 static deviceMemory<dfloat> o_gradUg;
 static deviceMemory<dfloat> o_gradUgAdvection;
@@ -97,6 +99,7 @@ static occa::kernel initializePlumeKernel;
 static occa::kernel buildLiquidVelocityKernel;
 static occa::kernel updateVirtualMassHistoryKernel;
 static occa::kernel buildDivergenceFromAlphaRhsKernel;
+static occa::kernel buildQgAdvectionFluxKernel;
 static occa::kernel buildEquationTermsKernel;
 static occa::kernel buildMixtureForceKernel;
 static occa::kernel buildGasPressureAccelerationMonitorKernel;
@@ -122,6 +125,8 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
         platform->kernelRequests.load(request, "updateVirtualMassHistory");
     buildDivergenceFromAlphaRhsKernel =
         platform->kernelRequests.load(request, "buildDivergenceFromAlphaRhs");
+    buildQgAdvectionFluxKernel =
+        platform->kernelRequests.load(request, "buildQgAdvectionFlux");
     buildEquationTermsKernel = platform->kernelRequests.load(request, "buildEquationTerms");
     buildMixtureForceKernel = platform->kernelRequests.load(request, "buildMixtureForce");
     buildGasPressureAccelerationMonitorKernel =
@@ -178,6 +183,8 @@ inline void allocate()
   o_gradAlphaAdvection.resize(3 * offset);
   o_qg.resize(3 * offset);
   o_gradQgAdvection.resize(9 * offset);
+  o_qgAdvectionFlux.resize(9 * offset);
+  o_divQgAdvectionFlux.resize(3 * offset);
   o_gradQgDiffusion.resize(9 * offset);
   o_gradUg.resize(9 * offset);
   o_gradUgAdvection.resize(9 * offset);
@@ -308,6 +315,14 @@ inline void evaluatePointwiseTerms()
   opSEM::strongGradVec(mesh, offset, o_ul, o_gradUl);
   opSEM::strongGrad(mesh, offset, nrs->fluid->o_P, o_gradP);
 
+  buildQgAdvectionFluxKernel(
+      mesh->Nlocal, offset, o_qg, o_ug, o_qgAdvectionFlux);
+  for (int i = 0; i < 3; ++i) {
+    auto flux = o_qgAdvectionFlux.slice(3 * i * offset, 3 * offset);
+    auto divergence = o_divQgAdvectionFlux.slice(i * offset, offset);
+    opSEM::strongDivergence(mesh, offset, flux, divergence, false);
+  }
+
   buildEquationTermsKernel(mesh->Nlocal,
                            offset,
                            p.rhoLiquid,
@@ -325,11 +340,11 @@ inline void evaluatePointwiseTerms()
                            p.gravity[2],
                            alpha,
                            nrs->fluid->o_U,
-                           o_qg,
                            o_ug,
                            o_ul,
                            o_gradAlphaAdvection,
                            o_gradQgAdvection,
+                           o_divQgAdvectionFlux,
                            o_gradUgAdvection,
                            o_gradUg,
                            o_virtualMassRelativeAcceleration,

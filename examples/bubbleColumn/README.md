@@ -92,11 +92,14 @@ The implemented gas equation is
 `d(q_g)/dt + div(q_g*u_g) = -alpha*grad(p)/rho_g`
 `+ div(alpha*tau_g)/rho_g + alpha*g + M_g/rho_g`.
 
-NekRS natively advances each `QG*` scalar with `u_m.grad(q_g)`. The explicit
-correction `-(u_g-u_m).grad(q_g)-q_g*div(u_g)` converts that operator to the
-conservative `div(q_g*u_g)`. Both this correction and the corresponding
-`u_m.grad(alpha)-div(q_g)` alpha source use element-local SEM gradients so
-their reconstructed native-advection term matches NekRS's element-local
+NekRS natively advances each `QG*` scalar with `A_m(q_i)=u_m.grad(q_i)`.
+The explicit correction is evaluated as
+`A_m(q_i)-D(q_i*u_g)`, where `D(q_i*u_g)` is the direct element-local strong
+divergence of the conservative nonlinear flux. This avoids assuming that the
+discrete SEM derivative satisfies the continuous product rule
+`D(q_i*u_g)=u_g.grad(q_i)+q_i*div(u_g)`. The reconstructed native-advection
+term and the corresponding `u_m.grad(alpha)-div(q_g)` alpha source use
+element-local SEM derivatives matching NekRS's
 `strongAdvectionVolumeScalarHex3D` operator. Gather-scatter-averaged gradients
 remain in use for alpha diffusion, gas stress, and other constitutive terms.
 A Newtonian Stokes stress is used for `tau_g`.

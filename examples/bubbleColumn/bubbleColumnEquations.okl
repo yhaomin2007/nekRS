@@ -170,6 +170,22 @@
   }
 }
 
+@kernel void buildQgAdvectionFlux(const dlong N,
+                                  const dlong offset,
+                                  @ restrict const dfloat *qg,
+                                  @ restrict const dfloat *ug,
+                                  @ restrict dfloat *qgAdvectionFlux)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    for (int i = 0; i < 3; ++i) {
+      for (int j = 0; j < 3; ++j) {
+        qgAdvectionFlux[n + (3 * i + j) * offset] =
+            qg[n + i * offset] * ug[n + j * offset];
+      }
+    }
+  }
+}
+
 @kernel void buildEquationTerms(const dlong N,
                                 const dlong offset,
                                 const dfloat rhoLiquid,
@@ -187,11 +203,11 @@
                                 const dfloat gravityZ,
                                 @ restrict const dfloat *alpha,
                                 @ restrict const dfloat *um,
-                                @ restrict const dfloat *qg,
                                 @ restrict const dfloat *ug,
                                 @ restrict const dfloat *ul,
                                 @ restrict const dfloat *gradAlpha,
                                 @ restrict const dfloat *gradQg,
+                                @ restrict const dfloat *divQgAdvectionFlux,
                                 @ restrict const dfloat *gradUgAdvection,
                                 @ restrict const dfloat *gradUgStress,
                                 @ restrict const dfloat *virtualMassRelativeAcceleration,
@@ -261,20 +277,24 @@
                      + um[n + 2 * offset] * gradAlpha[n + 2 * offset]
                      - divQg;
 
-    // Conservative q_g=alpha*u_g transport. NekRS supplies
-    // d(q_g)/dt + u_m.grad(q_g); these corrections recover div(q_g*u_g).
-    const dfloat qx = qg[n + 0 * offset];
-    const dfloat qy = qg[n + 1 * offset];
-    const dfloat qz = qg[n + 2 * offset];
-    const dfloat advQx = dx * gradQg[n + 0 * offset]
-                          + dy * gradQg[n + 1 * offset]
-                          + dz * gradQg[n + 2 * offset] + qx * divUg;
-    const dfloat advQy = dx * gradQg[n + 3 * offset]
-                          + dy * gradQg[n + 4 * offset]
-                          + dz * gradQg[n + 5 * offset] + qy * divUg;
-    const dfloat advQz = dx * gradQg[n + 6 * offset]
-                          + dy * gradQg[n + 7 * offset]
-                          + dz * gradQg[n + 8 * offset] + qz * divUg;
+    // NekRS supplies A_m(q_i)=u_m.grad(q_i). Subtract the directly evaluated
+    // conservative divergence D(q_i*u_g), avoiding a discrete product-rule
+    // expansion into u_g.grad(q_i)+q_i*div(u_g).
+    const dfloat qgAdvectionX =
+        um[n + 0 * offset] * gradQg[n + 0 * offset]
+        + um[n + 1 * offset] * gradQg[n + 1 * offset]
+        + um[n + 2 * offset] * gradQg[n + 2 * offset]
+        - divQgAdvectionFlux[n + 0 * offset];
+    const dfloat qgAdvectionY =
+        um[n + 0 * offset] * gradQg[n + 3 * offset]
+        + um[n + 1 * offset] * gradQg[n + 4 * offset]
+        + um[n + 2 * offset] * gradQg[n + 5 * offset]
+        - divQgAdvectionFlux[n + 1 * offset];
+    const dfloat qgAdvectionZ =
+        um[n + 0 * offset] * gradQg[n + 6 * offset]
+        + um[n + 1 * offset] * gradQg[n + 7 * offset]
+        + um[n + 2 * offset] * gradQg[n + 8 * offset]
+        - divQgAdvectionFlux[n + 2 * offset];
 
     // alpha*tau_g with a Newtonian Stokes stress. Its divergence is added
     // outside this pointwise kernel after applying the SEM divergence.
@@ -302,17 +322,17 @@
     dragLambda[n] = dragRate;
     const dfloat virtualMassScale = a * virtualMassEnabled
                                     * virtualMassCoefficient * rhoLiquid / rhoGas;
-    qgSource[n + 0 * offset] = -advQx
+    qgSource[n + 0 * offset] = qgAdvectionX
                                - a * gasPressureEnabled * gradP[n + 0 * offset] / rhoGas
                                + a * gravityX + a * dragRate * ul[n + 0 * offset]
                                + virtualMassScale
                                  * virtualMassRelativeAcceleration[n + 0 * offset];
-    qgSource[n + 1 * offset] = -advQy
+    qgSource[n + 1 * offset] = qgAdvectionY
                                - a * gasPressureEnabled * gradP[n + 1 * offset] / rhoGas
                                + a * gravityY + a * dragRate * ul[n + 1 * offset]
                                + virtualMassScale
                                  * virtualMassRelativeAcceleration[n + 1 * offset];
-    qgSource[n + 2 * offset] = -advQz
+    qgSource[n + 2 * offset] = qgAdvectionZ
                                - a * gasPressureEnabled * gradP[n + 2 * offset] / rhoGas
                                + a * gravityZ + a * dragRate * ul[n + 2 * offset]
                                + virtualMassScale
