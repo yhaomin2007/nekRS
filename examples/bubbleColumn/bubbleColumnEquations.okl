@@ -170,22 +170,6 @@
   }
 }
 
-@kernel void buildQgAdvectionFlux(const dlong N,
-                                  const dlong offset,
-                                  @ restrict const dfloat *qg,
-                                  @ restrict const dfloat *ug,
-                                  @ restrict dfloat *qgAdvectionFlux)
-{
-  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
-    for (int i = 0; i < 3; ++i) {
-      for (int j = 0; j < 3; ++j) {
-        qgAdvectionFlux[n + (3 * i + j) * offset] =
-            qg[n + i * offset] * ug[n + j * offset];
-      }
-    }
-  }
-}
-
 @kernel void buildEquationTerms(const dlong N,
                                 const dlong offset,
                                 const dfloat rhoLiquid,

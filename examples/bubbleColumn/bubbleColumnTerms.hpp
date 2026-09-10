@@ -99,7 +99,6 @@ static occa::kernel initializePlumeKernel;
 static occa::kernel buildLiquidVelocityKernel;
 static occa::kernel updateVirtualMassHistoryKernel;
 static occa::kernel buildDivergenceFromAlphaRhsKernel;
-static occa::kernel buildQgAdvectionFluxKernel;
 static occa::kernel buildEquationTermsKernel;
 static occa::kernel buildMixtureForceKernel;
 static occa::kernel buildGasPressureAccelerationMonitorKernel;
@@ -125,8 +124,6 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
         platform->kernelRequests.load(request, "updateVirtualMassHistory");
     buildDivergenceFromAlphaRhsKernel =
         platform->kernelRequests.load(request, "buildDivergenceFromAlphaRhs");
-    buildQgAdvectionFluxKernel =
-        platform->kernelRequests.load(request, "buildQgAdvectionFlux");
     buildEquationTermsKernel = platform->kernelRequests.load(request, "buildEquationTerms");
     buildMixtureForceKernel = platform->kernelRequests.load(request, "buildMixtureForce");
     buildGasPressureAccelerationMonitorKernel =
@@ -315,8 +312,19 @@ inline void evaluatePointwiseTerms()
   opSEM::strongGradVec(mesh, offset, o_ul, o_gradUl);
   opSEM::strongGrad(mesh, offset, nrs->fluid->o_P, o_gradP);
 
-  buildQgAdvectionFluxKernel(
-      mesh->Nlocal, offset, o_qg, o_ug, o_qgAdvectionFlux);
+  // Form each row of q_g tensor-product u_g with the standard linAlg kernels.
+  // Besides avoiding a case-specific CUDA kernel, this preserves the component
+  // layout expected by strongDivergence: (qx*ugx, qx*ugy, qx*ugz), etc.
+  for (int i = 0; i < 3; ++i) {
+    const auto qi = o_qg.slice(i * offset, offset);
+    for (int j = 0; j < 3; ++j) {
+      const auto ugj = o_ug.slice(j * offset, offset);
+      auto fluxComponent =
+          o_qgAdvectionFlux.slice((3 * i + j) * offset, offset);
+      fluxComponent.copyFrom(qi, offset);
+      platform->linAlg->axmy(mesh->Nlocal, 1.0, ugj, fluxComponent);
+    }
+  }
   for (int i = 0; i < 3; ++i) {
     auto flux = o_qgAdvectionFlux.slice(3 * i * offset, 3 * offset);
     auto divergence = o_divQgAdvectionFlux.slice(i * offset, offset);
