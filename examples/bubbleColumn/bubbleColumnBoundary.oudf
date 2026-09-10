@@ -13,19 +13,11 @@ void udfDirichlet(bcData *bc)
       bc->uyFluid = 0.0;
       bc->uzFluid = 0.0;
     }
-  } else if (isField("fluid pressure") && bc->id == 2) {
-    // Turbulent/open outlet condition used by the NekRS turbPipe example.
-    // The smooth switch activates the kinetic-pressure correction during
-    // local backflow (u.n < 0) and vanishes for outward flow.
-    const dfloat inverseVelocityThickness = 20.0;
-    const dfloat normalVelocity =
-        bc->uxFluid * bc->nx + bc->uyFluid * bc->ny + bc->uzFluid * bc->nz;
-    const dfloat backflowSwitch =
-        0.5 * (1.0 - tanh(normalVelocity * inverseVelocityThickness));
-    bc->pFluid = -0.5
-                 * (bc->uxFluid * bc->uxFluid + bc->uyFluid * bc->uyFluid
-                    + bc->uzFluid * bc->uzFluid)
-                 * backflowSwitch;
+  } else if (isField("fluid pressure")) {
+    const dfloat iU0delta = 20.0;
+    const dfloat un = bc->uxFluid * bc->nx + bc->uyFluid * bc->ny + bc->uzFluid * bc->nz;
+    const dfloat s0 = 0.5 * (1.0 - tanh(un * iU0delta));
+    bc->pFluid = -0.5 * (bc->uxFluid * bc->uxFluid + bc->uyFluid * bc->uyFluid + bc->uzFluid * bc->uzFluid) * s0;
   } else if (isField("scalar alpha")) {
     bc->sScalar = p_ALPHA_INLET;
   } else if (isField("scalar qgx")) {
