@@ -668,6 +668,7 @@ inline void printStabilityMonitors(double time, int tstep)
 
   platform->linAlg->entrywiseMag(Nlocal, 3, offset, o_ug, o_monitorMagnitude);
   const dfloat maxUg = platform->linAlg->max(Nlocal, o_monitorMagnitude, comm);
+  const dfloat gasCfl = nrs->computeCFL(nrs->meshV, o_ug, nrs->dt[0]);
 
   platform->linAlg->entrywiseMag(
       Nlocal, 9, offset, o_driftStress, o_monitorMagnitude);
@@ -699,7 +700,7 @@ inline void printStabilityMonitors(double time, int tstep)
            "min(alpha)=%.8e max(alpha)=%.8e mean(alpha)=%.8e "
            "max|qg|=%.8e max|qg-alpha*ug|=%.8e "
            "maxActive|gradP|/rhoG=%.8e maxInactive|gradP|/rhoG=%.8e "
-           "max|ug|=%.8e max|tauDrift|=%.8e "
+           "max|ug|=%.8e CFL(ug)=%.8e max|tauDrift|=%.8e "
            "max(lambdaD*dt)=%.8e "
            "inletArea=%.8e inletMean(alpha)=%.8e "
            "inletIntegral(qg.n)=%.8e prescribed|inletFlux|=%.8e\n",
@@ -714,6 +715,7 @@ inline void printStabilityMonitors(double time, int tstep)
            maxGasPressureAccelerationActive,
            maxGasPressureAccelerationInactive,
            maxUg,
+           gasCfl,
            maxDriftStress,
            maxDragStep,
            inletArea,

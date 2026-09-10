@@ -66,7 +66,10 @@ content. `max|qg|` tracks the transported gas volumetric flux, while
 `max|qg-alpha*ug|` detects inconsistency introduced by low-alpha reconstruction
 or postprocessing. The raw gas pressure
 acceleration is reported separately over alpha values above and below
-`gasMomentumCutoff`; `max|ug|` is gas-speed magnitude;
+`gasMomentumCutoff`; `max|ug|` is gas-speed magnitude. `CFL(ug)` is the global
+maximum gas-phase CFL evaluated from the reconstructed gas velocity with
+NekRS's native CFL operator and the current timestep; it is diagnostic only
+and does not control timestep selection.
 `max|tauDrift|` is the Frobenius norm of the mixture drift-stress tensor; and
 `max(lambdaD*dt)` measures the drag relaxation over one timestep.
 `inletMean(alpha)` and `inletIntegral(qg.n)` directly check the alpha
