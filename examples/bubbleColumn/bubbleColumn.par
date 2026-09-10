@@ -1,12 +1,14 @@
 userSections = CASEDATA
 
 [GENERAL]
-polynomialOrder = 5
+polynomialOrder = 7
+startFrom = bubblecolumn0.f00041
 stopAt = numSteps
-numSteps = 100
-dt = 1e-3
+numSteps = 100000
+dt = initial=1.2e-4+targetCFL=0.05+max=1e-2
+#dt = 1e-3
 timeStepper = tombo2
-checkpointInterval = 20
+checkpointInterval = 1000
 scalars = ALPHA, QGX, QGY, QGZ
 
 [FLUID PRESSURE]
@@ -76,7 +78,7 @@ subtractQgxDiffusion = 0.0
 subtractQgyDiffusion = 0.0
 subtractQgzDiffusion = 0.0
 smoothGasVelocityMaskEnabled = 1.0
-gasVelocityClipEnabled = 1.0
+gasVelocityClipEnabled = 0.0
 gasVelocityMaximum = 1.0
 gasMomentumCutoff = 1e-4
 gasMomentumFullyActive = 1e-3
@@ -89,7 +91,7 @@ divergenceFilterEnabled = 0.0
 divergenceFilterModes = 1
 divergenceFilterStrength = 0.25
 divergenceExtrapolationEnabled = 0.0
-divergenceRampEnabled = 1.0
+divergenceRampEnabled =0.0
 divergenceRampSteps = 1000
 stabilityMonitorEnabled = 1.0
-stabilityMonitorInterval = 1
+stabilityMonitorInterval = 10
