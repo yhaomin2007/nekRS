@@ -223,7 +223,7 @@ inline void allocate()
     }
     inverseGllSpacing[n] = 1.0 / spacing;
   }
-  o_inverseGllSpacing.copyFrom(inverseGllSpacing.data());
+  o_inverseGllSpacing.copyFrom(inverseGllSpacing);
   o_inletBoundaryID.resize(1);
   o_inletBoundaryID.copyFrom(std::vector<int>{1});
   o_surfaceOne.resize(nrs->meshV->Nlocal);
