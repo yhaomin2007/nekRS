@@ -85,6 +85,8 @@ static deviceMemory<dfloat> o_mixtureForce;
 static deviceMemory<dfloat> o_monitorMagnitude;
 static deviceMemory<dfloat> o_gasPressureAccelerationActive;
 static deviceMemory<dfloat> o_gasPressureAccelerationInactive;
+static deviceMemory<dfloat> o_gasCfl;
+static deviceMemory<dfloat> o_inverseGllSpacing;
 static deviceMemory<int> o_inletBoundaryID;
 static deviceMemory<dfloat> o_surfaceOne;
 static deviceMemory<dfloat> o_surfaceScalar;
@@ -207,6 +209,21 @@ inline void allocate()
   o_monitorMagnitude.resize(offset);
   o_gasPressureAccelerationActive.resize(offset);
   o_gasPressureAccelerationInactive.resize(offset);
+  o_gasCfl.resize(nrs->meshV->Nelements);
+  o_inverseGllSpacing.resize(nrs->meshV->N + 1);
+  std::vector<dfloat> inverseGllSpacing(nrs->meshV->N + 1);
+  for (int n = 0; n < nrs->meshV->N + 1; ++n) {
+    dfloat spacing;
+    if (n == 0) {
+      spacing = nrs->meshV->gllz[n + 1] - nrs->meshV->gllz[n];
+    } else if (n == nrs->meshV->N) {
+      spacing = nrs->meshV->gllz[n] - nrs->meshV->gllz[n - 1];
+    } else {
+      spacing = 0.5 * (nrs->meshV->gllz[n + 1] - nrs->meshV->gllz[n - 1]);
+    }
+    inverseGllSpacing[n] = 1.0 / spacing;
+  }
+  o_inverseGllSpacing.copyFrom(inverseGllSpacing.data());
   o_inletBoundaryID.resize(1);
   o_inletBoundaryID.copyFrom(std::vector<int>{1});
   o_surfaceOne.resize(nrs->meshV->Nlocal);
@@ -615,6 +632,22 @@ inline void updateDivergenceHistory()
   divergenceHistoryCount = std::min(divergenceHistoryCount + 1, 2);
 }
 
+inline dfloat computeGasCfl()
+{
+  auto mesh = nrs->meshV;
+  launchKernel("nrs-cflHex3D",
+               mesh->Nelements,
+               nrs->dt[0],
+               mesh->o_vgeo,
+               o_inverseGllSpacing,
+               nrs->fieldOffset,
+               o_ug,
+               nrs->geom ? nrs->geom->o_U : o_NULL,
+               o_gasCfl);
+  return platform->linAlg->max(
+      mesh->Nelements, o_gasCfl, platform->comm.mpiComm());
+}
+
 inline void printStabilityMonitors(double time, int tstep)
 {
   if (p.stabilityMonitorEnabled == 0.0
@@ -668,7 +701,7 @@ inline void printStabilityMonitors(double time, int tstep)
 
   platform->linAlg->entrywiseMag(Nlocal, 3, offset, o_ug, o_monitorMagnitude);
   const dfloat maxUg = platform->linAlg->max(Nlocal, o_monitorMagnitude, comm);
-  const dfloat gasCfl = nrs->computeCFL(nrs->meshV, o_ug, nrs->dt[0]);
+  const dfloat gasCfl = computeGasCfl();
 
   platform->linAlg->entrywiseMag(
       Nlocal, 9, offset, o_driftStress, o_monitorMagnitude);
