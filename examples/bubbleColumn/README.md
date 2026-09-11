@@ -119,11 +119,13 @@ The `[CASEDATA]` switches `subtractAlphaDiffusion`,
 `subtractQgxDiffusion`, `subtractQgyDiffusion`, and
 `subtractQgzDiffusion` optionally apply an IMEX deferred correction. A value
 of zero retains the corresponding native implicit numerical diffusion. A value
-of one adds the lagged source `-div(diffusionCoeff*grad(s))`, reconstructed
-with the same gather-scatter-averaged SEM gradient, pointwise scalar diffusion
-coefficient, and strong-divergence sequence for all four fields. This does not
-algebraically cancel the new-time Helmholtz or boundary diffusion, and enabling
-it reduces the smoothing supplied by `diffusionCoeff`.
+of one adds the lagged weak-form source `+M^{-1} K(diffusionCoeff) s`, using
+the same SEM stiffness discretization and pointwise scalar diffusion
+coefficient as the native Helmholtz solve. `sumMakef` multiplies this nodal
+source by the mass matrix, so it opposes the implicit `+K s` term at
+unconstrained degrees of freedom, up to the expected explicit temporal
+lag/extrapolation. Dirichlet values remain imposed by the native scalar
+boundary treatment.
 
 The four scalar sections also expose nekRS's native HPFRT regularization:
 
