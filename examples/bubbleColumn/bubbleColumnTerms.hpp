@@ -88,6 +88,7 @@ static deviceMemory<dfloat> o_gasPressureAccelerationInactive;
 static deviceMemory<dfloat> o_gasCfl;
 static deviceMemory<dfloat> o_inverseGllSpacing;
 static deviceMemory<int> o_inletBoundaryID;
+static deviceMemory<dlong> o_scalarFieldOffsetScan;
 static deviceMemory<dfloat> o_surfaceOne;
 static deviceMemory<dfloat> o_surfaceScalar;
 static occa::kernel reconstructGasVelocityKernel;
@@ -226,6 +227,8 @@ inline void allocate()
   o_inverseGllSpacing.copyFrom(inverseGllSpacing);
   o_inletBoundaryID.resize(1);
   o_inletBoundaryID.copyFrom(std::vector<int>{1});
+  o_scalarFieldOffsetScan.resize(1);
+  o_scalarFieldOffsetScan.copyFrom(std::vector<dlong>{0});
   o_surfaceOne.resize(nrs->meshV->Nlocal);
   o_surfaceScalar.resize(nrs->meshV->Nlocal);
   platform->linAlg->fill(nrs->meshV->Nlocal, 1.0, o_surfaceOne);
@@ -507,11 +510,15 @@ inline void subtractScalarDiffusion()
   // unconstrained scalar equations (up to temporal lag/extrapolation).
   if (p.subtractAlphaDiffusion != 0.0) {
     auto diffusion = nrs->scalar->o_diffusionCoeff("alpha");
-    opSEM::laplacian(nrs->meshV,
-                     offset,
-                     diffusion,
-                     nrs->scalar->o_solution("alpha"),
-                     o_alphaDiffusionDivergence);
+    launchKernel("core-weakLaplacianHex3D",
+                 nrs->meshV->Nelements,
+                 1,
+                 o_scalarFieldOffsetScan,
+                 nrs->meshV->o_ggeo,
+                 nrs->meshV->o_D,
+                 diffusion,
+                 nrs->scalar->o_solution("alpha"),
+                 o_alphaDiffusionDivergence);
     oogs::startFinish(o_alphaDiffusionDivergence,
                       1,
                       0,
@@ -534,11 +541,15 @@ inline void subtractScalarDiffusion()
     }
     auto diffusion = nrs->scalar->o_diffusionCoeff(qgNames[i]);
     auto divergence = o_qgDiffusionDivergence.slice(i * offset, offset);
-    opSEM::laplacian(nrs->meshV,
-                     offset,
-                     diffusion,
-                     nrs->scalar->o_solution(qgNames[i]),
-                     divergence);
+    launchKernel("core-weakLaplacianHex3D",
+                 nrs->meshV->Nelements,
+                 1,
+                 o_scalarFieldOffsetScan,
+                 nrs->meshV->o_ggeo,
+                 nrs->meshV->o_D,
+                 diffusion,
+                 nrs->scalar->o_solution(qgNames[i]),
+                 divergence);
     oogs::startFinish(
         divergence, 1, 0, ogsDfloat, ogsAdd, nrs->meshV->oogs);
     platform->linAlg->axmy(

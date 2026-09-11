@@ -111,10 +111,8 @@ void laplacian(mesh_t *mesh,
                occa::memory &o_out)
 {
   static occa::memory o_fieldOffsetScan;
-  if (!o_fieldOffsetScan.isInitialized()) {
+  if (o_fieldOffsetScan.isInitialized()) {
     o_fieldOffsetScan = platform->device.malloc<dlong>(1);
-    const dlong zero = 0;
-    o_fieldOffsetScan.copyFrom(&zero, sizeof(dlong));
   }
   launchKernel(section + "weakLaplacian" + suffix,
                mesh->Nelements,
