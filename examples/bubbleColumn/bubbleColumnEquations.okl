@@ -170,6 +170,22 @@
   }
 }
 
+@kernel void buildOutletRampFactor(const dlong N,
+                                   const dfloat zRampBottom,
+                                   const dfloat zRampTop,
+                                   const dfloat dampingFactor,
+                                   @ restrict const dfloat *z,
+                                   @ restrict dfloat *rampFactor)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    dfloat s = (z[n] - zRampBottom) / (zRampTop - zRampBottom);
+    s = (s < 0.0) ? 0.0 : ((s > 1.0) ? 1.0 : s);
+    // C1-continuous smoothstep avoids slope jumps at the ramp endpoints.
+    s = s * s * (3.0 - 2.0 * s);
+    rampFactor[n] = 1.0 + (dampingFactor - 1.0) * s;
+  }
+}
+
 @kernel void buildEquationTerms(const dlong N,
                                 const dlong offset,
                                 const dfloat rhoLiquid,

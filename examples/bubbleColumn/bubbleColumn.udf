@@ -42,6 +42,9 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   platform->par->extract("casedata", "subtractqgxdiffusion", p.subtractQgDiffusion[0]);
   platform->par->extract("casedata", "subtractqgydiffusion", p.subtractQgDiffusion[1]);
   platform->par->extract("casedata", "subtractqgzdiffusion", p.subtractQgDiffusion[2]);
+  platform->par->extract("casedata", "zrampbottom", p.zRampBottom);
+  platform->par->extract("casedata", "zramptop", p.zRampTop);
+  platform->par->extract("casedata", "outletdampingfactor", p.outletDampingFactor);
   platform->par->extract("casedata",
                          "smoothgasvelocitymaskenabled",
                          p.smoothGasVelocityMaskEnabled);

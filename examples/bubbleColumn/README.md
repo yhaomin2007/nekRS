@@ -127,6 +127,17 @@ unconstrained degrees of freedom, up to the expected explicit temporal
 lag/extrapolation. Dirichlet values remain imposed by the native scalar
 boundary treatment.
 
+Near the top outlet, `zRampBottom`, `zRampTop`, and
+`outletDampingFactor` define a smooth damping layer. The multiplier is one
+below `zRampBottom`, follows the cubic smoothstep
+`1+(factor-1)*s^2*(3-2*s)` between the two heights, and equals the requested
+factor above `zRampTop`. It multiplies the implicit mixture viscosity and the
+native implicit diffusion coefficients of ALPHA, QGX, QGY, and QGZ. The
+explicit gas viscous-stress source is deliberately not scaled because doing so
+would tighten its explicit timestep restriction. The scalar coefficients are
+restored from their original `.par` values before each update, so the
+multiplier never compounds over successive time steps.
+
 The four scalar sections also expose nekRS's native HPFRT regularization:
 
 `regularization = hpfrt + nModes=1 + scalingCoeff=100.0`.

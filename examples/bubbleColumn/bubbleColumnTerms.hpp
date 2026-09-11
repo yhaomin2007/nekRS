@@ -24,6 +24,9 @@ struct Parameters {
   dfloat alphaMaximum;
   dfloat subtractAlphaDiffusion;
   dfloat subtractQgDiffusion[3];
+  dfloat zRampBottom;
+  dfloat zRampTop;
+  dfloat outletDampingFactor;
   dfloat smoothGasVelocityMaskEnabled;
   dfloat gasVelocityClipEnabled;
   dfloat gasVelocityMaximum;
@@ -72,6 +75,8 @@ static occa::memory o_divFilterMatrix;
 static deviceMemory<dfloat> o_alphaDiffusionFlux;
 static deviceMemory<dfloat> o_alphaDiffusionDivergence;
 static deviceMemory<dfloat> o_qgDiffusionDivergence;
+static deviceMemory<dfloat> o_scalarDiffusionBase;
+static deviceMemory<dfloat> o_outletRampFactor;
 static deviceMemory<dfloat> o_alphaExplicitBase;
 static deviceMemory<dfloat> o_alphaRegularizationSource;
 static deviceMemory<dfloat> o_driftStress;
@@ -102,6 +107,7 @@ static occa::kernel buildEquationTermsKernel;
 static occa::kernel buildMixtureForceKernel;
 static occa::kernel buildGasPressureAccelerationMonitorKernel;
 static occa::kernel buildGasFluxConsistencyMonitorKernel;
+static occa::kernel buildOutletRampFactorKernel;
 
 inline void registerKernels(deviceKernelProperties &kernelInfo)
 {
@@ -129,6 +135,8 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
         platform->kernelRequests.load(request, "buildGasPressureAccelerationMonitor");
     buildGasFluxConsistencyMonitorKernel =
         platform->kernelRequests.load(request, "buildGasFluxConsistencyMonitor");
+    buildOutletRampFactorKernel =
+        platform->kernelRequests.load(request, "buildOutletRampFactor");
   }
 }
 
@@ -169,6 +177,17 @@ inline void allocate()
              EXIT_FAILURE,
              "divergenceRampSteps must be positive when the ramp is enabled, but is %d\n",
              p.divergenceRampSteps);
+  nekrsCheck(p.zRampTop <= p.zRampBottom,
+             platform->comm.mpiComm(),
+             EXIT_FAILURE,
+             "zRampTop must exceed zRampBottom (bottom=%g, top=%g)\n",
+             p.zRampBottom,
+             p.zRampTop);
+  nekrsCheck(p.outletDampingFactor < 1.0,
+             platform->comm.mpiComm(),
+             EXIT_FAILURE,
+             "outletDampingFactor must be at least 1, but is %g\n",
+             p.outletDampingFactor);
   o_ug.resize(3 * offset);
   o_ul.resize(3 * offset);
   o_ulPrevious.resize(3 * offset);
@@ -197,6 +216,8 @@ inline void allocate()
   o_alphaDiffusionFlux.resize(3 * offset);
   o_alphaDiffusionDivergence.resize(offset);
   o_qgDiffusionDivergence.resize(3 * offset);
+  o_scalarDiffusionBase.resize(4 * offset);
+  o_outletRampFactor.resize(offset);
   o_alphaExplicitBase.resize(offset);
   o_alphaRegularizationSource.resize(offset);
   o_driftStress.resize(9 * offset);
@@ -229,6 +250,14 @@ inline void allocate()
   o_inletBoundaryID.copyFrom(std::vector<int>{1});
   o_scalarFieldOffsetScan.resize(1);
   o_scalarFieldOffsetScan.copyFrom(std::vector<dlong>{0});
+  const char *scalarNames[4] = {"alpha", "qgx", "qgy", "qgz"};
+  for (int i = 0; i < 4; ++i) {
+    o_scalarDiffusionBase.copyFrom(
+        nrs->scalar->o_diffusionCoeff(scalarNames[i]),
+        nrs->meshV->Nlocal,
+        i * offset,
+        0);
+  }
   o_surfaceOne.resize(nrs->meshV->Nlocal);
   o_surfaceScalar.resize(nrs->meshV->Nlocal);
   platform->linAlg->fill(nrs->meshV->Nlocal, 1.0, o_surfaceOne);
@@ -381,6 +410,26 @@ inline void evaluatePointwiseTerms()
                            o_alphaSource,
                            o_qgSource,
                            o_dragLambda);
+
+  // Smoothly increase the implicit mixture viscosity and all implicit scalar
+  // diffusion coefficients near the outlet. Do not scale the explicit gas
+  // viscous-stress source, which would tighten its timestep restriction.
+  // Restore scalar coefficients from their original .par values first so
+  // repeated userProperties() calls cannot compound the ramp factor.
+  buildOutletRampFactorKernel(mesh->Nlocal,
+                              p.zRampBottom,
+                              p.zRampTop,
+                              p.outletDampingFactor,
+                              mesh->o_z,
+                              o_outletRampFactor);
+  platform->linAlg->axmy(mesh->Nlocal, 1.0, o_outletRampFactor, o_muM);
+  const char *scalarNames[4] = {"alpha", "qgx", "qgy", "qgz"};
+  for (int i = 0; i < 4; ++i) {
+    auto diffusion = nrs->scalar->o_diffusionCoeff(scalarNames[i]);
+    diffusion.copyFrom(o_scalarDiffusionBase, mesh->Nlocal, 0, i * offset);
+    platform->linAlg->axmy(
+        mesh->Nlocal, 1.0, o_outletRampFactor, diffusion);
+  }
 
   for (int i = 0; i < 3; ++i) {
     auto stressRow = o_gasStress.slice(3 * i * offset, 3 * offset);
