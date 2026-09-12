@@ -1,6 +1,9 @@
 #pragma once
 
 #include <cmath>
+#include <fstream>
+#include <iomanip>
+#include <vector>
 
 #include "lowPassFilter.hpp"
 #include "opSEM.hpp"
@@ -45,6 +48,7 @@ struct Parameters {
   int divergenceRampSteps;
   dfloat stabilityMonitorEnabled;
   int stabilityMonitorInterval;
+  int validationOutputInterval;
 };
 
 static Parameters p;
@@ -96,6 +100,29 @@ static deviceMemory<int> o_inletBoundaryID;
 static deviceMemory<dlong> o_scalarFieldOffsetScan;
 static deviceMemory<dfloat> o_surfaceOne;
 static deviceMemory<dfloat> o_surfaceScalar;
+static deviceMemory<int> o_outletBoundaryID;
+static deviceMemory<int> o_allBoundaryIDs;
+static deviceMemory<dfloat> o_validationGasDiffusiveFlux;
+static deviceMemory<dfloat> o_validationMassFlux;
+static deviceMemory<dfloat> o_qgBeforeMask;
+static deviceMemory<dfloat> o_qgMaskDelta;
+static std::ofstream validationFile;
+static std::vector<dfloat> gasVolumeHistory;
+static std::vector<dfloat> totalMassHistory;
+static dfloat validationInitialGasVolume = 0.0;
+static dfloat validationInitialTotalMass = 0.0;
+static dfloat validationPreviousTime = 0.0;
+static dfloat validationPreviousGasBoundaryFlux = 0.0;
+static dfloat validationPreviousMassBoundaryFlux = 0.0;
+static dfloat cumulativeGasBoundaryIntegral = 0.0;
+static dfloat cumulativeMassBoundaryIntegral = 0.0;
+static dfloat alphaClipDeltaVolume = 0.0;
+static dfloat cumulativeAlphaClipDeltaVolume = 0.0;
+static dfloat qgMaskDeltaIntegral[3] = {0.0, 0.0, 0.0};
+static dfloat qgMaskDeltaMagnitudeIntegral = 0.0;
+static dfloat cumulativeQgMaskDeltaIntegral[3] = {0.0, 0.0, 0.0};
+static dfloat cumulativeQgMaskDeltaMagnitudeIntegral = 0.0;
+static bool validationInitialized = false;
 static occa::kernel reconstructGasVelocityKernel;
 static occa::kernel postProcessGasFluxKernel;
 static occa::kernel clipAlphaKernel;
@@ -188,6 +215,11 @@ inline void allocate()
              EXIT_FAILURE,
              "outletDampingFactor must be at least 1, but is %g\n",
              p.outletDampingFactor);
+  nekrsCheck(p.validationOutputInterval < 1,
+             platform->comm.mpiComm(),
+             EXIT_FAILURE,
+             "validationOutputInterval must be positive, but is %d\n",
+             p.validationOutputInterval);
   o_ug.resize(3 * offset);
   o_ul.resize(3 * offset);
   o_ulPrevious.resize(3 * offset);
@@ -260,6 +292,14 @@ inline void allocate()
   }
   o_surfaceOne.resize(nrs->meshV->Nlocal);
   o_surfaceScalar.resize(nrs->meshV->Nlocal);
+  o_outletBoundaryID.resize(1);
+  o_outletBoundaryID.copyFrom(std::vector<int>{2});
+  o_allBoundaryIDs.resize(3);
+  o_allBoundaryIDs.copyFrom(std::vector<int>{1, 2, 3});
+  o_validationGasDiffusiveFlux.resize(3 * offset);
+  o_validationMassFlux.resize(3 * offset);
+  o_qgBeforeMask.resize(3 * offset);
+  o_qgMaskDelta.resize(3 * offset);
   platform->linAlg->fill(nrs->meshV->Nlocal, 1.0, o_surfaceOne);
   platform->linAlg->fill(offset, 0.0, o_alphaExplicitBase);
   platform->linAlg->fill(offset, 0.0, o_alphaRegularizationSource);
@@ -456,12 +496,22 @@ inline void initializeHistory()
 
 inline void postProcessGasFlux()
 {
+  const dlong Nlocal = nrs->meshV->Nlocal;
+  const dlong offset = nrs->fieldOffset;
   if (p.smoothGasVelocityMaskEnabled == 0.0 && p.gasVelocityClipEnabled == 0.0) {
+    for (int i = 0; i < 3; ++i) {
+      qgMaskDeltaIntegral[i] = 0.0;
+    }
+    qgMaskDeltaMagnitudeIntegral = 0.0;
     return;
   }
 
+  o_qgBeforeMask.copyFrom(nrs->scalar->o_solution("qgx"), Nlocal, 0 * offset, 0);
+  o_qgBeforeMask.copyFrom(nrs->scalar->o_solution("qgy"), Nlocal, 1 * offset, 0);
+  o_qgBeforeMask.copyFrom(nrs->scalar->o_solution("qgz"), Nlocal, 2 * offset, 0);
+
   postProcessGasFluxKernel(
-      nrs->meshV->Nlocal,
+      Nlocal,
       p.smoothGasVelocityMaskEnabled,
       p.gasVelocityClipEnabled,
       p.gasVelocityMaximum,
@@ -472,18 +522,46 @@ inline void postProcessGasFlux()
       nrs->scalar->o_solution("qgx"),
       nrs->scalar->o_solution("qgy"),
       nrs->scalar->o_solution("qgz"));
+
+  const char *qgNames[3] = {"qgx", "qgy", "qgz"};
+  const MPI_Comm comm = platform->comm.mpiComm();
+  for (int i = 0; i < 3; ++i) {
+    auto delta = o_qgMaskDelta.slice(i * offset, offset);
+    delta.copyFrom(nrs->scalar->o_solution(qgNames[i]), Nlocal);
+    platform->linAlg->axpby(
+        Nlocal, -1.0, o_qgBeforeMask, 1.0, delta, i * offset, 0);
+    qgMaskDeltaIntegral[i] = platform->linAlg->innerProd(
+        Nlocal, nrs->meshV->o_LMM, delta, comm);
+    cumulativeQgMaskDeltaIntegral[i] += qgMaskDeltaIntegral[i];
+  }
+  platform->linAlg->entrywiseMag(
+      Nlocal, 3, offset, o_qgMaskDelta, o_monitorMagnitude);
+  qgMaskDeltaMagnitudeIntegral = platform->linAlg->innerProd(
+      Nlocal, nrs->meshV->o_LMM, o_monitorMagnitude, comm);
+  cumulativeQgMaskDeltaMagnitudeIntegral += qgMaskDeltaMagnitudeIntegral;
 }
 
 inline void clipAlpha(double, int)
 {
+  alphaClipDeltaVolume = 0.0;
   if (p.alphaClippingEnabled == 0.0) {
     return;
   }
 
-  clipAlphaKernel(nrs->meshV->Nlocal,
+  const dlong Nlocal = nrs->meshV->Nlocal;
+  const MPI_Comm comm = platform->comm.mpiComm();
+  auto alpha = nrs->scalar->o_solution("alpha");
+  const dfloat volumeBefore = platform->linAlg->innerProd(
+      Nlocal, nrs->meshV->o_LMM, alpha, comm);
+
+  clipAlphaKernel(Nlocal,
                   p.alphaMinimum,
                   p.alphaMaximum,
-                  nrs->scalar->o_solution("alpha"));
+                  alpha);
+  const dfloat volumeAfter = platform->linAlg->innerProd(
+      Nlocal, nrs->meshV->o_LMM, alpha, comm);
+  alphaClipDeltaVolume = volumeAfter - volumeBefore;
+  cumulativeAlphaClipDeltaVolume += alphaClipDeltaVolume;
 }
 
 inline void updateVirtualMassHistory()
@@ -753,6 +831,219 @@ inline dfloat computeGasCfl()
                o_gasCfl);
   return platform->linAlg->max(
       mesh->Nelements, o_gasCfl, platform->comm.mpiComm());
+}
+
+struct ValidationState {
+  dfloat gasVolume;
+  dfloat totalMass;
+  dfloat gasAdvectiveInlet;
+  dfloat gasAdvectiveOutlet;
+  dfloat gasAdvectiveTotal;
+  dfloat gasDiffusiveInlet;
+  dfloat gasDiffusiveOutlet;
+  dfloat gasDiffusiveTotal;
+  dfloat totalMassFluxInlet;
+  dfloat totalMassFluxOutlet;
+  dfloat totalMassFluxTotal;
+};
+
+inline ValidationState computeValidationState()
+{
+  const dlong Nlocal = nrs->meshV->Nlocal;
+  const dlong offset = nrs->fieldOffset;
+  const MPI_Comm comm = platform->comm.mpiComm();
+  auto alpha = nrs->scalar->o_solution("alpha");
+
+  ValidationState state{};
+  state.gasVolume = platform->linAlg->innerProd(
+      Nlocal, nrs->meshV->o_LMM, alpha, comm);
+  state.totalMass = platform->linAlg->innerProd(
+      Nlocal, nrs->meshV->o_LMM, o_rhoM, comm);
+
+  o_qg.copyFrom(nrs->scalar->o_solution("qgx"), Nlocal, 0 * offset, 0);
+  o_qg.copyFrom(nrs->scalar->o_solution("qgy"), Nlocal, 1 * offset, 0);
+  o_qg.copyFrom(nrs->scalar->o_solution("qgz"), Nlocal, 2 * offset, 0);
+  state.gasAdvectiveInlet = nrs->meshV->surfaceAreaNormalMultiplyVectorIntegrate(
+      offset, o_inletBoundaryID, o_qg);
+  state.gasAdvectiveOutlet = nrs->meshV->surfaceAreaNormalMultiplyVectorIntegrate(
+      offset, o_outletBoundaryID, o_qg);
+  state.gasAdvectiveTotal = nrs->meshV->surfaceAreaNormalMultiplyVectorIntegrate(
+      offset, o_allBoundaryIDs, o_qg);
+
+  o_validationGasDiffusiveFlux.copyFrom(o_gradAlpha, 3 * offset);
+  auto alphaDiffusion = nrs->scalar->o_diffusionCoeff("alpha");
+  platform->linAlg->axmyVector(Nlocal,
+                               offset,
+                               0,
+                               -1.0,
+                               alphaDiffusion,
+                               o_validationGasDiffusiveFlux);
+  state.gasDiffusiveInlet = nrs->meshV->surfaceAreaNormalMultiplyVectorIntegrate(
+      offset, o_inletBoundaryID, o_validationGasDiffusiveFlux);
+  state.gasDiffusiveOutlet = nrs->meshV->surfaceAreaNormalMultiplyVectorIntegrate(
+      offset, o_outletBoundaryID, o_validationGasDiffusiveFlux);
+  state.gasDiffusiveTotal = nrs->meshV->surfaceAreaNormalMultiplyVectorIntegrate(
+      offset, o_allBoundaryIDs, o_validationGasDiffusiveFlux);
+
+  o_validationMassFlux.copyFrom(nrs->fluid->o_U, 3 * offset);
+  platform->linAlg->axmyVector(
+      Nlocal, offset, 0, 1.0, o_rhoM, o_validationMassFlux);
+  state.totalMassFluxInlet = nrs->meshV->surfaceAreaNormalMultiplyVectorIntegrate(
+      offset, o_inletBoundaryID, o_validationMassFlux);
+  state.totalMassFluxOutlet = nrs->meshV->surfaceAreaNormalMultiplyVectorIntegrate(
+      offset, o_outletBoundaryID, o_validationMassFlux);
+  state.totalMassFluxTotal = nrs->meshV->surfaceAreaNormalMultiplyVectorIntegrate(
+      offset, o_allBoundaryIDs, o_validationMassFlux);
+  return state;
+}
+
+inline dfloat validationBdfDerivative(dfloat current,
+                                      const std::vector<dfloat>& history)
+{
+  std::vector<dfloat> coeff(nrs->o_coeffBDF.size());
+  nrs->o_coeffBDF.copyTo(coeff.data());
+  for (int i = history.size(); i < coeff.size(); ++i) {
+    if (std::abs(coeff[i]) > 1.0e-14) {
+      return NAN;
+    }
+  }
+  dfloat derivative = nrs->g0 * current;
+  const int nHistory = std::min(history.size(), coeff.size());
+  for (int i = 0; i < nHistory; ++i) {
+    derivative -= coeff[i] * history[i];
+  }
+  return derivative / nrs->dt[0];
+}
+
+inline void writeValidationChecks(double time, int tstep)
+{
+  const ValidationState state = computeValidationState();
+  const dfloat gasBoundaryFlux =
+      state.gasAdvectiveTotal + state.gasDiffusiveTotal;
+  const dfloat massBoundaryFlux = state.totalMassFluxTotal;
+
+  if (!validationInitialized) {
+    validationInitialGasVolume = state.gasVolume;
+    validationInitialTotalMass = state.totalMass;
+    validationPreviousTime = time;
+    validationPreviousGasBoundaryFlux = gasBoundaryFlux;
+    validationPreviousMassBoundaryFlux = massBoundaryFlux;
+    // The initial inventories already include clipping and QG masking from
+    // this completed step, so cumulative postprocessing corrections begin
+    // after the same baseline state.
+    cumulativeAlphaClipDeltaVolume = 0.0;
+    for (int i = 0; i < 3; ++i) {
+      cumulativeQgMaskDeltaIntegral[i] = 0.0;
+    }
+    cumulativeQgMaskDeltaMagnitudeIntegral = 0.0;
+    gasVolumeHistory.insert(gasVolumeHistory.begin(), state.gasVolume);
+    totalMassHistory.insert(totalMassHistory.begin(), state.totalMass);
+    if (platform->comm.mpiRank() == 0) {
+      validationFile.open("bubbleColumn_conservation.csv", std::ios::out);
+      validationFile
+          << "step,time,dt,gas_volume,dgas_volume_dt,"
+          << "gas_advective_flux_inlet_outward,gas_advective_flux_outlet_outward,"
+          << "gas_advective_flux_all_boundaries,gas_diffusive_flux_inlet_outward,"
+          << "gas_diffusive_flux_outlet_outward,gas_diffusive_flux_all_boundaries,"
+          << "gas_balance_residual,gas_balance_relative,"
+          << "total_mass,dtotal_mass_dt,total_mass_flux_inlet_outward,"
+          << "total_mass_flux_outlet_outward,total_mass_flux_all_boundaries,"
+          << "total_mass_balance_residual,total_mass_balance_relative,"
+          << "alpha_clip_delta_volume,alpha_clip_cumulative_volume,"
+          << "qg_mask_delta_integral_x,qg_mask_delta_integral_y,"
+          << "qg_mask_delta_integral_z,qg_mask_delta_magnitude_integral,"
+          << "qg_mask_cumulative_integral_x,qg_mask_cumulative_integral_y,"
+          << "qg_mask_cumulative_integral_z,qg_mask_cumulative_magnitude_integral,"
+          << "gas_boundary_flux_cumulative,gas_cumulative_error_raw,"
+          << "gas_cumulative_error_clip_corrected,mass_boundary_flux_cumulative,"
+          << "mass_cumulative_error_raw,mass_cumulative_error_clip_corrected\n";
+    }
+    validationInitialized = true;
+    return;
+  }
+
+  const dfloat elapsed = time - validationPreviousTime;
+  cumulativeGasBoundaryIntegral +=
+      0.5 * elapsed * (validationPreviousGasBoundaryFlux + gasBoundaryFlux);
+  cumulativeMassBoundaryIntegral +=
+      0.5 * elapsed * (validationPreviousMassBoundaryFlux + massBoundaryFlux);
+
+  const dfloat dGasVolumeDt =
+      validationBdfDerivative(state.gasVolume, gasVolumeHistory);
+  const dfloat dTotalMassDt =
+      validationBdfDerivative(state.totalMass, totalMassHistory);
+  const dfloat gasResidual = dGasVolumeDt + gasBoundaryFlux;
+  const dfloat massResidual = dTotalMassDt + massBoundaryFlux;
+  dfloat gasScale = std::max(std::abs(dGasVolumeDt),
+                             std::abs(state.gasAdvectiveInlet));
+  gasScale = std::max(gasScale, std::abs(state.gasAdvectiveOutlet));
+  gasScale = std::max(gasScale, std::abs(state.gasDiffusiveInlet));
+  gasScale = std::max(gasScale, std::abs(state.gasDiffusiveOutlet));
+  const dfloat gasRelative = std::abs(gasResidual) / std::max(gasScale, 1.0e-30);
+  dfloat massScale = std::max(std::abs(dTotalMassDt),
+                              std::abs(state.totalMassFluxInlet));
+  massScale = std::max(massScale, std::abs(state.totalMassFluxOutlet));
+  const dfloat massRelative =
+      std::abs(massResidual) / std::max(massScale, 1.0e-30);
+  const dfloat gasCumulativeError = state.gasVolume
+                                    - validationInitialGasVolume
+                                    + cumulativeGasBoundaryIntegral;
+  const dfloat gasCumulativeErrorCorrected =
+      gasCumulativeError - cumulativeAlphaClipDeltaVolume;
+  const dfloat massCumulativeError = state.totalMass
+                                     - validationInitialTotalMass
+                                     + cumulativeMassBoundaryIntegral;
+  const dfloat massClipCorrection =
+      (p.rhoGas - p.rhoLiquid) * cumulativeAlphaClipDeltaVolume;
+  const dfloat massCumulativeErrorCorrected =
+      massCumulativeError - massClipCorrection;
+
+  if (tstep % p.validationOutputInterval == 0
+      && platform->comm.mpiRank() == 0) {
+    validationFile << std::scientific << std::setprecision(16)
+                   << tstep << ',' << time << ',' << nrs->dt[0] << ','
+                   << state.gasVolume << ',' << dGasVolumeDt << ','
+                   << state.gasAdvectiveInlet << ','
+                   << state.gasAdvectiveOutlet << ','
+                   << state.gasAdvectiveTotal << ','
+                   << state.gasDiffusiveInlet << ','
+                   << state.gasDiffusiveOutlet << ','
+                   << state.gasDiffusiveTotal << ','
+                   << gasResidual << ',' << gasRelative << ','
+                   << state.totalMass << ',' << dTotalMassDt << ','
+                   << state.totalMassFluxInlet << ','
+                   << state.totalMassFluxOutlet << ','
+                   << state.totalMassFluxTotal << ','
+                   << massResidual << ',' << massRelative << ','
+                   << alphaClipDeltaVolume << ','
+                   << cumulativeAlphaClipDeltaVolume << ','
+                   << qgMaskDeltaIntegral[0] << ','
+                   << qgMaskDeltaIntegral[1] << ','
+                   << qgMaskDeltaIntegral[2] << ','
+                   << qgMaskDeltaMagnitudeIntegral << ','
+                   << cumulativeQgMaskDeltaIntegral[0] << ','
+                   << cumulativeQgMaskDeltaIntegral[1] << ','
+                   << cumulativeQgMaskDeltaIntegral[2] << ','
+                   << cumulativeQgMaskDeltaMagnitudeIntegral << ','
+                   << cumulativeGasBoundaryIntegral << ','
+                   << gasCumulativeError << ','
+                   << gasCumulativeErrorCorrected << ','
+                   << cumulativeMassBoundaryIntegral << ','
+                   << massCumulativeError << ','
+                   << massCumulativeErrorCorrected << '\n';
+    validationFile.flush();
+  }
+
+  validationPreviousTime = time;
+  validationPreviousGasBoundaryFlux = gasBoundaryFlux;
+  validationPreviousMassBoundaryFlux = massBoundaryFlux;
+  gasVolumeHistory.insert(gasVolumeHistory.begin(), state.gasVolume);
+  totalMassHistory.insert(totalMassHistory.begin(), state.totalMass);
+  const int maxHistory = nrs->o_coeffBDF.size();
+  if (gasVolumeHistory.size() > maxHistory) {
+    gasVolumeHistory.resize(maxHistory);
+    totalMassHistory.resize(maxHistory);
+  }
 }
 
 inline void printStabilityMonitors(double time, int tstep)

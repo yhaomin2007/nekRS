@@ -98,3 +98,4 @@ divergenceRampEnabled =0.0
 divergenceRampSteps = 1000
 stabilityMonitorEnabled = 1.0
 stabilityMonitorInterval = 10
+validationOutputInterval = 10

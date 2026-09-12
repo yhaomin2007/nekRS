@@ -138,6 +138,15 @@ would tighten its explicit timestep restriction. The scalar coefficients are
 restored from their original `.par` values before each update, so the
 multiplier never compounds over successive time steps.
 
+`validationOutputInterval` controls how often integral conservation checks are
+written to `bubbleColumn_conservation.csv`. The diagnostics track gas-volume
+inventory and full advective/diffusive boundary fluxes, total mass and mass
+boundary fluxes, separate inlet/outlet contributions, alpha-volume changes
+caused by clipping, QG changes caused by the low-alpha mask, and raw and
+clip-corrected cumulative conservation errors. Integral histories are updated
+every completed step so changing the CSV output interval does not change the
+cumulative balances. Flux columns use the outward-normal sign convention.
+
 The four scalar sections also expose nekRS's native HPFRT regularization:
 
 `regularization = hpfrt + nModes=1 + scalingCoeff=100.0`.
