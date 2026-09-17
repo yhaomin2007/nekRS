@@ -207,6 +207,7 @@
                                 @ restrict const dfloat *ul,
                                 @ restrict const dfloat *gradAlpha,
                                 @ restrict const dfloat *gradQg,
+                                @ restrict const dfloat *divQg,
                                 @ restrict const dfloat *divQgAdvectionFlux,
                                 @ restrict const dfloat *gradUgAdvection,
                                 @ restrict const dfloat *gradUgStress,
@@ -244,9 +245,6 @@
     const dfloat divUgStress = gradUgStress[n + (0 * 3 + 0) * offset]
                                + gradUgStress[n + (1 * 3 + 1) * offset]
                                + gradUgStress[n + (2 * 3 + 2) * offset];
-    const dfloat divQg = gradQg[n + (0 * 3 + 0) * offset]
-                         + gradQg[n + (1 * 3 + 1) * offset]
-                         + gradQg[n + (2 * 3 + 2) * offset];
     const dfloat slipGradAlpha = dx * gradAlpha[n + 0 * offset]
                                    + dy * gradAlpha[n + 1 * offset]
                                    + dz * gradAlpha[n + 2 * offset];
@@ -275,7 +273,7 @@
     alphaSource[n] = um[n + 0 * offset] * gradAlpha[n + 0 * offset]
                      + um[n + 1 * offset] * gradAlpha[n + 1 * offset]
                      + um[n + 2 * offset] * gradAlpha[n + 2 * offset]
-                     - divQg;
+                     - divQg[n];
 
     // NekRS supplies A_m(q_i)=u_m.grad(q_i). Subtract the directly evaluated
     // conservative divergence D(q_i*u_g), avoiding a discrete product-rule

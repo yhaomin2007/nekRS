@@ -94,8 +94,10 @@ The implemented gas equation is
 
 NekRS natively advances each `QG*` scalar with `A_m(q_i)=u_m.grad(q_i)`.
 The explicit correction is evaluated as
-`A_m(q_i)-D(q_i*u_g)`, where `D(q_i*u_g)` is the direct element-local strong
-divergence of the conservative nonlinear flux. This avoids assuming that the
+`A_m(q_i)-D(q_i*u_g)`, where `D(q_i*u_g)` is NekRS's normalized,
+gather-scatter-assembled strong divergence of the conservative nonlinear flux.
+The alpha correction uses the same NekRS divergence directly on `q_g`. This
+avoids assuming that the
 discrete SEM derivative satisfies the continuous product rule
 `D(q_i*u_g)=u_g.grad(q_i)+q_i*div(u_g)`. The reconstructed native-advection
 term and the corresponding `u_m.grad(alpha)-div(q_g)` alpha source use

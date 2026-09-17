@@ -62,6 +62,7 @@ static deviceMemory<dfloat> o_gradAlpha;
 static deviceMemory<dfloat> o_gradAlphaAdvection;
 static deviceMemory<dfloat> o_qg;
 static deviceMemory<dfloat> o_gradQgAdvection;
+static deviceMemory<dfloat> o_divQg;
 static deviceMemory<dfloat> o_qgAdvectionFlux;
 static deviceMemory<dfloat> o_divQgAdvectionFlux;
 static deviceMemory<dfloat> o_gradUg;
@@ -230,6 +231,7 @@ inline void allocate()
   o_gradAlphaAdvection.resize(3 * offset);
   o_qg.resize(3 * offset);
   o_gradQgAdvection.resize(9 * offset);
+  o_divQg.resize(offset);
   o_qgAdvectionFlux.resize(9 * offset);
   o_divQgAdvectionFlux.resize(3 * offset);
   o_gradUg.resize(9 * offset);
@@ -384,14 +386,14 @@ inline void evaluatePointwiseTerms()
                             nrs->fluid->o_U,
                             o_qg,
                             o_ul);
-  // Keep averaged gradients for constitutive terms and diffusion, but use
-  // element-local gradients for advection corrections. NekRS's native scalar
-  // advection kernel differentiates each element locally; using the default
-  // gather-scatter-averaged opSEM gradient here prevents the nominal
-  // u_m.grad(scalar) cancellation from matching node-for-node.
+  // Keep averaged gradients for constitutive terms and diffusion. Retain
+  // element-local gradients only for the reconstructed u_m.grad(scalar)
+  // correction, while all conservative flux divergences use NekRS's default
+  // normalized gather-scatter assembly.
   opSEM::strongGrad(mesh, offset, alpha, o_gradAlpha);
   opSEM::strongGrad(mesh, offset, alpha, o_gradAlphaAdvection, false);
   opSEM::strongGradVec(mesh, offset, o_qg, o_gradQgAdvection, false);
+  opSEM::strongDivergence(mesh, offset, o_qg, o_divQg);
   opSEM::strongGradVec(mesh, offset, o_ug, o_gradUg);
   opSEM::strongGradVec(mesh, offset, o_ug, o_gradUgAdvection, false);
   opSEM::strongGradVec(mesh, offset, o_ul, o_gradUl);
@@ -413,7 +415,7 @@ inline void evaluatePointwiseTerms()
   for (int i = 0; i < 3; ++i) {
     auto flux = o_qgAdvectionFlux.slice(3 * i * offset, 3 * offset);
     auto divergence = o_divQgAdvectionFlux.slice(i * offset, offset);
-    opSEM::strongDivergence(mesh, offset, flux, divergence, false);
+    opSEM::strongDivergence(mesh, offset, flux, divergence);
   }
 
   buildEquationTermsKernel(mesh->Nlocal,
@@ -437,6 +439,7 @@ inline void evaluatePointwiseTerms()
                            o_ul,
                            o_gradAlphaAdvection,
                            o_gradQgAdvection,
+                           o_divQg,
                            o_divQgAdvectionFlux,
                            o_gradUgAdvection,
                            o_gradUg,
