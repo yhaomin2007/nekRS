@@ -59,15 +59,13 @@ static deviceMemory<dfloat> o_ugPrevious;
 static deviceMemory<dfloat> o_gradUl;
 static deviceMemory<dfloat> o_virtualMassRelativeAcceleration;
 static deviceMemory<dfloat> o_gradAlpha;
-static deviceMemory<dfloat> o_gradAlphaAdvection;
 static deviceMemory<dfloat> o_qg;
-static deviceMemory<dfloat> o_gradQgAdvection;
-static deviceMemory<dfloat> o_divQg;
-static deviceMemory<dfloat> o_qgAdvectionFlux;
-static deviceMemory<dfloat> o_divQgAdvectionFlux;
 static deviceMemory<dfloat> o_gradUg;
-static deviceMemory<dfloat> o_gradUgAdvection;
 static deviceMemory<dfloat> o_gradP;
+static deviceMemory<dfloat> o_scalarGasRelUrst;
+static occa::memory o_scalarMixtureU;
+static occa::memory o_scalarMixtureRelUrst;
+static bool gasScalarAdvectionActive = false;
 static deviceMemory<dfloat> o_rhoM;
 static deviceMemory<dfloat> o_muM;
 static deviceMemory<dfloat> o_divSource;
@@ -221,6 +219,12 @@ inline void allocate()
              EXIT_FAILURE,
              "validationOutputInterval must be positive, but is %d\n",
              p.validationOutputInterval);
+  nekrsCheck(nrs->scalar->Nsubsteps != 0,
+             platform->comm.mpiComm(),
+             EXIT_FAILURE,
+             "%s",
+             "bubbleColumn gas-velocity scalar advection requires "
+             "advectionSubcyclingSteps=0\n");
   o_ug.resize(3 * offset);
   o_ul.resize(3 * offset);
   o_ulPrevious.resize(3 * offset);
@@ -228,15 +232,12 @@ inline void allocate()
   o_gradUl.resize(9 * offset);
   o_virtualMassRelativeAcceleration.resize(3 * offset);
   o_gradAlpha.resize(3 * offset);
-  o_gradAlphaAdvection.resize(3 * offset);
   o_qg.resize(3 * offset);
-  o_gradQgAdvection.resize(9 * offset);
-  o_divQg.resize(offset);
-  o_qgAdvectionFlux.resize(9 * offset);
-  o_divQgAdvectionFlux.resize(3 * offset);
   o_gradUg.resize(9 * offset);
-  o_gradUgAdvection.resize(9 * offset);
   o_gradP.resize(3 * offset);
+  o_scalarGasRelUrst.resize(nrs->meshV->dim * nrs->scalar->vCubatureOffset);
+  o_scalarMixtureU = nrs->scalar->o_U;
+  o_scalarMixtureRelUrst = nrs->scalar->o_relUrst;
   o_rhoM.resize(offset);
   o_muM.resize(offset);
   o_divSource.resize(offset);
@@ -349,6 +350,26 @@ inline void reconstructGasVelocity()
                                o_ug);
 }
 
+inline void activateGasScalarAdvection()
+{
+  // All four scalars share one convection field. Rebind only the scalar
+  // handles; the fluid velocity and its contravariant storage remain intact.
+  nrs->scalar->o_U = o_ug;
+  nrs->scalar->o_relUrst = o_scalarGasRelUrst;
+  nrs->scalar->computeUrst();
+  gasScalarAdvectionActive = true;
+}
+
+inline void restoreMixtureScalarAdvection()
+{
+  if (!gasScalarAdvectionActive) {
+    return;
+  }
+  nrs->scalar->o_U = o_scalarMixtureU;
+  nrs->scalar->o_relUrst = o_scalarMixtureRelUrst;
+  gasScalarAdvectionActive = false;
+}
+
 inline void reconstructLiquidVelocity()
 {
   const dlong Nlocal = nrs->meshV->Nlocal;
@@ -386,37 +407,12 @@ inline void evaluatePointwiseTerms()
                             nrs->fluid->o_U,
                             o_qg,
                             o_ul);
-  // Keep averaged gradients for constitutive terms and diffusion. Retain
-  // element-local gradients only for the reconstructed u_m.grad(scalar)
-  // correction, while all conservative flux divergences use NekRS's default
-  // normalized gather-scatter assembly.
+  // Use normalized gather-scatter gradients for all constitutive terms and
+  // for the product-rule compressibility correction to native gas advection.
   opSEM::strongGrad(mesh, offset, alpha, o_gradAlpha);
-  opSEM::strongGrad(mesh, offset, alpha, o_gradAlphaAdvection, false);
-  opSEM::strongGradVec(mesh, offset, o_qg, o_gradQgAdvection, false);
-  opSEM::strongDivergence(mesh, offset, o_qg, o_divQg);
   opSEM::strongGradVec(mesh, offset, o_ug, o_gradUg);
-  opSEM::strongGradVec(mesh, offset, o_ug, o_gradUgAdvection, false);
   opSEM::strongGradVec(mesh, offset, o_ul, o_gradUl);
   opSEM::strongGrad(mesh, offset, nrs->fluid->o_P, o_gradP);
-
-  // Form each row of q_g tensor-product u_g with the standard linAlg kernels.
-  // Besides avoiding a case-specific CUDA kernel, this preserves the component
-  // layout expected by strongDivergence: (qx*ugx, qx*ugy, qx*ugz), etc.
-  for (int i = 0; i < 3; ++i) {
-    const auto qi = o_qg.slice(i * offset, offset);
-    for (int j = 0; j < 3; ++j) {
-      const auto ugj = o_ug.slice(j * offset, offset);
-      auto fluxComponent =
-          o_qgAdvectionFlux.slice((3 * i + j) * offset, offset);
-      fluxComponent.copyFrom(qi, offset);
-      platform->linAlg->axmy(mesh->Nlocal, 1.0, ugj, fluxComponent);
-    }
-  }
-  for (int i = 0; i < 3; ++i) {
-    auto flux = o_qgAdvectionFlux.slice(3 * i * offset, 3 * offset);
-    auto divergence = o_divQgAdvectionFlux.slice(i * offset, offset);
-    opSEM::strongDivergence(mesh, offset, flux, divergence);
-  }
 
   buildEquationTermsKernel(mesh->Nlocal,
                            offset,
@@ -434,20 +430,16 @@ inline void evaluatePointwiseTerms()
                            p.gravity[1],
                            p.gravity[2],
                            alpha,
+                           o_qg,
                            nrs->fluid->o_U,
                            o_ug,
                            o_ul,
-                           o_gradAlphaAdvection,
-                           o_gradQgAdvection,
-                           o_divQg,
-                           o_divQgAdvectionFlux,
-                           o_gradUgAdvection,
+                           o_gradAlpha,
                            o_gradUg,
                            o_virtualMassRelativeAcceleration,
                            o_gradP,
                            o_rhoM,
                            o_muM,
-                           o_divSource,
                            o_driftStress,
                            o_gasStress,
                            o_alphaSource,
@@ -697,6 +689,10 @@ inline void subtractScalarDiffusion()
 inline void addExplicitSources(double)
 {
   evaluatePointwiseTerms();
+  // userSource() runs immediately before NekRS constructs scalar advection.
+  // Supply u_g through the native (dealiased) scalar-advection operator and
+  // restore the usual mixture-velocity handles in postScalar().
+  activateGasScalarAdvection();
   subtractScalarDiffusion();
   evaluateMixtureForce();
   const dlong Nlocal = nrs->meshV->Nlocal;
@@ -723,12 +719,9 @@ inline void buildDivergenceFromAlphaRhs()
   const dlong Nlocal = nrs->meshV->Nlocal;
   const dlong offset = nrs->fieldOffset;
 
-  // The native scalar equation is
-  //   d(alpha)/dt + um.grad(alpha)
-  //     = S_alpha + div(D_alpha grad(alpha))
-  // for transportCoeff=1. Construct mixture divergence from this RHS rather
-  // than differentiating alpha in time. The numerical diffusion configured in
-  // [SCALAR ALPHA] is therefore included in mixture-density continuity.
+  // Native scalar advection now uses u_g. Mixture-density continuity needs
+  // D_m(alpha)/Dt, so add (u_m-u_g).grad(alpha) to the alpha-equation RHS.
+  // The configured alpha diffusion and regularization remain included.
   o_alphaDiffusionFlux.copyFrom(o_gradAlpha, 3 * offset);
   auto diffusion = nrs->scalar->o_diffusionCoeff("alpha");
   platform->linAlg->axmyVector(
@@ -750,13 +743,23 @@ inline void buildDivergenceFromAlphaRhs()
                           o_alphaRegularizationSource);
 
   buildDivergenceFromAlphaRhsKernel(Nlocal,
+                                    offset,
                                     p.rhoLiquid,
                                     p.rhoGas,
                                     nrs->scalar->o_solution("alpha"),
+                                    nrs->fluid->o_U,
+                                    o_ug,
+                                    o_gradAlpha,
                                     o_alphaSource,
                                     o_alphaDiffusionDivergence,
                                     o_alphaRegularizationSource,
                                     o_divSource);
+}
+
+inline void postScalar(double time, int tstep)
+{
+  clipAlpha(time, tstep);
+  restoreMixtureScalarAdvection();
 }
 
 inline void updateProperties(double)

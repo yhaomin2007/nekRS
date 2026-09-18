@@ -92,19 +92,16 @@ The implemented gas equation is
 `d(q_g)/dt + div(q_g*u_g) = -alpha*grad(p)/rho_g`
 `+ div(alpha*tau_g)/rho_g + alpha*g + M_g/rho_g`.
 
-NekRS natively advances each `QG*` scalar with `A_m(q_i)=u_m.grad(q_i)`.
-The explicit correction is evaluated as
-`A_m(q_i)-D(q_i*u_g)`, where `D(q_i*u_g)` is NekRS's normalized,
-gather-scatter-assembled strong divergence of the conservative nonlinear flux.
-The alpha correction uses the same NekRS divergence directly on `q_g`. This
-avoids assuming that the
-discrete SEM derivative satisfies the continuous product rule
-`D(q_i*u_g)=u_g.grad(q_i)+q_i*div(u_g)`. The reconstructed native-advection
-term and the corresponding `u_m.grad(alpha)-div(q_g)` alpha source use
-element-local SEM derivatives matching NekRS's
-`strongAdvectionVolumeScalarHex3D` operator. Gather-scatter-averaged gradients
-remain in use for alpha diffusion, gas stress, and other constitutive terms.
-A Newtonian Stokes stress is used for `tau_g`.
+During the scalar-advection stage, the case temporarily supplies the
+reconstructed gas velocity `u_g=q_g/alpha` to NekRS's native scalar advection
+operator. Thus ALPHA and all three `QG*` fields use the same native dealiased
+`u_g.grad(s)` discretization. The explicit sources add the compressibility
+corrections `-alpha*div(u_g)` and `-q_i*div(u_g)`, respectively, to recover the
+conservative equations through the product rule. After the scalar solves, the
+scalar velocity handles are restored to the mixture velocity; the fluid
+velocity and its contravariant storage are never overwritten. The divergence
+and constitutive gradients use NekRS's normalized gather-scatter assembly. A
+Newtonian Stokes stress is used for `tau_g`.
 
 The prescribed mixture divergence uses `nrs->userDivergence` directly; the
 thermodynamic `LOWMACH` option remains disabled because it would require a
@@ -178,9 +175,11 @@ checkpoint output.
 
 ## One-pass ordering
 
-There are no corrector iterations inside a time step. nekRS first constructs all
-explicit sources, then solves all four scalars, refreshes mixture properties and
-the prescribed divergence, and finally solves mixture velocity/pressure. Thus
+There are no corrector iterations inside a time step. nekRS first reconstructs
+`u_g`, builds its native scalar-advection metric field, and constructs all
+explicit sources. It then solves all four scalars, restores the usual mixture
+velocity handles, refreshes mixture properties and the prescribed divergence,
+and finally solves mixture velocity/pressure. Thus
 The gas-flux equation uses the pressure gradient available at source assembly (the previous
 or extrapolated pressure), not the pressure produced later in the same step.
 Using same-step pressure would require a second scalar pass or core orchestration
