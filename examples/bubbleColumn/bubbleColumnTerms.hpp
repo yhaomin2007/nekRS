@@ -350,13 +350,48 @@ inline void reconstructGasVelocity()
                                o_ug);
 }
 
+inline void computeGasScalarUrst()
+{
+  auto mesh = nrs->meshV;
+  const dlong velocityOffset = nrs->scalar->vFieldOffset;
+
+  // scalar_t::computeUrst() is not used here because the v26 implementation
+  // omits the mesh-velocity offset expected by the shared nrs-Urst* kernels.
+  // Launch the same native transformation with the complete kernel signature.
+  // Advection subcycling is rejected in allocate(), so only one state is
+  // required and the relative/moving-mesh contribution is disabled.
+  if (platform->options.compareArgs("ADVECTION TYPE", "CUBATURE")) {
+    launchKernel("nrs-UrstCubatureHex3D",
+                 mesh->Nelements,
+                 0,
+                 mesh->o_cubvgeo,
+                 mesh->o_cubInterpT,
+                 velocityOffset,
+                 0,
+                 nrs->scalar->vCubatureOffset,
+                 o_ug,
+                 o_NULL,
+                 o_scalarGasRelUrst);
+  } else {
+    launchKernel("nrs-UrstHex3D",
+                 mesh->Nelements,
+                 0,
+                 mesh->o_vgeo,
+                 velocityOffset,
+                 0,
+                 o_ug,
+                 o_NULL,
+                 o_scalarGasRelUrst);
+  }
+}
+
 inline void activateGasScalarAdvection()
 {
   // All four scalars share one convection field. Rebind only the scalar
   // handles; the fluid velocity and its contravariant storage remain intact.
+  computeGasScalarUrst();
   nrs->scalar->o_U = o_ug;
   nrs->scalar->o_relUrst = o_scalarGasRelUrst;
-  nrs->scalar->computeUrst();
   gasScalarAdvectionActive = true;
 }
 
