@@ -157,7 +157,7 @@
     @ restrict const dfloat *alpha,
     @ restrict const dfloat *um,
     @ restrict const dfloat *ug,
-    @ restrict const dfloat *gradAlpha,
+    @ restrict const dfloat *gradAlphaConvection,
     @ restrict const dfloat *alphaSource,
     @ restrict const dfloat *alphaDiffusionDivergence,
     @ restrict const dfloat *alphaRegularizationSource,
@@ -168,9 +168,12 @@
     const dfloat a = (aRaw < 0.0) ? 0.0 : ((aRaw > 1.0) ? 1.0 : aRaw);
     const dfloat rhoM = (1.0 - a) * rhoLiquid + a * rhoGas;
     const dfloat relativeAdvection =
-        (um[n + 0 * offset] - ug[n + 0 * offset]) * gradAlpha[n + 0 * offset]
-        + (um[n + 1 * offset] - ug[n + 1 * offset]) * gradAlpha[n + 1 * offset]
-        + (um[n + 2 * offset] - ug[n + 2 * offset]) * gradAlpha[n + 2 * offset];
+        (um[n + 0 * offset] - ug[n + 0 * offset])
+            * gradAlphaConvection[n + 0 * offset]
+        + (um[n + 1 * offset] - ug[n + 1 * offset])
+              * gradAlphaConvection[n + 1 * offset]
+        + (um[n + 2 * offset] - ug[n + 2 * offset])
+              * gradAlphaConvection[n + 2 * offset];
     const dfloat alphaMaterialRhs = alphaSource[n]
                                     + alphaDiffusionDivergence[n]
                                     + alphaRegularizationSource[n]

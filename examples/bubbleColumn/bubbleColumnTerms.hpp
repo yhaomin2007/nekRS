@@ -59,6 +59,7 @@ static deviceMemory<dfloat> o_ugPrevious;
 static deviceMemory<dfloat> o_gradUl;
 static deviceMemory<dfloat> o_virtualMassRelativeAcceleration;
 static deviceMemory<dfloat> o_gradAlpha;
+static deviceMemory<dfloat> o_gradAlphaConvection;
 static deviceMemory<dfloat> o_qg;
 static deviceMemory<dfloat> o_gradUg;
 static deviceMemory<dfloat> o_gradUgConvection;
@@ -233,6 +234,7 @@ inline void allocate()
   o_gradUl.resize(9 * offset);
   o_virtualMassRelativeAcceleration.resize(3 * offset);
   o_gradAlpha.resize(3 * offset);
+  o_gradAlphaConvection.resize(3 * offset);
   o_qg.resize(3 * offset);
   o_gradUg.resize(9 * offset);
   o_gradUgConvection.resize(9 * offset);
@@ -444,10 +446,11 @@ inline void evaluatePointwiseTerms()
                             nrs->fluid->o_U,
                             o_qg,
                             o_ul);
-  // Keep the normalized gather-scatter gradient for constitutive terms. Use a
-  // separate element-local gradient only for the product-rule compressibility
-  // correction paired with native scalar advection.
+  // Keep normalized gather-scatter gradients for constitutive terms. Use
+  // separate element-local gradients only for advection-related corrections
+  // paired with native scalar advection.
   opSEM::strongGrad(mesh, offset, alpha, o_gradAlpha);
+  opSEM::strongGrad(mesh, offset, alpha, o_gradAlphaConvection, false);
   opSEM::strongGradVec(mesh, offset, o_ug, o_gradUg);
   opSEM::strongGradVec(mesh, offset, o_ug, o_gradUgConvection, false);
   opSEM::strongGradVec(mesh, offset, o_ul, o_gradUl);
@@ -789,7 +792,7 @@ inline void buildDivergenceFromAlphaRhs()
                                     nrs->scalar->o_solution("alpha"),
                                     nrs->fluid->o_U,
                                     o_ug,
-                                    o_gradAlpha,
+                                    o_gradAlphaConvection,
                                     o_alphaSource,
                                     o_alphaDiffusionDivergence,
                                     o_alphaRegularizationSource,
