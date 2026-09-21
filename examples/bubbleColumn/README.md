@@ -97,11 +97,16 @@ reconstructed gas velocity `u_g=q_g/alpha` to NekRS's native scalar advection
 operator. Thus ALPHA and all three `QG*` fields use the same native dealiased
 `u_g.grad(s)` discretization. The explicit sources add the compressibility
 corrections `-alpha*div(u_g)` and `-q_i*div(u_g)`, respectively, to recover the
-conservative equations through the product rule. After the scalar solves, the
+conservative equations through the product rule. The divergence used by these
+transport corrections comes from an element-local (`avg=false`) gas-velocity
+gradient. The separate normalized gather-scatter (`avg=true`) gradient remains
+in use for gas stress and other constitutive terms. After the scalar solves, the
 scalar velocity handles are restored to the mixture velocity; the fluid
 velocity and its contravariant storage are never overwritten. The divergence
-and constitutive gradients use NekRS's normalized gather-scatter assembly. A
-Newtonian Stokes stress is used for `tau_g`.
+correction is also carried into the mixture-density reconstruction through the
+alpha-equation source. All other gradients used there, and the constitutive
+gradients, use NekRS's normalized gather-scatter assembly. A Newtonian Stokes
+stress is used for `tau_g`.
 
 The prescribed mixture divergence uses `nrs->userDivergence` directly; the
 thermodynamic `LOWMACH` option remains disabled because it would require a

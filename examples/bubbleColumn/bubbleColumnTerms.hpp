@@ -61,6 +61,7 @@ static deviceMemory<dfloat> o_virtualMassRelativeAcceleration;
 static deviceMemory<dfloat> o_gradAlpha;
 static deviceMemory<dfloat> o_qg;
 static deviceMemory<dfloat> o_gradUg;
+static deviceMemory<dfloat> o_gradUgConvection;
 static deviceMemory<dfloat> o_gradP;
 static deviceMemory<dfloat> o_scalarGasRelUrst;
 static occa::memory o_scalarMixtureU;
@@ -234,6 +235,7 @@ inline void allocate()
   o_gradAlpha.resize(3 * offset);
   o_qg.resize(3 * offset);
   o_gradUg.resize(9 * offset);
+  o_gradUgConvection.resize(9 * offset);
   o_gradP.resize(3 * offset);
   o_scalarGasRelUrst.resize(nrs->meshV->dim * nrs->scalar->vCubatureOffset);
   o_scalarMixtureU = nrs->scalar->o_U;
@@ -442,10 +444,12 @@ inline void evaluatePointwiseTerms()
                             nrs->fluid->o_U,
                             o_qg,
                             o_ul);
-  // Use normalized gather-scatter gradients for all constitutive terms and
-  // for the product-rule compressibility correction to native gas advection.
+  // Keep the normalized gather-scatter gradient for constitutive terms. Use a
+  // separate element-local gradient only for the product-rule compressibility
+  // correction paired with native scalar advection.
   opSEM::strongGrad(mesh, offset, alpha, o_gradAlpha);
   opSEM::strongGradVec(mesh, offset, o_ug, o_gradUg);
+  opSEM::strongGradVec(mesh, offset, o_ug, o_gradUgConvection, false);
   opSEM::strongGradVec(mesh, offset, o_ul, o_gradUl);
   opSEM::strongGrad(mesh, offset, nrs->fluid->o_P, o_gradP);
 
@@ -470,6 +474,7 @@ inline void evaluatePointwiseTerms()
                            o_ug,
                            o_ul,
                            o_gradAlpha,
+                           o_gradUgConvection,
                            o_gradUg,
                            o_virtualMassRelativeAcceleration,
                            o_gradP,

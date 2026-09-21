@@ -216,6 +216,7 @@
                                 @ restrict const dfloat *ug,
                                 @ restrict const dfloat *ul,
                                 @ restrict const dfloat *gradAlpha,
+                                @ restrict const dfloat *gradUgConvection,
                                 @ restrict const dfloat *gradUg,
                                 @ restrict const dfloat *virtualMassRelativeAcceleration,
                                 @ restrict const dfloat *gradP,
@@ -244,6 +245,10 @@
     const dfloat ury = ug[n + 1 * offset] - ul[n + 1 * offset];
     const dfloat urz = ug[n + 2 * offset] - ul[n + 2 * offset];
 
+    const dfloat divUgConvection =
+        gradUgConvection[n + (0 * 3 + 0) * offset]
+        + gradUgConvection[n + (1 * 3 + 1) * offset]
+        + gradUgConvection[n + (2 * 3 + 2) * offset];
     const dfloat divUg = gradUg[n + (0 * 3 + 0) * offset]
                          + gradUg[n + (1 * 3 + 1) * offset]
                          + gradUg[n + (2 * 3 + 2) * offset];
@@ -268,10 +273,10 @@
     // Add the product-rule compressibility term to recover conservative form:
     // d(alpha)/dt + div(alpha*u_g) = 0 and
     // d(q_i)/dt + div(q_i*u_g) = physical sources.
-    alphaSource[n] = -aRaw * divUg;
-    const dfloat qgAdvectionX = -qg[n + 0 * offset] * divUg;
-    const dfloat qgAdvectionY = -qg[n + 1 * offset] * divUg;
-    const dfloat qgAdvectionZ = -qg[n + 2 * offset] * divUg;
+    alphaSource[n] = -aRaw * divUgConvection;
+    const dfloat qgAdvectionX = -qg[n + 0 * offset] * divUgConvection;
+    const dfloat qgAdvectionY = -qg[n + 1 * offset] * divUgConvection;
+    const dfloat qgAdvectionZ = -qg[n + 2 * offset] * divUgConvection;
 
     // alpha*tau_g with a Newtonian Stokes stress. Its divergence is added
     // outside this pointwise kernel after applying the SEM divergence.
