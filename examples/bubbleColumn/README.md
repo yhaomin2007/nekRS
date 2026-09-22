@@ -92,21 +92,17 @@ The implemented gas equation is
 `d(q_g)/dt + div(q_g*u_g) = -alpha*grad(p)/rho_g`
 `+ div(alpha*tau_g)/rho_g + alpha*g + M_g/rho_g`.
 
-During the scalar-advection stage, the case temporarily supplies the
-reconstructed gas velocity `u_g=q_g/alpha` to NekRS's native scalar advection
-operator. Thus ALPHA and all three `QG*` fields use the same native dealiased
-`u_g.grad(s)` discretization. The explicit sources add the compressibility
-corrections `-alpha*div(u_g)` and `-q_i*div(u_g)`, respectively, to recover the
-conservative equations through the product rule. The divergence used by these
-transport corrections comes from an element-local (`avg=false`) gas-velocity
-gradient. The separate normalized gather-scatter (`avg=true`) gradient remains
-in use for gas stress and other constitutive terms. After the scalar solves, the
-scalar velocity handles are restored to the mixture velocity; the fluid
-velocity and its contravariant storage are never overwritten. The divergence
-correction is also carried into the mixture-density reconstruction through the
-alpha-equation source. All other gradients used there, and the constitutive
-gradients, use NekRS's normalized gather-scatter assembly. A Newtonian Stokes
-stress is used for `tau_g`.
+NekRS's native dealiased scalar-advection operator continues to use the mixture
+velocity and supplies `A_m(s)=u_m.grad(s)`. The explicit alpha source is
+`A_m,user(alpha)-D(q_g)`, and the explicit source for each gas-flux component is
+`A_m,user(q_i)-D(q_i*u_g)`. The user-side mixture-advection terms cancel the
+native contribution, leaving the conservative gas continuity and gas-flux
+equations. All user-side SEM gradients and divergences use NekRS's normalized
+gather-scatter assembly (`avg=true`), including `D(q_g)`, `D(q_i*u_g)`, and the
+constitutive gradients. The native scalar advection remains cubature-dealiased;
+the reconstructed user terms are GLL-grid operators, so their cancellation is
+mathematically exact in the continuum but not necessarily identical at the
+discrete level. A Newtonian Stokes stress is used for `tau_g`.
 
 The prescribed mixture divergence uses `nrs->userDivergence` directly; the
 thermodynamic `LOWMACH` option remains disabled because it would require a
@@ -147,9 +143,13 @@ written to `bubbleColumn_conservation.csv`. The diagnostics track gas-volume
 inventory and full advective/diffusive boundary fluxes, total mass and mass
 boundary fluxes, separate inlet/outlet contributions, alpha-volume changes
 caused by clipping, QG changes caused by the low-alpha mask, and raw and
-clip-corrected cumulative conservation errors. Integral histories are updated
-every completed step so changing the CSV output interval does not change the
-cumulative balances. Flux columns use the outward-normal sign convention.
+clip-corrected cumulative conservation errors. They also report two targeted
+discretization checks: the difference between the volume integral of the
+assembled `D(q_g)` and the boundary integral of `q_g.n`, and the difference
+between the native dealiased and reconstructed user-side volume integrals of
+`u_m.grad(alpha)`. Integral histories are updated every completed step so
+changing the CSV output interval does not change the cumulative balances. Flux
+columns use the outward-normal sign convention.
 
 The four scalar sections also expose nekRS's native HPFRT regularization:
 
@@ -181,10 +181,10 @@ checkpoint output.
 ## One-pass ordering
 
 There are no corrector iterations inside a time step. nekRS first reconstructs
-`u_g`, builds its native scalar-advection metric field, and constructs all
-explicit sources. It then solves all four scalars, restores the usual mixture
-velocity handles, refreshes mixture properties and the prescribed divergence,
-and finally solves mixture velocity/pressure. Thus
+`u_g` and constructs all explicit sources, including the conservative
+corrections to its native mixture-velocity scalar advection. It then solves all
+four scalars, refreshes mixture properties and the prescribed divergence, and
+finally solves mixture velocity/pressure. Thus
 The gas-flux equation uses the pressure gradient available at source assembly (the previous
 or extrapolated pressure), not the pressure produced later in the same step.
 Using same-step pressure would require a second scalar pass or core orchestration
