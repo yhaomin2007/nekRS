@@ -1,0 +1,41 @@
+userSections = CASEDATA
+
+[GENERAL]
+polynomialOrder = 7
+stopAt = numSteps
+numSteps = 200
+dt = 6.0e-3
+timeStepper = tombo2
+
+# Scalar subcycling is deliberately disabled. The test compares the normal
+# one-pass NekRS scalar-advection operator with a user source from the same
+# extrapolated velocity state.
+advectionSubCyclingSteps = 0
+
+checkpointInterval = 100
+regularization = hpfrt + nModes=1 + scalingCoeff=10
+constFlowRate = meanVelocity=1.0 + direction=Z
+scalars = PASSIVE
+
+[MESH]
+file = ../turbPipePeriodic/turbPipe.re2
+
+[FLUID PRESSURE]
+residualTol = 1e-4
+
+[FLUID VELOCITY]
+boundaryTypeMap = zeroDirichlet
+viscosity = 1/19000
+rho = 1.0
+residualTol = 1e-6
+
+[SCALAR PASSIVE]
+boundaryTypeMap = zeroNeumann
+transportCoeff = 1.0
+diffusionCoeff = 0.0
+residualTol = 1e-10
+regularization = none
+
+[CASEDATA]
+zLength = 6.0
+diagnosticInterval = 10

@@ -1,0 +1,222 @@
+#include <algorithm>
+#include <cmath>
+#include <fstream>
+#include <iomanip>
+
+static dfloat zLength;
+static int diagnosticInterval;
+
+static deviceMemory<dfloat> o_gradPassive;
+static deviceMemory<dfloat> o_userAdvection;
+static deviceMemory<dfloat> o_nativeAdvection;
+static deviceMemory<dfloat> o_advectionDefect;
+static deviceMemory<dfloat> o_passiveInitial;
+static deviceMemory<dfloat> o_passiveChange;
+
+static std::ofstream diagnosticFile;
+static int advectionDiagnosticStep = -1;
+
+void buildNativeScalarAdvection()
+{
+  auto mesh = nrs->meshV;
+  auto scalar = nrs->scalar;
+  const int passiveIndex = scalar->nameToIndex.at("passive");
+
+  // This is the same kernel and argument ordering used immediately afterward
+  // by scalar_t::makeAdvection(). It is diagnostic only; the cancellation
+  // source itself is independently reconstructed with strongGrad(avg=true).
+  if (platform->options.compareArgs("ADVECTION TYPE", "CUBATURE")) {
+    launchKernel("core-strongAdvectionCubatureVolumeScalarHex3D",
+                 mesh->Nelements,
+                 1,
+                 0,
+                 0,
+                 mesh->o_vgeo,
+                 mesh->o_cubDiffInterpT,
+                 mesh->o_cubInterpT,
+                 mesh->o_cubProjectT,
+                 scalar->o_compute + passiveIndex,
+                 scalar->o_fieldOffsetScan + passiveIndex,
+                 scalar->vFieldOffset,
+                 scalar->vCubatureOffset,
+                 scalar->o_S,
+                 scalar->o_relUrst,
+                 scalar->o_rho,
+                 o_nativeAdvection);
+  } else {
+    launchKernel("core-strongAdvectionVolumeScalarHex3D",
+                 mesh->Nelements,
+                 1,
+                 0,
+                 mesh->o_vgeo,
+                 mesh->o_D,
+                 scalar->o_compute + passiveIndex,
+                 scalar->o_fieldOffsetScan + passiveIndex,
+                 scalar->vFieldOffset,
+                 scalar->o_S,
+                 scalar->o_relUrst,
+                 scalar->o_rho,
+                 o_nativeAdvection);
+  }
+}
+
+void userSource(double)
+{
+  auto mesh = nrs->meshV;
+  const dlong Nlocal = mesh->Nlocal;
+  const dlong offset = nrs->fieldOffset;
+  auto passive = nrs->scalar->o_solution("passive");
+
+  // NekRS advances
+  //   ds/dt + A_native(s) = S_user.
+  // Set S_user = u.grad(s), reconstructed exactly as in the bubble-column
+  // cancellation path with the normalized gather-scatter gradient (avg=true).
+  opSEM::strongGrad(mesh, offset, passive, o_gradPassive, true);
+  platform->linAlg->dotProduct(Nlocal,
+                               offset,
+                               nrs->scalar->o_U,
+                               o_gradPassive,
+                               o_userAdvection);
+  nrs->scalar->o_explicitTerms("passive").copyFrom(
+      o_userAdvection, Nlocal);
+
+  // Retain a pointwise comparison against the exact native spatial operator
+  // only at the requested diagnostic cadence. Both terms are later
+  // extrapolated by sumMakef with the same EXT weights.
+  if (nrs->tstep > 0
+      && nrs->tstep % diagnosticInterval == 0) {
+    buildNativeScalarAdvection();
+    o_advectionDefect.copyFrom(o_nativeAdvection, Nlocal);
+    platform->linAlg->axpby(
+        Nlocal, -1.0, o_userAdvection, 1.0, o_advectionDefect);
+    advectionDiagnosticStep = nrs->tstep;
+  }
+}
+
+void UDF_Setup0(MPI_Comm, setupAide &)
+{
+  platform->par->extract("casedata", "zlength", zLength);
+  platform->par->extract(
+      "casedata", "diagnosticinterval", diagnosticInterval);
+  nekrsCheck(diagnosticInterval < 1,
+             platform->comm.mpiComm(),
+             EXIT_FAILURE,
+             "diagnosticInterval must be positive, but is %d\n",
+             diagnosticInterval);
+}
+
+void UDF_Setup()
+{
+  auto mesh = nrs->meshV;
+  const dlong Nlocal = mesh->Nlocal;
+  const dlong offset = nrs->fieldOffset;
+
+  o_gradPassive.resize(3 * offset);
+  o_userAdvection.resize(offset);
+  o_nativeAdvection.resize(nrs->scalar->fieldOffsetSum);
+  o_advectionDefect.resize(offset);
+  o_passiveInitial.resize(offset);
+  o_passiveChange.resize(offset);
+
+  if (platform->options.getArgs("RESTART FILE NAME").empty()) {
+    platform->linAlg->rescale(
+        0.0, zLength, mesh->o_z, platform->comm.mpiComm());
+
+    auto [x, y, z] = mesh->xyzHost();
+    auto random = randomVector<dfloat>(Nlocal, -1.0, 1.0, true);
+    std::vector<dfloat> velocity(mesh->dim * offset, 0.0);
+    std::vector<dfloat> passive(Nlocal, 0.0);
+
+    for (dlong n = 0; n < Nlocal; ++n) {
+      const dfloat radius = 0.5;
+      const dfloat xr = x[n] / radius;
+      const dfloat yr = y[n] / radius;
+      const dfloat r = std::sqrt(xr * xr + yr * yr);
+      const dfloat theta = std::atan2(y[n], x[n]);
+      const dfloat axialPhase = 2.0 * M_PI * z[n] / zLength;
+
+      dfloat uz = 6.0 / 5.0 * (1.0 - std::pow(r, 6));
+      const dfloat phaseShift = 0.35 * 2.0 * M_PI
+                                * std::sin(4.0 * axialPhase);
+      dfloat wallPerturbation =
+          5.0 * std::sin(9.0 * theta + phaseShift);
+      wallPerturbation = std::max(-0.2, std::min(0.2, wallPerturbation));
+      if (r > 0.93) {
+        uz += wallPerturbation;
+      }
+
+      velocity[n + 0 * offset] = 0.05 * std::pow(random[n], 2);
+      velocity[n + 1 * offset] = 0.10 * std::pow(random[n], 3);
+      velocity[n + 2 * offset] = uz + 0.01 * random[n];
+
+      // Periodic in z and with zero radial derivative at the wall.
+      const dfloat radialShape = std::pow(1.0 - r * r, 2);
+      passive[n] = 0.5 + 0.25 * radialShape * std::sin(axialPhase);
+    }
+
+    nrs->fluid->o_U.copyFrom(velocity.data(), velocity.size());
+    nrs->scalar->o_solution("passive").copyFrom(
+        passive.data(), passive.size());
+  }
+
+  o_passiveInitial.copyFrom(nrs->scalar->o_solution("passive"), Nlocal);
+  nrs->userSource = &userSource;
+
+  if (platform->comm.mpiRank() == 0) {
+    diagnosticFile.open("scalar_advection_cancellation.csv", std::ios::out);
+    diagnosticFile
+        << "step,time,passive_rms_change,passive_max_abs_change,"
+        << "native_advection_l2,user_advection_l2,"
+        << "native_minus_user_l2,cancellation_relative_l2\n";
+  }
+}
+
+void UDF_ExecuteStep(double time, int tstep)
+{
+  if (tstep <= 0 || tstep % diagnosticInterval != 0) {
+    return;
+  }
+
+  auto mesh = nrs->meshV;
+  const dlong Nlocal = mesh->Nlocal;
+  const MPI_Comm comm = platform->comm.mpiComm();
+  auto passive = nrs->scalar->o_solution("passive");
+
+  o_passiveChange.copyFrom(passive, Nlocal);
+  platform->linAlg->axpby(
+      Nlocal, -1.0, o_passiveInitial, 1.0, o_passiveChange);
+  const dfloat passiveRmsChange =
+      platform->linAlg->weightedNorm2(
+          Nlocal, mesh->o_LMM, o_passiveChange, comm)
+      / std::sqrt(mesh->volume);
+  const dfloat passiveMaxChange =
+      platform->linAlg->amax(Nlocal, o_passiveChange, comm);
+
+  dfloat nativeNorm = NAN;
+  dfloat userNorm = NAN;
+  dfloat defectNorm = NAN;
+  dfloat relativeDefect = NAN;
+  if (advectionDiagnosticStep == tstep) {
+    const int passiveIndex = nrs->scalar->nameToIndex.at("passive");
+    const dlong passiveOffset =
+        nrs->scalar->fieldOffsetScan[passiveIndex];
+    auto nativePassive = o_nativeAdvection.slice(passiveOffset, Nlocal);
+    nativeNorm = platform->linAlg->weightedNorm2(
+        Nlocal, mesh->o_LMM, nativePassive, comm);
+    userNorm = platform->linAlg->weightedNorm2(
+        Nlocal, mesh->o_LMM, o_userAdvection, comm);
+    defectNorm = platform->linAlg->weightedNorm2(
+        Nlocal, mesh->o_LMM, o_advectionDefect, comm);
+    relativeDefect = defectNorm
+                     / std::max(std::max(nativeNorm, userNorm), 1.0e-30);
+  }
+
+  if (platform->comm.mpiRank() == 0) {
+    diagnosticFile << std::scientific << std::setprecision(16)
+                   << tstep << ',' << time << ','
+                   << passiveRmsChange << ',' << passiveMaxChange << ','
+                   << nativeNorm << ',' << userNorm << ','
+                   << defectNorm << ',' << relativeDefect << '\n';
+    diagnosticFile.flush();
+  }
+}
