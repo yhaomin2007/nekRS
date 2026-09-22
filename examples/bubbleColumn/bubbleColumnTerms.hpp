@@ -919,7 +919,11 @@ inline ValidationState computeValidationState()
   state.gasAdvectiveTotal = nrs->meshV->surfaceAreaNormalMultiplyVectorIntegrate(
       offset, o_allBoundaryIDs, o_qg);
 
-  o_validationGasDiffusiveFlux.copyFrom(o_gradAlpha, 3 * offset);
+  // Build the diagnostic flux from the current completed-step alpha field.
+  // Do not rely on o_gradAlpha, whose last refresh depends on the solver and
+  // monitor callback ordering.
+  opSEM::strongGrad(
+      nrs->meshV, offset, alpha, o_validationGasDiffusiveFlux);
   auto alphaDiffusion = nrs->scalar->o_diffusionCoeff("alpha");
   platform->linAlg->axmyVector(Nlocal,
                                offset,
@@ -991,6 +995,7 @@ inline void writeValidationChecks(double time, int tstep)
       validationFile.open("bubbleColumn_conservation.csv", std::ios::out);
       validationFile
           << "step,time,dt,gas_volume,dgas_volume_dt,"
+          << "total_alpha_time_derivative,"
           << "gas_advective_flux_inlet_outward,gas_advective_flux_outlet_outward,"
           << "gas_advective_flux_all_boundaries,gas_diffusive_flux_inlet_outward,"
           << "gas_diffusive_flux_outlet_outward,gas_diffusive_flux_all_boundaries,"
@@ -1052,6 +1057,7 @@ inline void writeValidationChecks(double time, int tstep)
     validationFile << std::scientific << std::setprecision(16)
                    << tstep << ',' << time << ',' << nrs->dt[0] << ','
                    << state.gasVolume << ',' << dGasVolumeDt << ','
+                   << dGasVolumeDt << ','
                    << state.gasAdvectiveInlet << ','
                    << state.gasAdvectiveOutlet << ','
                    << state.gasAdvectiveTotal << ','
