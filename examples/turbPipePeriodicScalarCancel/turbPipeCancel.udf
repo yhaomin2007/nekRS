@@ -16,10 +16,14 @@ static deviceMemory<dfloat> o_passiveChange;
 static std::ofstream diagnosticFile;
 static int advectionDiagnosticStep = -1;
 
+#ifdef __okl__
+
+#endif
+
 void buildNativeScalarAdvection()
 {
   auto mesh = nrs->meshV;
-  auto scalar = nrs->scalar;
+  auto *scalar = nrs->scalar.get();
   const int passiveIndex = scalar->nameToIndex.at("passive");
 
   // This is the same kernel and argument ordering used immediately afterward
