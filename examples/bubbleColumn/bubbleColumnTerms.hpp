@@ -72,6 +72,8 @@ static deviceMemory<dfloat> o_gradP;
 static deviceMemory<dfloat> o_rhoM;
 static deviceMemory<dfloat> o_muM;
 static deviceMemory<dfloat> o_divSource;
+static deviceMemory<dfloat> o_divAlphaRhs;
+static deviceMemory<dfloat> o_divAlphaBdf;
 static deviceMemory<dfloat> o_divPrevious;
 static deviceMemory<dfloat> o_divOlder;
 static deviceMemory<dfloat> o_divExtrapolated;
@@ -262,6 +264,8 @@ inline void allocate()
   o_rhoM.resize(offset);
   o_muM.resize(offset);
   o_divSource.resize(offset);
+  o_divAlphaRhs.resize(offset);
+  o_divAlphaBdf.resize(offset);
   o_divPrevious.resize(offset);
   o_divOlder.resize(offset);
   o_divExtrapolated.resize(offset);
@@ -337,7 +341,7 @@ inline void allocate()
   }
 }
 
-inline void filterDivergence()
+inline void filterDivergence(deviceMemory<dfloat>& o_divergence)
 {
   if (p.divergenceFilterEnabled == 0.0) {
     return;
@@ -352,7 +356,7 @@ inline void filterDivergence()
   //   q_filtered = q_raw - strength * (q_raw - F(q_raw)).
   // The two unused components remain zero.
   platform->linAlg->fill(3 * offset, 0.0, o_divFilterWork);
-  o_divFilterWork.copyFrom(o_divSource, Nlocal, 0, 0);
+  o_divFilterWork.copyFrom(o_divergence, Nlocal, 0, 0);
   launchKernel("core-vectorFilterRTHex3D",
                nrs->meshV->Nelements,
                o_divFilterMatrix,
@@ -360,10 +364,10 @@ inline void filterDivergence()
                offset,
                o_divFilterWork,
                o_divFilterWork);
-  o_divSource.copyFrom(o_divFilterWork, Nlocal, 0, 0);
+  o_divergence.copyFrom(o_divFilterWork, Nlocal, 0, 0);
 }
 
-inline void assembleDivergence()
+inline void assembleDivergence(deviceMemory<dfloat>& o_divergence)
 {
   auto mesh = nrs->meshV;
   const dlong Nlocal = mesh->Nlocal;
@@ -373,10 +377,10 @@ inline void assembleDivergence()
   // regularization. Convert it to one mass-weighted CG value at every shared
   // node before supplying it to the pressure projection:
   //   q_CG = M_L^{-1} Q^T M_e q_e.
-  platform->linAlg->axmy(Nlocal, 1.0, mesh->o_LMM, o_divSource);
+  platform->linAlg->axmy(Nlocal, 1.0, mesh->o_LMM, o_divergence);
   oogs::startFinish(
-      o_divSource, 1, 0, ogsDfloat, ogsAdd, mesh->oogs);
-  platform->linAlg->axmy(Nlocal, 1.0, mesh->o_invLMM, o_divSource);
+      o_divergence, 1, 0, ogsDfloat, ogsAdd, mesh->oogs);
+  platform->linAlg->axmy(Nlocal, 1.0, mesh->o_invLMM, o_divergence);
 }
 
 inline void reconstructGasVelocity()
@@ -848,7 +852,7 @@ inline void addExplicitSources(double)
   }
 }
 
-inline void buildDivergenceFromAlphaRhs()
+inline void buildDivergenceFromAlphaRhs(deviceMemory<dfloat>& o_divergence)
 {
   const dlong Nlocal = nrs->meshV->Nlocal;
   const dlong offset = nrs->fieldOffset;
@@ -883,10 +887,10 @@ inline void buildDivergenceFromAlphaRhs()
                                     o_alphaSource,
                                     o_alphaDiffusionDivergence,
                                     o_alphaRegularizationSource,
-                                    o_divSource);
+                                    o_divergence);
 }
 
-inline void buildDivergenceFromAlphaBdf()
+inline void buildDivergenceFromAlphaBdf(deviceMemory<dfloat>& o_divergence)
 {
   const dlong Nlocal = nrs->meshV->Nlocal;
 
@@ -894,7 +898,7 @@ inline void buildDivergenceFromAlphaBdf()
   // coefficients and solution history exist. The first pressure step will
   // replace this zero field with the fully discrete construction below.
   if (nrs->tstep <= 0) {
-    platform->linAlg->fill(Nlocal, 0.0, o_divSource);
+    platform->linAlg->fill(Nlocal, 0.0, o_divergence);
     return;
   }
 
@@ -918,7 +922,7 @@ inline void buildDivergenceFromAlphaBdf()
                                     nrs->scalar->o_S,
                                     nrs->o_coeffBDF,
                                     o_alphaAdvection,
-                                    o_divSource);
+                                    o_divergence);
 }
 
 inline void updateProperties(double)
@@ -927,13 +931,18 @@ inline void updateProperties(double)
   // mixture divergence implied by the alpha-equation RHS.
   postProcessGasFlux();
   evaluatePointwiseTerms();
-  if (p.mixtureDivergenceMethod == 0) {
-    buildDivergenceFromAlphaRhs();
-  } else {
-    buildDivergenceFromAlphaBdf();
-  }
-  filterDivergence();
-  assembleDivergence();
+  // Evaluate both alternatives from the same solution state for checkpoint
+  // diagnostics. Apply identical filtering and CG assembly to make their
+  // difference reflect only the divergence formulation.
+  buildDivergenceFromAlphaRhs(o_divAlphaRhs);
+  buildDivergenceFromAlphaBdf(o_divAlphaBdf);
+  filterDivergence(o_divAlphaRhs);
+  filterDivergence(o_divAlphaBdf);
+  assembleDivergence(o_divAlphaRhs);
+  assembleDivergence(o_divAlphaBdf);
+  const auto &o_selectedDivergence =
+      (p.mixtureDivergenceMethod == 0) ? o_divAlphaRhs : o_divAlphaBdf;
+  o_divSource.copyFrom(o_selectedDivergence, nrs->meshV->Nlocal);
   nrs->fluid->o_prop.slice(0 * nrs->fieldOffset, nrs->fieldOffset).copyFrom(o_muM);
   nrs->fluid->o_prop.slice(1 * nrs->fieldOffset, nrs->fieldOffset).copyFrom(o_rhoM);
 }

@@ -140,6 +140,23 @@ void UDF_ExecuteStep(double time, int tstep)
         bubbleColumn::o_ul.slice(2 * offset, nrs->meshV->Nlocal)};
     nrs->writeToFile(
         "ul", time, nrs->meshV, {{"velocity", liquidVelocity}});
+    // Export both mixture-divergence constructions from the same solution
+    // state. scalar00 is method 0 (reconstructed alpha RHS), scalar01 is
+    // method 1 (BDF alpha derivative plus native NekRS advection), and
+    // scalar02 is the actual pressure-projection target after any temporal
+    // extrapolation and startup ramp.
+    std::vector<deviceMemory<dfloat>> divAlphaRhs = {
+        bubbleColumn::o_divAlphaRhs.slice(0, nrs->meshV->Nlocal)};
+    std::vector<deviceMemory<dfloat>> divAlphaBdf = {
+        bubbleColumn::o_divAlphaBdf.slice(0, nrs->meshV->Nlocal)};
+    std::vector<deviceMemory<dfloat>> divPressureTarget = {
+        nrs->fluid->o_div.slice(0, nrs->meshV->Nlocal)};
+    nrs->writeToFile("div",
+                     time,
+                     nrs->meshV,
+                     {{"scalar00", divAlphaRhs},
+                      {"scalar01", divAlphaBdf},
+                      {"scalar02", divPressureTarget}});
     nrs->copyToNek(time, tstep);
     nek::userchk();
   }
