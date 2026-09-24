@@ -189,6 +189,40 @@
   }
 }
 
+@kernel void buildDivergenceFromAlphaBdf(
+    const dlong N,
+    const dlong alphaOffset,
+    const dlong historyOffset,
+    const int bdfOrder,
+    const dfloat inverseDt,
+    const dfloat g0,
+    const dfloat rhoLiquid,
+    const dfloat rhoGas,
+    @ restrict const dfloat *alphaHistory,
+    @ restrict const dfloat *bdfCoefficients,
+    @ restrict const dfloat *nativeMaterialAdvection,
+    @ restrict dfloat *divSource)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    const dfloat aRaw = alphaHistory[n + alphaOffset];
+    const dfloat a = (aRaw < 0.0) ? 0.0 : ((aRaw > 1.0) ? 1.0 : aRaw);
+    const dfloat rhoM = (1.0 - a) * rhoLiquid + a * rhoGas;
+
+    dfloat alphaTimeDerivative = g0 * aRaw;
+    for (int s = 0; s < bdfOrder; ++s) {
+      alphaTimeDerivative -=
+          bdfCoefficients[s]
+          * alphaHistory[n + alphaOffset + (s + 1) * historyOffset];
+    }
+    alphaTimeDerivative *= inverseDt;
+
+    const dfloat alphaMaterialDerivative =
+        alphaTimeDerivative + nativeMaterialAdvection[n];
+    divSource[n] =
+        -(rhoGas - rhoLiquid) / rhoM * alphaMaterialDerivative;
+  }
+}
+
 @kernel void buildOutletRampFactor(const dlong N,
                                    const dfloat zRampBottom,
                                    const dfloat zRampTop,

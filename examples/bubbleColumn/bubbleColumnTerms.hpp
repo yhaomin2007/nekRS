@@ -42,6 +42,7 @@ struct Parameters {
   dfloat bubbleDiameter;
   dfloat virtualMassEnabled;
   dfloat virtualMassCoefficient;
+  int mixtureDivergenceMethod;
   dfloat divergenceFilterEnabled;
   int divergenceFilterModes;
   dfloat divergenceFilterStrength;
@@ -84,6 +85,7 @@ static deviceMemory<dfloat> o_scalarDiffusionBase;
 static deviceMemory<dfloat> o_outletRampFactor;
 static deviceMemory<dfloat> o_alphaExplicitBase;
 static deviceMemory<dfloat> o_alphaRegularizationSource;
+static deviceMemory<dfloat> o_alphaNativeMaterialAdvection;
 static deviceMemory<dfloat> o_driftStress;
 static deviceMemory<dfloat> o_divDriftStress;
 static deviceMemory<dfloat> o_gasStress;
@@ -136,6 +138,7 @@ static occa::kernel initializePlumeKernel;
 static occa::kernel buildLiquidVelocityKernel;
 static occa::kernel updateVirtualMassHistoryKernel;
 static occa::kernel buildDivergenceFromAlphaRhsKernel;
+static occa::kernel buildDivergenceFromAlphaBdfKernel;
 static occa::kernel buildEquationTermsKernel;
 static occa::kernel buildMixtureForceKernel;
 static occa::kernel buildGasPressureAccelerationMonitorKernel;
@@ -164,6 +167,8 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
         platform->kernelRequests.load(request, "updateVirtualMassHistory");
     buildDivergenceFromAlphaRhsKernel =
         platform->kernelRequests.load(request, "buildDivergenceFromAlphaRhs");
+    buildDivergenceFromAlphaBdfKernel =
+        platform->kernelRequests.load(request, "buildDivergenceFromAlphaBdf");
     buildEquationTermsKernel = platform->kernelRequests.load(request, "buildEquationTerms");
     buildMixtureForceKernel = platform->kernelRequests.load(request, "buildMixtureForce");
     buildGasPressureAccelerationMonitorKernel =
@@ -185,6 +190,11 @@ inline void allocate()
              EXIT_FAILURE,
              "divergenceFilterStrength must be in [0,1], but is %g\n",
              p.divergenceFilterStrength);
+  nekrsCheck(p.mixtureDivergenceMethod < 0 || p.mixtureDivergenceMethod > 1,
+             platform->comm.mpiComm(),
+             EXIT_FAILURE,
+             "mixtureDivergenceMethod must be 0 or 1, but is %d\n",
+             p.mixtureDivergenceMethod);
   nekrsCheck(p.gasMomentumCutoff < 0.0
                  || p.gasMomentumFullyActive <= p.gasMomentumCutoff,
              platform->comm.mpiComm(),
@@ -266,6 +276,7 @@ inline void allocate()
   o_outletRampFactor.resize(offset);
   o_alphaExplicitBase.resize(offset);
   o_alphaRegularizationSource.resize(offset);
+  o_alphaNativeMaterialAdvection.resize(nrs->scalar->fieldOffsetSum);
   o_driftStress.resize(9 * offset);
   o_divDriftStress.resize(3 * offset);
   o_gasStress.resize(9 * offset);
@@ -497,27 +508,14 @@ inline void evaluatePointwiseTerms()
   }
 }
 
-inline void captureAlphaAdvectionDiagnostics()
+inline void evaluateNativeAlphaAdvection(deviceMemory<dfloat> &o_advection,
+                                         bool averageSharedNodes)
 {
-  if (nrs->scalar->Nsubsteps != 0
-      || nrs->tstep <= 0
-      || nrs->tstep % p.validationOutputInterval != 0) {
-    return;
-  }
-
   auto mesh = nrs->meshV;
-  const dlong Nlocal = mesh->Nlocal;
   const int alphaIndex = nrs->scalar->nameToIndex.at("alpha");
 
-  // alphaSource = A_m,user(alpha) - D(q_g). Recover and retain the user-side
-  // mixture-advection term before later callbacks refresh the scratch fields.
-  o_alphaUserAdvectionDiagnostic.copyFrom(o_alphaSource, Nlocal);
-  platform->linAlg->axpby(
-      Nlocal, 1.0, o_divQg, 1.0, o_alphaUserAdvectionDiagnostic);
-
-  // Re-evaluate exactly the same native scalar-advection kernel that NekRS
-  // calls immediately after userSource(). This isolates the spatial
-  // cancellation defect A_m,native(alpha) - A_m,user(alpha).
+  // Reuse the exact NekRS scalar-advection operator and the contravariant
+  // predicted velocity already prepared for the current timestep.
   if (platform->options.compareArgs("ADVECTION TYPE", "CUBATURE")) {
     launchKernel("core-strongAdvectionCubatureVolumeScalarHex3D",
                  mesh->Nelements,
@@ -535,7 +533,7 @@ inline void captureAlphaAdvectionDiagnostics()
                  nrs->scalar->o_S,
                  nrs->scalar->o_relUrst,
                  nrs->scalar->o_rho,
-                 o_alphaNativeAdvectionDiagnostic);
+                 o_advection);
   } else {
     launchKernel("core-strongAdvectionVolumeScalarHex3D",
                  mesh->Nelements,
@@ -549,8 +547,45 @@ inline void captureAlphaAdvectionDiagnostics()
                  nrs->scalar->o_S,
                  nrs->scalar->o_relUrst,
                  nrs->scalar->o_rho,
-                 o_alphaNativeAdvectionDiagnostic);
+                 o_advection);
   }
+
+  if (averageSharedNodes) {
+    const dlong alphaOffset = nrs->scalar->fieldOffsetScan[alphaIndex];
+    auto o_alphaAdvection =
+        o_advection.slice(alphaOffset, nrs->fieldOffset);
+    oogs::startFinish(o_alphaAdvection,
+                      1,
+                      0,
+                      ogsDfloat,
+                      ogsAdd,
+                      mesh->oogs);
+    platform->linAlg->axmy(
+        mesh->Nlocal, 1.0, mesh->o_invAJw, o_alphaAdvection);
+  }
+}
+
+inline void captureAlphaAdvectionDiagnostics()
+{
+  if (nrs->scalar->Nsubsteps != 0
+      || nrs->tstep <= 0
+      || nrs->tstep % p.validationOutputInterval != 0) {
+    return;
+  }
+
+  auto mesh = nrs->meshV;
+  const dlong Nlocal = mesh->Nlocal;
+
+  // alphaSource = A_m,user(alpha) - D(q_g). Recover and retain the user-side
+  // mixture-advection term before later callbacks refresh the scratch fields.
+  o_alphaUserAdvectionDiagnostic.copyFrom(o_alphaSource, Nlocal);
+  platform->linAlg->axpby(
+      Nlocal, 1.0, o_divQg, 1.0, o_alphaUserAdvectionDiagnostic);
+
+  // Re-evaluate exactly the same native scalar-advection kernel that NekRS
+  // calls immediately after userSource(). This isolates the spatial
+  // cancellation defect A_m,native(alpha) - A_m,user(alpha).
+  evaluateNativeAlphaAdvection(o_alphaNativeAdvectionDiagnostic, false);
   alphaAdvectionDiagnosticStep = nrs->tstep;
 }
 
@@ -835,13 +870,52 @@ inline void buildDivergenceFromAlphaRhs()
                                     o_divSource);
 }
 
+inline void buildDivergenceFromAlphaBdf()
+{
+  const dlong Nlocal = nrs->meshV->Nlocal;
+
+  // evaluateProperties() is also called during setup, before valid BDF
+  // coefficients and solution history exist. The first pressure step will
+  // replace this zero field with the fully discrete construction below.
+  if (nrs->tstep <= 0) {
+    platform->linAlg->fill(Nlocal, 0.0, o_divSource);
+    return;
+  }
+
+  const int alphaIndex = nrs->scalar->nameToIndex.at("alpha");
+  const dlong alphaOffset = nrs->scalar->fieldOffsetScan[alphaIndex];
+  const int bdfOrder =
+      std::min(nrs->tstep, static_cast<int>(nrs->o_coeffBDF.size()));
+
+  evaluateNativeAlphaAdvection(o_alphaNativeMaterialAdvection, true);
+  auto o_alphaAdvection =
+      o_alphaNativeMaterialAdvection.slice(alphaOffset, nrs->fieldOffset);
+
+  buildDivergenceFromAlphaBdfKernel(Nlocal,
+                                    alphaOffset,
+                                    nrs->scalar->fieldOffsetSum,
+                                    bdfOrder,
+                                    1.0 / nrs->dt[0],
+                                    nrs->g0,
+                                    p.rhoLiquid,
+                                    p.rhoGas,
+                                    nrs->scalar->o_S,
+                                    nrs->o_coeffBDF,
+                                    o_alphaAdvection,
+                                    o_divSource);
+}
+
 inline void updateProperties(double)
 {
   // Called after all four scalars advance: refresh density, viscosity, and the
   // mixture divergence implied by the alpha-equation RHS.
   postProcessGasFlux();
   evaluatePointwiseTerms();
-  buildDivergenceFromAlphaRhs();
+  if (p.mixtureDivergenceMethod == 0) {
+    buildDivergenceFromAlphaRhs();
+  } else {
+    buildDivergenceFromAlphaBdf();
+  }
   filterDivergence();
   nrs->fluid->o_prop.slice(0 * nrs->fieldOffset, nrs->fieldOffset).copyFrom(o_muM);
   nrs->fluid->o_prop.slice(1 * nrs->fieldOffset, nrs->fieldOffset).copyFrom(o_rhoM);
