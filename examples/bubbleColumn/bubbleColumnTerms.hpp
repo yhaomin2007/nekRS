@@ -85,8 +85,6 @@ static deviceMemory<dfloat> o_alphaDiffusionDivergence;
 static deviceMemory<dfloat> o_qgDiffusionDivergence;
 static deviceMemory<dfloat> o_scalarDiffusionBase;
 static deviceMemory<dfloat> o_outletRampFactor;
-static deviceMemory<dfloat> o_alphaExplicitBase;
-static deviceMemory<dfloat> o_alphaRegularizationSource;
 static deviceMemory<dfloat> o_alphaNativeMaterialAdvection;
 static deviceMemory<dfloat> o_driftStress;
 static deviceMemory<dfloat> o_divDriftStress;
@@ -278,8 +276,6 @@ inline void allocate()
   o_qgDiffusionDivergence.resize(3 * offset);
   o_scalarDiffusionBase.resize(4 * offset);
   o_outletRampFactor.resize(offset);
-  o_alphaExplicitBase.resize(offset);
-  o_alphaRegularizationSource.resize(offset);
   o_alphaNativeMaterialAdvection.resize(nrs->scalar->fieldOffsetSum);
   o_driftStress.resize(9 * offset);
   o_divDriftStress.resize(3 * offset);
@@ -333,8 +329,6 @@ inline void allocate()
   o_qgBeforeMask.resize(3 * offset);
   o_qgMaskDelta.resize(3 * offset);
   platform->linAlg->fill(nrs->meshV->Nlocal, 1.0, o_surfaceOne);
-  platform->linAlg->fill(offset, 0.0, o_alphaExplicitBase);
-  platform->linAlg->fill(offset, 0.0, o_alphaRegularizationSource);
 
   if (p.divergenceFilterEnabled != 0.0) {
     o_divFilterMatrix = lowPassFilterSetup(nrs->meshV, p.divergenceFilterModes);
@@ -839,9 +833,6 @@ inline void addExplicitSources(double)
   // Copy only entries written by the pointwise kernels. Avoid whole-view
   // copies because scalar and fluid fields may have different padded extents.
   nrs->scalar->o_explicitTerms("alpha").copyFrom(o_alphaSource, Nlocal);
-  // Keep the user-assembled part so updateProperties() can isolate any HPFRT
-  // or GJP contribution subsequently added by scalar_t::makeExplicit().
-  o_alphaExplicitBase.copyFrom(o_alphaSource, Nlocal);
   nrs->scalar->o_explicitTerms("qgx").copyFrom(o_qgSource, Nlocal, 0, 0 * offset);
   nrs->scalar->o_explicitTerms("qgy").copyFrom(o_qgSource, Nlocal, 0, 1 * offset);
   nrs->scalar->o_explicitTerms("qgz").copyFrom(o_qgSource, Nlocal, 0, 2 * offset);
@@ -869,24 +860,12 @@ inline void buildDivergenceFromAlphaRhs(deviceMemory<dfloat>& o_divergence)
                           o_alphaDiffusionFlux,
                           o_alphaDiffusionDivergence);
 
-  // scalar_t::makeExplicit() adds HPFRT/GJP to the current explicit-term
-  // buffer after userSource(). Recover that numerical RHS contribution so the
-  // same alpha regularization is represented in mixture-density continuity.
-  o_alphaRegularizationSource.copyFrom(
-      nrs->scalar->o_explicitTerms("alpha"), Nlocal);
-  platform->linAlg->axpby(Nlocal,
-                          -1.0,
-                          o_alphaExplicitBase,
-                          1.0,
-                          o_alphaRegularizationSource);
-
   buildDivergenceFromAlphaRhsKernel(Nlocal,
                                     p.rhoLiquid,
                                     p.rhoGas,
                                     nrs->scalar->o_solution("alpha"),
                                     o_alphaSource,
                                     o_alphaDiffusionDivergence,
-                                    o_alphaRegularizationSource,
                                     o_divergence);
 }
 
@@ -932,11 +911,11 @@ inline void updateProperties(double)
   postProcessGasFlux();
   evaluatePointwiseTerms();
   // Evaluate both alternatives from the same solution state for checkpoint
-  // diagnostics. Apply identical filtering and CG assembly to make their
-  // difference reflect only the divergence formulation.
+  // diagnostics. Method 0 intentionally contains only the user alpha source
+  // and reconstructed strong diffusion divergence. Do not add recovered HPF
+  // or apply the optional modal divergence filter to that diagnostic.
   buildDivergenceFromAlphaRhs(o_divAlphaRhs);
   buildDivergenceFromAlphaBdf(o_divAlphaBdf);
-  filterDivergence(o_divAlphaRhs);
   filterDivergence(o_divAlphaBdf);
   assembleDivergence(o_divAlphaRhs);
   assembleDivergence(o_divAlphaBdf);
