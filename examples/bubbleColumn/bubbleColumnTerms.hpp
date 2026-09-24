@@ -363,6 +363,22 @@ inline void filterDivergence()
   o_divSource.copyFrom(o_divFilterWork, Nlocal, 0, 0);
 }
 
+inline void assembleDivergence()
+{
+  auto mesh = nrs->meshV;
+  const dlong Nlocal = mesh->Nlocal;
+
+  // The completed divergence target may contain element-local contributions,
+  // particularly after modal filtering or when recovering scalar
+  // regularization. Convert it to one mass-weighted CG value at every shared
+  // node before supplying it to the pressure projection:
+  //   q_CG = M_L^{-1} Q^T M_e q_e.
+  platform->linAlg->axmy(Nlocal, 1.0, mesh->o_LMM, o_divSource);
+  oogs::startFinish(
+      o_divSource, 1, 0, ogsDfloat, ogsAdd, mesh->oogs);
+  platform->linAlg->axmy(Nlocal, 1.0, mesh->o_invLMM, o_divSource);
+}
+
 inline void reconstructGasVelocity()
 {
   reconstructGasVelocityKernel(nrs->meshV->Nlocal,
@@ -917,6 +933,7 @@ inline void updateProperties(double)
     buildDivergenceFromAlphaBdf();
   }
   filterDivergence();
+  assembleDivergence();
   nrs->fluid->o_prop.slice(0 * nrs->fieldOffset, nrs->fieldOffset).copyFrom(o_muM);
   nrs->fluid->o_prop.slice(1 * nrs->fieldOffset, nrs->fieldOffset).copyFrom(o_rhoM);
 }
