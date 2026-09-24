@@ -33,6 +33,8 @@ struct Parameters {
   dfloat smoothGasVelocityMaskEnabled;
   dfloat gasVelocityClipEnabled;
   dfloat gasVelocityMaximum;
+  dfloat mixtureVelocityClipEnabled;
+  dfloat mixtureVelocityMaximum;
   dfloat gasMomentumCutoff;
   dfloat gasMomentumFullyActive;
   dfloat gasPressureEnabled;
@@ -129,6 +131,7 @@ static bool validationInitialized = false;
 static occa::kernel reconstructGasVelocityKernel;
 static occa::kernel postProcessGasFluxKernel;
 static occa::kernel clipAlphaKernel;
+static occa::kernel clipVectorMagnitudeKernel;
 static occa::kernel initializePlumeKernel;
 static occa::kernel buildLiquidVelocityKernel;
 static occa::kernel updateVirtualMassHistoryKernel;
@@ -153,6 +156,8 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
     postProcessGasFluxKernel =
         platform->kernelRequests.load(request, "postProcessGasFlux");
     clipAlphaKernel = platform->kernelRequests.load(request, "clipAlpha");
+    clipVectorMagnitudeKernel =
+        platform->kernelRequests.load(request, "clipVectorMagnitude");
     initializePlumeKernel = platform->kernelRequests.load(request, "initializePlume");
     buildLiquidVelocityKernel = platform->kernelRequests.load(request, "buildLiquidVelocity");
     updateVirtualMassHistoryKernel =
@@ -193,6 +198,13 @@ inline void allocate()
              EXIT_FAILURE,
              "gasVelocityMaximum must be positive when clipping is enabled, but is %g\n",
              p.gasVelocityMaximum);
+  nekrsCheck(p.mixtureVelocityClipEnabled != 0.0
+                 && p.mixtureVelocityMaximum <= 0.0,
+             platform->comm.mpiComm(),
+             EXIT_FAILURE,
+             "mixtureVelocityMaximum must be positive when clipping is enabled, "
+             "but is %g\n",
+             p.mixtureVelocityMaximum);
   nekrsCheck(p.alphaClippingEnabled != 0.0
                  && (p.alphaMinimum < 0.0 || p.alphaMaximum > 1.0
                      || p.alphaMaximum <= p.alphaMinimum),
@@ -619,6 +631,18 @@ inline void clipAlpha(double, int)
       Nlocal, nrs->meshV->o_LMM, alpha, comm);
   alphaClipDeltaVolume = volumeAfter - volumeBefore;
   cumulativeAlphaClipDeltaVolume += alphaClipDeltaVolume;
+}
+
+inline void clipMixtureVelocity()
+{
+  if (p.mixtureVelocityClipEnabled == 0.0) {
+    return;
+  }
+
+  clipVectorMagnitudeKernel(nrs->meshV->Nlocal,
+                            nrs->fieldOffset,
+                            p.mixtureVelocityMaximum,
+                            nrs->fluid->o_U);
 }
 
 inline void updateVirtualMassHistory()

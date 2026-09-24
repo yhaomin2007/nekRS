@@ -50,6 +50,10 @@ void UDF_Setup0(MPI_Comm, setupAide &)
                          p.smoothGasVelocityMaskEnabled);
   platform->par->extract("casedata", "gasvelocityclipenabled", p.gasVelocityClipEnabled);
   platform->par->extract("casedata", "gasvelocitymaximum", p.gasVelocityMaximum);
+  platform->par->extract(
+      "casedata", "mixturevelocityclipenabled", p.mixtureVelocityClipEnabled);
+  platform->par->extract(
+      "casedata", "mixturevelocitymaximum", p.mixtureVelocityMaximum);
   platform->par->extract("casedata", "gasmomentumcutoff", p.gasMomentumCutoff);
   platform->par->extract(
       "casedata", "gasmomentumfullyactive", p.gasMomentumFullyActive);
@@ -102,6 +106,10 @@ void UDF_Setup()
 
 void UDF_ExecuteStep(double time, int tstep)
 {
+  // Apply an emergency magnitude limiter immediately after the fluid solve so
+  // the bounded mixture velocity is used by diagnostics, output, and the next
+  // timestep/CFL evaluation.
+  bubbleColumn::clipMixtureVelocity();
   if (tstep > 0) {
     bubbleColumn::updateDivergenceHistory();
   }

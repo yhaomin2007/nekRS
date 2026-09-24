@@ -28,6 +28,25 @@
   }
 }
 
+@kernel void clipVectorMagnitude(const dlong N,
+                                 const dlong offset,
+                                 const dfloat velocityMaximum,
+                                 @ restrict dfloat *velocity)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    const dfloat ux = velocity[n + 0 * offset];
+    const dfloat uy = velocity[n + 1 * offset];
+    const dfloat uz = velocity[n + 2 * offset];
+    const dfloat speed = sqrt(ux * ux + uy * uy + uz * uz);
+    const dfloat scale = speed > velocityMaximum
+        ? velocityMaximum / speed
+        : 1.0;
+    velocity[n + 0 * offset] = scale * ux;
+    velocity[n + 1 * offset] = scale * uy;
+    velocity[n + 2 * offset] = scale * uz;
+  }
+}
+
 @kernel void postProcessGasFlux(
     const dlong N,
     const dfloat smoothMaskEnabled,
