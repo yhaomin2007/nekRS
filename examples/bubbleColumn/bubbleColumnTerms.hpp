@@ -72,8 +72,6 @@ static deviceMemory<dfloat> o_gradP;
 static deviceMemory<dfloat> o_rhoM;
 static deviceMemory<dfloat> o_muM;
 static deviceMemory<dfloat> o_divSource;
-static deviceMemory<dfloat> o_divAlphaRhs;
-static deviceMemory<dfloat> o_divAlphaBdf;
 static deviceMemory<dfloat> o_divPrevious;
 static deviceMemory<dfloat> o_divOlder;
 static deviceMemory<dfloat> o_divExtrapolated;
@@ -262,8 +260,6 @@ inline void allocate()
   o_rhoM.resize(offset);
   o_muM.resize(offset);
   o_divSource.resize(offset);
-  o_divAlphaRhs.resize(offset);
-  o_divAlphaBdf.resize(offset);
   o_divPrevious.resize(offset);
   o_divOlder.resize(offset);
   o_divExtrapolated.resize(offset);
@@ -914,14 +910,26 @@ inline void updateProperties(double)
   // diagnostics. Method 0 intentionally contains only the user alpha source
   // and reconstructed strong diffusion divergence. Do not add recovered HPF
   // or apply the optional modal divergence filter to that diagnostic.
-  buildDivergenceFromAlphaRhs(o_divAlphaRhs);
-  buildDivergenceFromAlphaBdf(o_divAlphaBdf);
-  filterDivergence(o_divAlphaBdf);
-  assembleDivergence(o_divAlphaRhs);
-  assembleDivergence(o_divAlphaBdf);
-  const auto &o_selectedDivergence =
-      (p.mixtureDivergenceMethod == 0) ? o_divAlphaRhs : o_divAlphaBdf;
-  o_divSource.copyFrom(o_selectedDivergence, nrs->meshV->Nlocal);
+  const dlong Nlocal = nrs->meshV->Nlocal;
+  const dlong offset = nrs->fieldOffset;
+
+  // Reuse the existing three-component filter workspace for diagnostics to
+  // avoid allocating two additional full fields on memory-limited GPUs.
+  // Component 1 stores method 1. It must be evaluated first because its
+  // optional modal filter uses the whole workspace as scratch storage.
+  buildDivergenceFromAlphaBdf(o_divSource);
+  filterDivergence(o_divSource);
+  assembleDivergence(o_divSource);
+  o_divFilterWork.copyFrom(o_divSource, Nlocal, 1 * offset, 0);
+
+  // Component 0 stores the unfiltered two-term method 0 result.
+  buildDivergenceFromAlphaRhs(o_divSource);
+  assembleDivergence(o_divSource);
+  o_divFilterWork.copyFrom(o_divSource, Nlocal, 0 * offset, 0);
+
+  const auto o_selectedDivergence = o_divFilterWork.slice(
+      p.mixtureDivergenceMethod * offset, offset);
+  o_divSource.copyFrom(o_selectedDivergence, Nlocal);
   nrs->fluid->o_prop.slice(0 * nrs->fieldOffset, nrs->fieldOffset).copyFrom(o_muM);
   nrs->fluid->o_prop.slice(1 * nrs->fieldOffset, nrs->fieldOffset).copyFrom(o_rhoM);
 }

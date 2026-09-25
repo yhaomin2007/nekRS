@@ -145,13 +145,17 @@ void UDF_ExecuteStep(double time, int tstep)
     // method 1 (BDF alpha derivative plus native NekRS advection), and
     // scalar02 is the actual pressure-projection target after any temporal
     // extrapolation and startup ramp.
+    bubbleColumn::o_divFilterWork.copyFrom(
+        nrs->fluid->o_div, nrs->meshV->Nlocal, 2 * offset, 0);
     std::vector<deviceMemory<dfloat>> divAlphaRhs = {
-        bubbleColumn::o_divAlphaRhs.slice(0, nrs->meshV->Nlocal)};
+        bubbleColumn::o_divFilterWork.slice(
+            0 * offset, nrs->meshV->Nlocal)};
     std::vector<deviceMemory<dfloat>> divAlphaBdf = {
-        bubbleColumn::o_divAlphaBdf.slice(0, nrs->meshV->Nlocal)};
+        bubbleColumn::o_divFilterWork.slice(
+            1 * offset, nrs->meshV->Nlocal)};
     std::vector<deviceMemory<dfloat>> divPressureTarget = {
-        deviceMemory<dfloat>(
-            nrs->fluid->o_div.slice(0, nrs->meshV->Nlocal))};
+        bubbleColumn::o_divFilterWork.slice(
+            2 * offset, nrs->meshV->Nlocal)};
     nrs->writeToFile("div",
                      time,
                      nrs->meshV,
