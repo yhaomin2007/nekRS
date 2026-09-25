@@ -40,6 +40,7 @@ struct Parameters {
   dfloat gasPressureEnabled;
   dfloat dragEnabled;
   dfloat bubbleDiameter;
+  dfloat driftStressEnabled;
   dfloat virtualMassEnabled;
   dfloat virtualMassCoefficient;
   int mixtureDivergenceMethod;
@@ -732,14 +733,17 @@ inline void evaluateMixtureForce()
 {
   const dlong offset = nrs->fieldOffset;
   auto mesh = nrs->meshV;
-  for (int i = 0; i < 3; ++i) {
-    auto row = o_driftStress.slice(3 * i * offset, 3 * offset);
-    auto divRow = o_divDriftStress.slice(i * offset, offset);
-    opSEM::strongDivergence(mesh, offset, row, divRow);
+  if (p.driftStressEnabled != 0.0) {
+    for (int i = 0; i < 3; ++i) {
+      auto row = o_driftStress.slice(3 * i * offset, 3 * offset);
+      auto divRow = o_divDriftStress.slice(i * offset, offset);
+      opSEM::strongDivergence(mesh, offset, row, divRow);
+    }
   }
   buildMixtureForceKernel(mesh->Nlocal,
                           offset,
                           p.alphaFloor,
+                          p.driftStressEnabled,
                           p.gravity[0],
                           p.gravity[1],
                           p.gravity[2],

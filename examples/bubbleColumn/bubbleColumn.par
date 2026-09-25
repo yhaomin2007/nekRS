@@ -95,6 +95,8 @@ gasMomentumFullyActive = 1e-3
 gasPressureEnabled = 1.0
 dragEnabled = 1.0
 bubbleDiameter = 3.0e-3
+# Set to 0.0 to omit -div(tau_d)/rho_m from mixture momentum.
+driftStressEnabled = 1.0
 virtualMassEnabled = 0.0
 virtualMassCoefficient = 0.5
 # Mixture-divergence construction: 0=reconstructed alpha RHS,

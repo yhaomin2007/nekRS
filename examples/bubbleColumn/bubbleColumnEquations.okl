@@ -414,6 +414,7 @@
 @kernel void buildMixtureForce(const dlong N,
                                const dlong offset,
                                const dfloat alphaFloor,
+                               const dfloat driftStressEnabled,
                                const dfloat gravityX,
                                const dfloat gravityY,
                                const dfloat gravityZ,
@@ -423,17 +424,25 @@
                                @ restrict dfloat *force)
 {
   for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
-    // The drift-stress divergence is the only mixture-momentum source that
-    // uses u_g. Suppress it wherever the gas phase is numerically absent.
-    // This second mask prevents differentiation of neighboring nonzero drift
-    // stress from leaking a gas-dependent source into alpha < alphaFloor.
-    const dfloat gasActive = (alpha[n] >= alphaFloor) ? 1.0 : 0.0;
+    dfloat driftAccelerationX = 0.0;
+    dfloat driftAccelerationY = 0.0;
+    dfloat driftAccelerationZ = 0.0;
+    if (driftStressEnabled != 0.0) {
+      // The drift-stress divergence is the only mixture-momentum source that
+      // uses u_g. Suppress it wherever the gas phase is numerically absent.
+      // This second mask prevents differentiation of neighboring nonzero
+      // drift stress from leaking a gas-dependent source into alpha < floor.
+      const dfloat gasActive = (alpha[n] >= alphaFloor) ? 1.0 : 0.0;
+      driftAccelerationX =
+          -gasActive * divDriftStress[n + 0 * offset] / rhoM[n];
+      driftAccelerationY =
+          -gasActive * divDriftStress[n + 1 * offset] / rhoM[n];
+      driftAccelerationZ =
+          -gasActive * divDriftStress[n + 2 * offset] / rhoM[n];
+    }
     // nekRS o_EXT is acceleration; it is multiplied by rho_m in velocityRhs.
-    force[n + 0 * offset] = -gasActive * divDriftStress[n + 0 * offset] / rhoM[n]
-                            + gravityX;
-    force[n + 1 * offset] = -gasActive * divDriftStress[n + 1 * offset] / rhoM[n]
-                            + gravityY;
-    force[n + 2 * offset] = -gasActive * divDriftStress[n + 2 * offset] / rhoM[n]
-                            + gravityZ;
+    force[n + 0 * offset] = driftAccelerationX + gravityX;
+    force[n + 1 * offset] = driftAccelerationY + gravityY;
+    force[n + 2 * offset] = driftAccelerationZ + gravityZ;
   }
 }
