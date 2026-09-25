@@ -7,7 +7,7 @@ stopAt = numSteps
 numSteps = 100000
 dt = initial=1.0e-5+targetCFL=0.01+max=1e-2
 #dt = 1e-5
-timeStepper = tombo2
+timeStepper = tombo1
 checkpointInterval = 1000
 scalars = ALPHA, QGX, QGY, QGZ
 
@@ -93,6 +93,14 @@ mixtureVelocityMaximum = 1.0
 gasMomentumCutoff = 1e-4
 gasMomentumFullyActive = 1e-3
 gasPressureEnabled = 1.0
+# Global explicit extrapolation order. Keep at 1 with tombo1 to avoid
+# extrapolating pressure-driven QG source spikes.
+explicitOrder = 1
+# Exponential filter applied to the lagged pressure gradient used by QG:
+# gradP_used^n = (1-weight)*gradP_used^(n-1) + weight*gradP^n.
+# Set enabled=0 or weight=1 to recover the unfiltered lagged gradient.
+gasPressureGradientFilterEnabled = 1.0
+gasPressureGradientFilterWeight = 0.2
 dragEnabled = 1.0
 bubbleDiameter = 3.0e-3
 # Set to 0.0 to omit -div(tau_d)/rho_m from mixture momentum.

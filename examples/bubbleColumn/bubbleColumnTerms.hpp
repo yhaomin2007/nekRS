@@ -38,6 +38,8 @@ struct Parameters {
   dfloat gasMomentumCutoff;
   dfloat gasMomentumFullyActive;
   dfloat gasPressureEnabled;
+  dfloat gasPressureGradientFilterEnabled;
+  dfloat gasPressureGradientFilterWeight;
   dfloat dragEnabled;
   dfloat bubbleDiameter;
   dfloat driftStressEnabled;
@@ -96,6 +98,8 @@ static deviceMemory<dfloat> o_monitorMagnitude;
 static deviceMemory<dfloat> o_gasPressureAccelerationActive;
 static deviceMemory<dfloat> o_gasPressureAccelerationInactive;
 static deviceMemory<dfloat> o_gasCfl;
+static bool pressureGradientFilterInitialized = false;
+static int pressureGradientFilterStep = -1;
 static deviceMemory<dfloat> o_inverseGllSpacing;
 static deviceMemory<int> o_inletBoundaryID;
 static deviceMemory<dlong> o_scalarFieldOffsetScan;
@@ -206,6 +210,14 @@ inline void allocate()
              EXIT_FAILURE,
              "gasVelocityMaximum must be positive when clipping is enabled, but is %g\n",
              p.gasVelocityMaximum);
+  nekrsCheck(p.gasPressureGradientFilterEnabled != 0.0
+                 && (p.gasPressureGradientFilterWeight <= 0.0
+                     || p.gasPressureGradientFilterWeight > 1.0),
+             platform->comm.mpiComm(),
+             EXIT_FAILURE,
+             "gasPressureGradientFilterWeight must be in (0,1] when the "
+             "filter is enabled, but is %g\n",
+             p.gasPressureGradientFilterWeight);
   nekrsCheck(p.mixtureVelocityClipEnabled != 0.0
                  && p.mixtureVelocityMaximum <= 0.0,
              platform->comm.mpiComm(),
@@ -429,7 +441,34 @@ inline void evaluatePointwiseTerms()
   opSEM::strongDivergence(mesh, offset, o_qg, o_divQg);
   opSEM::strongGradVec(mesh, offset, o_ug, o_gradUg);
   opSEM::strongGradVec(mesh, offset, o_ul, o_gradUl);
-  opSEM::strongGrad(mesh, offset, nrs->fluid->o_P, o_gradP);
+  if (p.gasPressureGradientFilterEnabled == 0.0) {
+    opSEM::strongGrad(mesh, offset, nrs->fluid->o_P, o_gradP);
+  } else {
+    // Reuse the validation vector as temporary storage for the current
+    // assembled pressure gradient. Update the exponential history only once
+    // per timestep because userSource/userProperties may evaluate this
+    // routine multiple times during the same step.
+    opSEM::strongGrad(
+        mesh, offset, nrs->fluid->o_P, o_validationMassFlux);
+    const int tstep = nrs->tstep;
+    if (!pressureGradientFilterInitialized) {
+      o_gradP.copyFrom(o_validationMassFlux, 3 * offset);
+      pressureGradientFilterInitialized = true;
+      pressureGradientFilterStep = tstep;
+    } else if (tstep != pressureGradientFilterStep) {
+      for (int i = 0; i < 3; ++i) {
+        const auto currentGradient =
+            o_validationMassFlux.slice(i * offset, offset);
+        auto filteredGradient = o_gradP.slice(i * offset, offset);
+        platform->linAlg->axpby(mesh->Nlocal,
+                                p.gasPressureGradientFilterWeight,
+                                currentGradient,
+                                1.0 - p.gasPressureGradientFilterWeight,
+                                filteredGradient);
+      }
+      pressureGradientFilterStep = tstep;
+    }
+  }
 
   // Form F_ij = q_g,i * u_g,j and take an assembled strong divergence of
   // each tensor row for the conservative QG transport correction.
