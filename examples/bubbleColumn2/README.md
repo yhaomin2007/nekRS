@@ -1,129 +1,108 @@
-# bubbleColumn2
+# bubbleColumn2: volume-averaged Eulerian--Eulerian formulation
 
-One-pass Eulerian two-phase scaffold using the phase-volume averaged velocity
+This is a separate development example derived from `bubbleColumn`; the
+original case is unchanged. It retains the conservative gas variables
 
-`uv=(1-alpha)*ul+alpha*ug`
+```text
+alpha = alpha_g
+qg    = alpha_g*ug
+```
 
-as the native nekRS fluid velocity. For incompressible phases without phase
-change, adding the two phase-volume equations gives the exact constraint
+but interprets the native nekRS fluid velocity as the phase-volume average
 
-`div(uv)=0`.
+```text
+uv = (1-alpha_g)*ul + alpha_g*ug = (1-alpha_g)*ul + qg.
+```
 
-An empty `userDivergence` callback is registered so that NekRS zero-fills
-`fluid->o_div` before every pressure solve. The callback adds no source, so no
-nonzero divergence or divergence filter is used in this example.
+For incompressible phases without phase change, the two phase-continuity
+equations give the exact pressure constraint `div(uv)=0`. The
+`userDivergence` callback therefore leaves the zero-filled nekRS divergence
+target unchanged. No reconstructed mixture-divergence source, filter,
+extrapolation, or ramp is used.
 
-## Boundary map and initialization
+## Reconstructed phase velocities
 
-The column axis and upward inlet-flow direction are `+z`; gravity acts in
-`-z`. The future mesh must expose these physical boundary IDs:
+```text
+ug = qg/max(alpha_g, alphaFloor),
+ul = (uv-qg)/max(1-alpha_g, alphaFloor).
+```
 
-| ID | Patch | Volume velocity | `alpha` | Gas velocity |
-|---:|---|---|---|---|
-| 1 | inlet | `uvz=alphaInlet*ugInlet` | fixed inlet value | fixed vertical value |
-| 2 | outlet | zero normal gradient | zero normal gradient | zero normal gradient |
-| 3 | wall | no slip | zero normal gradient | no slip |
+The existing low-alpha mask and optional gas-velocity limiter remain active.
+The emergency native-velocity limiter is exposed as
+`volumeVelocityClipEnabled` and `volumeVelocityMaximum`.
 
-At a fresh start, `alpha` and `ugz` share the smooth plume profile
+## Alpha and gas momentum
 
-`f(z)=0.5*(1-tanh((z-initialPlumeHeight)/initialPlumeThickness))`.
+The solved gas equations remain
 
-The liquid is initially stationary and the volume velocity is initialized as
-`uvz=alpha*ugz`. Restart fields are not overwritten.
+```text
+d(alpha_g)/dt + div(qg) = diffusion/regularization,
+d(qg_i)/dt + div(qg_i*ug) = gas momentum sources.
+```
 
-## Reconstruction and alpha transport
+nekRS supplies native scalar advection with `uv`. The user source cancels that
+native term and replaces it with the assembled conservative gas flux, using
+the same approach as the current `bubbleColumn` case.
 
-Liquid velocity and slip are reconstructed from
+## Volume momentum and pressure projection
 
-`ul=(uv-alpha*ug)/(1-alpha)`,
+Dividing each phase momentum equation by its constant phase density and adding
+the two equations gives
 
-`ur=ug-ul=(ug-uv)/(1-alpha)`.
+```text
+d(uv)/dt + div(uv*uv + Tdrift)
+  = -Ap*grad(p) + g + viscous terms + interphase-volume term,
 
-nekRS transports passive scalars with `uv`. The alpha source adds the relative
-gas flux so that the intended equation remains
+Ap     = (1-alpha_g)/rho_l + alpha_g/rho_g,
+Tdrift = alpha_g*(1-alpha_g)*(ug-ul)*(ug-ul).
+```
 
-`d(alpha)/dt+div(alpha*ug)=0`.
+nekRS uses `1/rho` in its pressure operator. The property callback therefore
+stores `rhoPressure=1/Ap` as the native fluid density, so the native
+zero-divergence projection applies the required variable pressure mobility.
 
-Because `div(uv)=0`, the pointwise correction is
+The effective implicit kinematic viscosity is approximated by
 
-`Salpha=-(ug-uv).grad(alpha)-alpha*div(ug)`.
+```text
+nuEffective = (1-alpha_g)*mu_l/rho_l + alpha_g*mu_g/rho_g,
+muEffective = rhoPressure*nuEffective.
+```
 
-The scalar `diffusionCoeff` and `transportCoeff` values are read directly from
-their four `.par` sections; `userProperties()` does not overwrite them. Each
-implicit numerical diffusion can be canceled with a lagged explicit volume
-term using the `[CASEDATA]` switches
+Because interphase forces cancel only in mass-weighted momentum, the volume
+equation retains
 
-`subtractAlphaDiffusion`, `subtractUgxDiffusion`,
-`subtractUgyDiffusion`, and `subtractUgzDiffusion`.
+```text
+alpha_g*(1-rho_g/rho_l)*agInterphase,
+```
 
-For a switch value of one, the corresponding explicit source receives
+where `agInterphase` contains the drag and optional virtual-mass acceleration
+used by the gas equation.
 
-`-div(diffusionCoeff*grad(s))`.
+## Boundary conditions
 
-Thus the new-time diffusion remains implicit for conditioning while its
-previous-time contribution is removed from the intended equation. Set a switch
-to zero to retain that scalar's numerical diffusion. This is an IMEX deferred
-correction: it does not algebraically cancel new-time or boundary diffusion and
-may reduce the stabilization obtained from a large `diffusionCoeff`.
+Boundary IDs are `1=inlet`, `2=outlet`, and `3=wall`. At the inlet the liquid
+velocity is zero, so
 
-## Volume-mixture momentum and pressure
+```text
+uv_z = alphaInlet*gasInletVelocity,
+qg_z = alphaInlet*gasInletVelocity.
+```
 
-Dividing each phase momentum equation by its constant phase density, then
-adding with phase-volume weights, gives the pressure mobility
+The outlet uses zero-normal-gradient velocity/scalar conditions and the same
+turbulent pressure outlet as `bubbleColumn`. The wall uses no-slip `uv`, zero
+normal gradient for alpha, and zero QG.
 
-`Ap=(1-alpha)/rhoLiquid+alpha/rhoGas`.
+## Output and current limitation
 
-The code stores `rhoEffective=1/Ap` in the nekRS fluid-density property, so the
-native pressure projection uses `div(Ap*grad(p))` while enforcing zero
-divergence.
+The primary checkpoint velocity is `uv`. Reconstructed `ug` and `ul` are
+written separately. Conservation diagnostics are written to
+`bubbleColumn2_conservation.csv`; total mass flux is evaluated from
 
-The volume-mixture convective flux contains the kinematic drift tensor
+```text
+rho_l*uv + (rho_g-rho_l)*qg.
+```
 
-`Tdrift=alpha*(1-alpha)*ur*ur`
-
-which is evaluated equivalently as
-
-`Tdrift=alpha/(1-alpha)*(ug-uv)*(ug-uv)`.
-
-Unlike mass-weighted mixture momentum, interphase forces do not cancel after
-the phase equations are divided by their densities. If `agI` is the gas
-interphase acceleration, the retained volume-mixture contribution is
-
-`alpha*(1-rhoGas/rhoLiquid)*agI`.
-
-NekRS retains an implicit variable-viscosity stress operator based on
-
-`nuEffective=(1-alpha)*muLiquid/rhoLiquid+alpha*muGas/rhoGas`,
-
-`muEffective=rhoEffective*nuEffective`.
-
-The exact volume-mixture viscous acceleration is reconstructed from the two
-phase stresses,
-
-`Vexact=div((1-alpha)*tauLiquid/rhoLiquid+alpha*tauGas/rhoGas)`.
-
-To avoid double counting, the explicit mixture RHS receives only
-
-`Vcorrection=Vexact-div(tauNative)/rhoEffective`.
-
-Here all three stresses use the deviatoric Newtonian form
-`mu*(grad(u)+grad(u)^T-2/3*div(u)*I)`. The `.par` file enables NekRS's
-`navierStokes+variableViscosity` stress formulation so that `tauNative` matches
-the operator being corrected. The correction is time-lagged while the base
-effective diffusion remains implicit.
-
-## Drag and virtual mass
-
-Schiller--Naumann drag uses the reconstructed physical slip and constant
-`bubbleDiameter`. It is semi-implicit in the gas-velocity scalar equations:
-`lambdaD*uv` is explicit and `lambdaD*ug` is placed on the Helmholtz diagonal.
-
-`dragEnabled` and `virtualMassEnabled` are independent numeric switches in
-`[CASEDATA]`. Drag defaults on; the explicitly lagged virtual-mass
-approximation defaults off.
-
-The gas equation still uses the previous/extrapolated pressure because scalars
-are solved before mixture pressure in the one-pass NekRS ordering. Its own
-phase-stress operator is not yet included in the passive-scalar gas equation;
-the reconstructed gas stress above contributes to the volume-mixture equation.
-Lift, turbulent dispersion, and wall lubrication remain disabled.
+This remains a one-pass user-side coupling. The QG equation uses the lagged
+pressure gradient because the scalar solve precedes the current-step pressure
+projection. A fully OpenFOAM-like phase-momentum pressure corrector would
+require deeper solver coupling or outer iterations.

@@ -13,9 +13,11 @@ void UDF_LoadKernels(deviceKernelProperties& kernelInfo)
 
 void UDF_Setup0(MPI_Comm, setupAide &)
 {
-  // The phase-volume averaged velocity is exactly divergence free for
-  // incompressible phases without phase change. The variable pressure
-  // coefficient is A_p=(1-alpha)/rho_l+alpha/rho_g.
+  // The native velocity is the phase-volume average
+  //   u_v = (1-alpha) u_l + alpha u_g.
+  // For incompressible phases without phase change, div(u_v)=0 exactly.
+  // NekRS uses 1/rho in its pressure operator, so the property callback stores
+  // rho_p = 1 / ((1-alpha)/rho_l + alpha/rho_g).
   platform->options.setArgs("LOWMACH", "FALSE");
   platform->options.setArgs("FLUID PRESSURE ELLIPTIC COEFF FIELD", "TRUE");
   auto &p = bubbleColumn2::p;
@@ -32,14 +34,39 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   platform->par->extract("casedata", "gravityy", p.gravity[1]);
   platform->par->extract("casedata", "gravityz", p.gravity[2]);
   platform->par->extract("casedata", "alphafloor", p.alphaFloor);
+  platform->par->extract("casedata", "alphaclippenabled", p.alphaClippingEnabled);
+  platform->par->extract("casedata", "alphaminimum", p.alphaMinimum);
+  platform->par->extract("casedata", "alphamaximum", p.alphaMaximum);
+  platform->par->extract(
+      "casedata", "subtractalphadiffusion", p.subtractAlphaDiffusion);
+  platform->par->extract("casedata", "subtractqgxdiffusion", p.subtractQgDiffusion[0]);
+  platform->par->extract("casedata", "subtractqgydiffusion", p.subtractQgDiffusion[1]);
+  platform->par->extract("casedata", "subtractqgzdiffusion", p.subtractQgDiffusion[2]);
+  platform->par->extract("casedata", "zrampbottom", p.zRampBottom);
+  platform->par->extract("casedata", "zramptop", p.zRampTop);
+  platform->par->extract("casedata", "outletdampingfactor", p.outletDampingFactor);
+  platform->par->extract("casedata",
+                         "smoothgasvelocitymaskenabled",
+                         p.smoothGasVelocityMaskEnabled);
+  platform->par->extract("casedata", "gasvelocityclipenabled", p.gasVelocityClipEnabled);
+  platform->par->extract("casedata", "gasvelocitymaximum", p.gasVelocityMaximum);
+  platform->par->extract(
+      "casedata", "volumevelocityclipenabled", p.volumeVelocityClipEnabled);
+  platform->par->extract(
+      "casedata", "volumevelocitymaximum", p.volumeVelocityMaximum);
+  platform->par->extract("casedata", "gasmomentumcutoff", p.gasMomentumCutoff);
+  platform->par->extract(
+      "casedata", "gasmomentumfullyactive", p.gasMomentumFullyActive);
+  platform->par->extract("casedata", "gaspressureenabled", p.gasPressureEnabled);
   platform->par->extract("casedata", "dragenabled", p.dragEnabled);
   platform->par->extract("casedata", "bubblediameter", p.bubbleDiameter);
+  platform->par->extract("casedata", "driftstressenabled", p.driftStressEnabled);
   platform->par->extract("casedata", "virtualmassenabled", p.virtualMassEnabled);
   platform->par->extract("casedata", "virtualmasscoefficient", p.virtualMassCoefficient);
-  platform->par->extract("casedata", "subtractalphadiffusion", p.subtractAlphaDiffusion);
-  platform->par->extract("casedata", "subtractugxdiffusion", p.subtractUgDiffusion[0]);
-  platform->par->extract("casedata", "subtractugydiffusion", p.subtractUgDiffusion[1]);
-  platform->par->extract("casedata", "subtractugzdiffusion", p.subtractUgDiffusion[2]);
+  platform->par->extract("casedata", "stabilitymonitorenabled", p.stabilityMonitorEnabled);
+  platform->par->extract("casedata", "stabilitymonitorinterval", p.stabilityMonitorInterval);
+  platform->par->extract(
+      "casedata", "validationoutputinterval", p.validationOutputInterval);
 }
 
 void UDF_Setup()
@@ -56,13 +83,14 @@ void UDF_Setup()
         p.initialPlumeThickness,
         nrs->meshV->o_z,
         nrs->scalar->o_solution("alpha"),
-        nrs->scalar->o_solution("ugx"),
-        nrs->scalar->o_solution("ugy"),
-        nrs->scalar->o_solution("ugz"),
+        nrs->scalar->o_solution("qgx"),
+        nrs->scalar->o_solution("qgy"),
+        nrs->scalar->o_solution("qgz"),
         nrs->fluid->o_U);
   }
   bubbleColumn2::initializeHistory();
   nrs->userSource = &bubbleColumn2::addExplicitSources;
+  nrs->postScalar = &bubbleColumn2::clipAlpha;
   nrs->scalar->userImplicitLinearTerm = &bubbleColumn2::implicitGasDrag;
   nrs->userProperties = &bubbleColumn2::updateProperties;
   nrs->userDivergence = &bubbleColumn2::enforceZeroDivergence;
@@ -70,11 +98,38 @@ void UDF_Setup()
 
 void UDF_ExecuteStep(double time, int tstep)
 {
+  // Apply an emergency magnitude limiter immediately after the fluid solve so
+  // the bounded volume velocity is used by diagnostics, output, and the next
+  // timestep/CFL evaluation.
+  bubbleColumn2::clipVolumeVelocity();
   if (tstep > 0 && bubbleColumn2::p.virtualMassEnabled != 0.0) {
     bubbleColumn2::updateVirtualMassHistory();
   }
+  if (tstep > 0) {
+    bubbleColumn2::printStabilityMonitors(time, tstep);
+  }
   if (nrs->checkpointStep) {
+    // Write reconstructed phase velocities as separate vector fields without
+    // replacing the conservative QG checkpoint variables used for restart.
+    bubbleColumn2::reconstructGasVelocity();
+    bubbleColumn2::reconstructLiquidVelocity();
+    const dlong offset = nrs->fieldOffset;
+    std::vector<deviceMemory<dfloat>> gasVelocity = {
+        bubbleColumn2::o_ug.slice(0 * offset, nrs->meshV->Nlocal),
+        bubbleColumn2::o_ug.slice(1 * offset, nrs->meshV->Nlocal),
+        bubbleColumn2::o_ug.slice(2 * offset, nrs->meshV->Nlocal)};
+    nrs->writeToFile(
+        "ug", time, nrs->meshV, {{"velocity", gasVelocity}});
+    std::vector<deviceMemory<dfloat>> liquidVelocity = {
+        bubbleColumn2::o_ul.slice(0 * offset, nrs->meshV->Nlocal),
+        bubbleColumn2::o_ul.slice(1 * offset, nrs->meshV->Nlocal),
+        bubbleColumn2::o_ul.slice(2 * offset, nrs->meshV->Nlocal)};
+    nrs->writeToFile(
+        "ul", time, nrs->meshV, {{"velocity", liquidVelocity}});
     nrs->copyToNek(time, tstep);
     nek::userchk();
+  }
+  if (tstep > 0) {
+    bubbleColumn2::writeValidationChecks(time, tstep);
   }
 }
