@@ -38,8 +38,6 @@ struct Parameters {
   dfloat gasMomentumCutoff;
   dfloat gasMomentumFullyActive;
   dfloat gasPressureEnabled;
-  dfloat gasPressureGradientFilterEnabled;
-  dfloat gasPressureGradientFilterWeight;
   dfloat dragEnabled;
   dfloat bubbleDiameter;
   dfloat driftStressEnabled;
@@ -86,8 +84,6 @@ static deviceMemory<dfloat> o_qgDiffusionDivergence;
 static deviceMemory<dfloat> o_scalarDiffusionBase;
 static deviceMemory<dfloat> o_outletRampFactor;
 static deviceMemory<dfloat> o_alphaNativeMaterialAdvection;
-static deviceMemory<dfloat> o_alphaPreviousBdf;
-static int alphaPreviousBdfStep = -1;
 static deviceMemory<dfloat> o_driftStress;
 static deviceMemory<dfloat> o_divDriftStress;
 static deviceMemory<dfloat> o_gasStress;
@@ -100,8 +96,6 @@ static deviceMemory<dfloat> o_monitorMagnitude;
 static deviceMemory<dfloat> o_gasPressureAccelerationActive;
 static deviceMemory<dfloat> o_gasPressureAccelerationInactive;
 static deviceMemory<dfloat> o_gasCfl;
-static bool pressureGradientFilterInitialized = false;
-static int pressureGradientFilterStep = -1;
 static deviceMemory<dfloat> o_inverseGllSpacing;
 static deviceMemory<int> o_inletBoundaryID;
 static deviceMemory<dlong> o_scalarFieldOffsetScan;
@@ -212,14 +206,6 @@ inline void allocate()
              EXIT_FAILURE,
              "gasVelocityMaximum must be positive when clipping is enabled, but is %g\n",
              p.gasVelocityMaximum);
-  nekrsCheck(p.gasPressureGradientFilterEnabled != 0.0
-                 && (p.gasPressureGradientFilterWeight <= 0.0
-                     || p.gasPressureGradientFilterWeight > 1.0),
-             platform->comm.mpiComm(),
-             EXIT_FAILURE,
-             "gasPressureGradientFilterWeight must be in (0,1] when the "
-             "filter is enabled, but is %g\n",
-             p.gasPressureGradientFilterWeight);
   nekrsCheck(p.mixtureVelocityClipEnabled != 0.0
                  && p.mixtureVelocityMaximum <= 0.0,
              platform->comm.mpiComm(),
@@ -286,7 +272,6 @@ inline void allocate()
   o_scalarDiffusionBase.resize(4 * offset);
   o_outletRampFactor.resize(offset);
   o_alphaNativeMaterialAdvection.resize(nrs->scalar->fieldOffsetSum);
-  o_alphaPreviousBdf.resize(offset);
   o_driftStress.resize(9 * offset);
   o_divDriftStress.resize(3 * offset);
   o_gasStress.resize(9 * offset);
@@ -444,34 +429,7 @@ inline void evaluatePointwiseTerms()
   opSEM::strongDivergence(mesh, offset, o_qg, o_divQg);
   opSEM::strongGradVec(mesh, offset, o_ug, o_gradUg);
   opSEM::strongGradVec(mesh, offset, o_ul, o_gradUl);
-  if (p.gasPressureGradientFilterEnabled == 0.0) {
-    opSEM::strongGrad(mesh, offset, nrs->fluid->o_P, o_gradP);
-  } else {
-    // Reuse the validation vector as temporary storage for the current
-    // assembled pressure gradient. Update the exponential history only once
-    // per timestep because userSource/userProperties may evaluate this
-    // routine multiple times during the same step.
-    opSEM::strongGrad(
-        mesh, offset, nrs->fluid->o_P, o_validationMassFlux);
-    const int tstep = nrs->tstep;
-    if (!pressureGradientFilterInitialized) {
-      o_gradP.copyFrom(o_validationMassFlux, 3 * offset);
-      pressureGradientFilterInitialized = true;
-      pressureGradientFilterStep = tstep;
-    } else if (tstep != pressureGradientFilterStep) {
-      for (int i = 0; i < 3; ++i) {
-        const auto currentGradient =
-            o_validationMassFlux.slice(i * offset, offset);
-        auto filteredGradient = o_gradP.slice(i * offset, offset);
-        platform->linAlg->axpby(mesh->Nlocal,
-                                p.gasPressureGradientFilterWeight,
-                                currentGradient,
-                                1.0 - p.gasPressureGradientFilterWeight,
-                                filteredGradient);
-      }
-      pressureGradientFilterStep = tstep;
-    }
-  }
+  opSEM::strongGrad(mesh, offset, nrs->fluid->o_P, o_gradP);
 
   // Form F_ij = q_g,i * u_g,j and take an assembled strong divergence of
   // each tensor row for the conservative QG transport correction.
@@ -863,15 +821,6 @@ inline void subtractScalarDiffusion()
 
 inline void addExplicitSources(double)
 {
-  // With BDF1/EXT1, NekRS keeps only one scalar solution slot, which is
-  // overwritten by scalar_t::solve(). Preserve alpha^n before that solve so
-  // the post-scalar mixture-divergence construction can evaluate
-  // (alpha^{n+1}-alpha^n)/dt without accessing nonexistent o_S history.
-  if (nrs->tstep > 0 && nrs->tstep != alphaPreviousBdfStep) {
-    o_alphaPreviousBdf.copyFrom(
-        nrs->scalar->o_solution("alpha"), nrs->meshV->Nlocal);
-    alphaPreviousBdfStep = nrs->tstep;
-  }
   evaluatePointwiseTerms();
   captureAlphaAdvectionDiagnostics();
   subtractScalarDiffusion();
@@ -935,25 +884,19 @@ inline void buildDivergenceFromAlphaBdf(deviceMemory<dfloat>& o_divergence)
   const int bdfOrder =
       std::min(nrs->tstep, static_cast<int>(nrs->o_coeffBDF.size()));
 
-  nekrsCheck(bdfOrder != 1,
-             platform->comm.mpiComm(),
-             EXIT_FAILURE,
-             "mixtureDivergenceMethod=1 currently requires BDF1; "
-             "the active BDF order is %d\n",
-             bdfOrder);
-
   evaluateNativeAlphaAdvection(o_alphaNativeMaterialAdvection, true);
   auto o_alphaAdvection =
       o_alphaNativeMaterialAdvection.slice(alphaOffset, nrs->fieldOffset);
 
   buildDivergenceFromAlphaBdfKernel(Nlocal,
                                     alphaOffset,
+                                    nrs->scalar->fieldOffsetSum,
+                                    bdfOrder,
                                     1.0 / nrs->dt[0],
                                     nrs->g0,
                                     p.rhoLiquid,
                                     p.rhoGas,
                                     nrs->scalar->o_S,
-                                    o_alphaPreviousBdf,
                                     nrs->o_coeffBDF,
                                     o_alphaAdvection,
                                     o_divergence);
