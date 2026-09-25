@@ -86,6 +86,8 @@ static deviceMemory<dfloat> o_qgDiffusionDivergence;
 static deviceMemory<dfloat> o_scalarDiffusionBase;
 static deviceMemory<dfloat> o_outletRampFactor;
 static deviceMemory<dfloat> o_alphaNativeMaterialAdvection;
+static deviceMemory<dfloat> o_alphaPreviousBdf;
+static int alphaPreviousBdfStep = -1;
 static deviceMemory<dfloat> o_driftStress;
 static deviceMemory<dfloat> o_divDriftStress;
 static deviceMemory<dfloat> o_gasStress;
@@ -284,6 +286,7 @@ inline void allocate()
   o_scalarDiffusionBase.resize(4 * offset);
   o_outletRampFactor.resize(offset);
   o_alphaNativeMaterialAdvection.resize(nrs->scalar->fieldOffsetSum);
+  o_alphaPreviousBdf.resize(offset);
   o_driftStress.resize(9 * offset);
   o_divDriftStress.resize(3 * offset);
   o_gasStress.resize(9 * offset);
@@ -860,6 +863,15 @@ inline void subtractScalarDiffusion()
 
 inline void addExplicitSources(double)
 {
+  // With BDF1/EXT1, NekRS keeps only one scalar solution slot, which is
+  // overwritten by scalar_t::solve(). Preserve alpha^n before that solve so
+  // the post-scalar mixture-divergence construction can evaluate
+  // (alpha^{n+1}-alpha^n)/dt without accessing nonexistent o_S history.
+  if (nrs->tstep > 0 && nrs->tstep != alphaPreviousBdfStep) {
+    o_alphaPreviousBdf.copyFrom(
+        nrs->scalar->o_solution("alpha"), nrs->meshV->Nlocal);
+    alphaPreviousBdfStep = nrs->tstep;
+  }
   evaluatePointwiseTerms();
   captureAlphaAdvectionDiagnostics();
   subtractScalarDiffusion();
@@ -923,19 +935,25 @@ inline void buildDivergenceFromAlphaBdf(deviceMemory<dfloat>& o_divergence)
   const int bdfOrder =
       std::min(nrs->tstep, static_cast<int>(nrs->o_coeffBDF.size()));
 
+  nekrsCheck(bdfOrder != 1,
+             platform->comm.mpiComm(),
+             EXIT_FAILURE,
+             "mixtureDivergenceMethod=1 currently requires BDF1; "
+             "the active BDF order is %d\n",
+             bdfOrder);
+
   evaluateNativeAlphaAdvection(o_alphaNativeMaterialAdvection, true);
   auto o_alphaAdvection =
       o_alphaNativeMaterialAdvection.slice(alphaOffset, nrs->fieldOffset);
 
   buildDivergenceFromAlphaBdfKernel(Nlocal,
                                     alphaOffset,
-                                    nrs->scalar->fieldOffsetSum,
-                                    bdfOrder,
                                     1.0 / nrs->dt[0],
                                     nrs->g0,
                                     p.rhoLiquid,
                                     p.rhoGas,
                                     nrs->scalar->o_S,
+                                    o_alphaPreviousBdf,
                                     nrs->o_coeffBDF,
                                     o_alphaAdvection,
                                     o_divergence);
