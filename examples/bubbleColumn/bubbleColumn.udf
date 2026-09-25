@@ -150,7 +150,8 @@ void UDF_ExecuteStep(double time, int tstep)
     std::vector<deviceMemory<dfloat>> divAlphaBdf = {
         bubbleColumn::o_divAlphaBdf.slice(0, nrs->meshV->Nlocal)};
     std::vector<deviceMemory<dfloat>> divPressureTarget = {
-        nrs->fluid->o_div.slice(0, nrs->meshV->Nlocal)};
+        deviceMemory<dfloat>(
+            nrs->fluid->o_div.slice(0, nrs->meshV->Nlocal))};
     nrs->writeToFile("div",
                      time,
                      nrs->meshV,
