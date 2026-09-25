@@ -76,7 +76,6 @@ static deviceMemory<dfloat> o_divPrevious;
 static deviceMemory<dfloat> o_divOlder;
 static deviceMemory<dfloat> o_divExtrapolated;
 static int divergenceHistoryCount = 0;
-static deviceMemory<dfloat> o_divFilterWork;
 static occa::memory o_divFilterMatrix;
 static deviceMemory<dfloat> o_alphaDiffusionFlux;
 static deviceMemory<dfloat> o_alphaDiffusionDivergence;
@@ -266,7 +265,6 @@ inline void allocate()
   platform->linAlg->fill(offset, 0.0, o_divPrevious);
   platform->linAlg->fill(offset, 0.0, o_divOlder);
   platform->linAlg->fill(offset, 0.0, o_divExtrapolated);
-  o_divFilterWork.resize(3 * offset);
   o_alphaDiffusionFlux.resize(3 * offset);
   o_alphaDiffusionDivergence.resize(offset);
   o_qgDiffusionDivergence.resize(3 * offset);
@@ -345,16 +343,16 @@ inline void filterDivergence(deviceMemory<dfloat>& o_divergence)
   // Initialize the first output component with q_raw so that it becomes
   //   q_filtered = q_raw - strength * (q_raw - F(q_raw)).
   // The two unused components remain zero.
-  platform->linAlg->fill(3 * offset, 0.0, o_divFilterWork);
-  o_divFilterWork.copyFrom(o_divergence, Nlocal, 0, 0);
+  platform->linAlg->fill(3 * offset, 0.0, o_validationMassFlux);
+  o_validationMassFlux.copyFrom(o_divergence, Nlocal, 0, 0);
   launchKernel("core-vectorFilterRTHex3D",
                nrs->meshV->Nelements,
                o_divFilterMatrix,
                p.divergenceFilterStrength,
                offset,
-               o_divFilterWork,
-               o_divFilterWork);
-  o_divergence.copyFrom(o_divFilterWork, Nlocal, 0, 0);
+               o_validationMassFlux,
+               o_validationMassFlux);
+  o_divergence.copyFrom(o_validationMassFlux, Nlocal, 0, 0);
 }
 
 inline void assembleDivergence(deviceMemory<dfloat>& o_divergence)
@@ -913,21 +911,21 @@ inline void updateProperties(double)
   const dlong Nlocal = nrs->meshV->Nlocal;
   const dlong offset = nrs->fieldOffset;
 
-  // Reuse the existing three-component filter workspace for diagnostics to
-  // avoid allocating two additional full fields on memory-limited GPUs.
+  // Reuse the existing three-component validation-flux workspace for
+  // diagnostics to avoid a dedicated 3*fieldOffset allocation.
   // Component 1 stores method 1. It must be evaluated first because its
   // optional modal filter uses the whole workspace as scratch storage.
   buildDivergenceFromAlphaBdf(o_divSource);
   filterDivergence(o_divSource);
   assembleDivergence(o_divSource);
-  o_divFilterWork.copyFrom(o_divSource, Nlocal, 1 * offset, 0);
+  o_validationMassFlux.copyFrom(o_divSource, Nlocal, 1 * offset, 0);
 
   // Component 0 stores the unfiltered two-term method 0 result.
   buildDivergenceFromAlphaRhs(o_divSource);
   assembleDivergence(o_divSource);
-  o_divFilterWork.copyFrom(o_divSource, Nlocal, 0 * offset, 0);
+  o_validationMassFlux.copyFrom(o_divSource, Nlocal, 0 * offset, 0);
 
-  const auto o_selectedDivergence = o_divFilterWork.slice(
+  const auto o_selectedDivergence = o_validationMassFlux.slice(
       p.mixtureDivergenceMethod * offset, offset);
   o_divSource.copyFrom(o_selectedDivergence, Nlocal);
   nrs->fluid->o_prop.slice(0 * nrs->fieldOffset, nrs->fieldOffset).copyFrom(o_muM);
