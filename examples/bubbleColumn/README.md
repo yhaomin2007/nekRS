@@ -191,7 +191,11 @@ values are then reapplied exactly. After the pressure solve, the assembled
 pressure gradient is relaxed with `pressureGradientOuterRelaxation`. The next
 QG forcing uses that relaxed gradient, while the alpha and QG nonlinear scalar
 forcing is rebuilt from the relaxed QG state. BDF/EXT histories advance only
-once per physical timestep.
+once per physical timestep and remain read-only during the correctors. A
+corrector changes only the active same-timestep scalar right-hand side by the
+difference between successive nonlinear iterates. No unused right-hand side is
+rebuilt after the timestep satisfies the tolerance or reaches the configured
+maximum number of correctors.
 
 Convergence requires both the relative QG update and relative pressure-gradient
 update to fall below `qgPressureIterationTolerance`, after at least

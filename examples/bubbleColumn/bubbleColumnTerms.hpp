@@ -1034,15 +1034,10 @@ inline void prepareScalarOuterIteration(double time)
     // Reuse previous as delta = current - previous.
     platform->linAlg->axpby(Nlocal, 1.0, current, -1.0, previous);
 
-    // Preserve BDF and older EXT contributions. Replace only beta0 times the
-    // present nonlinear term in both the active RHS and its history record.
-    platform->linAlg->axpby(Nlocal,
-                            1.0,
-                            previous,
-                            1.0,
-                            scalar->o_EXT,
-                            0,
-                            fieldOffsetSum + scalarOffset);
+    // Preserve every physical-time BDF/EXT history slot. Within a timestep,
+    // replace only beta0 times the present nonlinear term in the active RHS.
+    // The next physical timestep will evaluate its own slot-0 nonlinear term
+    // from the accepted solution before makeForcing() advances EXT history.
     platform->linAlg->axmy(
         Nlocal, beta0, nrs->meshV->o_LMM, previous);
     platform->linAlg->axpby(Nlocal,
@@ -1122,14 +1117,19 @@ inline bool qgPressureIterationConverged(int stage)
 
   o_gradP.copyFrom(o_qgMaskDelta, 3 * offset);
 
-  // Build the next scalar corrector from the relaxed QG and pressure gradient.
-  // This also commits the final converged nonlinear term to EXT history.
-  prepareScalarOuterIteration(outerIterationTime);
-
   const dfloat residual = std::max(qgOuterResidual, gradPOuterResidual);
   const bool toleranceMet = stage >= p.qgPressureIterationMinimum
                             && residual <= p.qgPressureIterationTolerance;
   const bool maximumReached = stage >= p.qgPressureIterationMaximum;
+  const bool converged = toleranceMet || maximumReached;
+
+  // Rebuild only when another corrector will actually be solved. Once the
+  // timestep is accepted, leave both the physical-time history and active RHS
+  // untouched; the next initInnerStep() will assemble them in the native way.
+  if (!converged) {
+    prepareScalarOuterIteration(outerIterationTime);
+  }
+
   if ((toleranceMet || maximumReached)
       && platform->comm.mpiRank() == 0
       && p.stabilityMonitorEnabled != 0.0
@@ -1141,7 +1141,7 @@ inline bool qgPressureIterationConverged(int stage)
            gradPOuterResidual,
            maximumReached && !toleranceMet ? " (maximum reached)" : "");
   }
-  return toleranceMet || maximumReached;
+  return converged;
 }
 
 inline void finishQGPressureIteration()
