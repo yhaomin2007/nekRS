@@ -58,6 +58,12 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   platform->par->extract(
       "casedata", "gasmomentumfullyactive", p.gasMomentumFullyActive);
   platform->par->extract("casedata", "gaspressureenabled", p.gasPressureEnabled);
+  platform->par->extract("casedata",
+                         "gaspressuregradientfilterenabled",
+                         p.gasPressureGradientFilterEnabled);
+  platform->par->extract("casedata",
+                         "gaspressuregradientfilterweight",
+                         p.gasPressureGradientFilterWeight);
   platform->par->extract("casedata", "dragenabled", p.dragEnabled);
   platform->par->extract("casedata", "bubblediameter", p.bubbleDiameter);
   platform->par->extract("casedata", "driftstressenabled", p.driftStressEnabled);
@@ -72,19 +78,6 @@ void UDF_Setup0(MPI_Comm, setupAide &)
       "casedata", "divergenceextrapolationenabled", p.divergenceExtrapolationEnabled);
   platform->par->extract("casedata", "divergencerampenabled", p.divergenceRampEnabled);
   platform->par->extract("casedata", "divergencerampsteps", p.divergenceRampSteps);
-  platform->par->extract(
-      "casedata", "qgpressureiterationenabled", p.qgPressureIterationEnabled);
-  platform->par->extract(
-      "casedata", "qgpressureiterationminimum", p.qgPressureIterationMinimum);
-  platform->par->extract(
-      "casedata", "qgpressureiterationmaximum", p.qgPressureIterationMaximum);
-  platform->par->extract(
-      "casedata", "qgpressureiterationtolerance", p.qgPressureIterationTolerance);
-  platform->par->extract(
-      "casedata", "qgouterrelaxation", p.qgOuterRelaxation);
-  platform->par->extract("casedata",
-                         "pressuregradientouterrelaxation",
-                         p.pressureGradientOuterRelaxation);
   platform->par->extract("casedata", "stabilitymonitorenabled", p.stabilityMonitorEnabled);
   platform->par->extract("casedata", "stabilitymonitorinterval", p.stabilityMonitorInterval);
   platform->par->extract(
@@ -114,11 +107,10 @@ void UDF_Setup()
   }
   bubbleColumn::initializeHistory();
   nrs->userSource = &bubbleColumn::addExplicitSources;
-  nrs->postScalar = &bubbleColumn::postScalarCorrector;
+  nrs->postScalar = &bubbleColumn::clipAlpha;
   nrs->scalar->userImplicitLinearTerm = &bubbleColumn::implicitGasDrag;
   nrs->userProperties = &bubbleColumn::updateProperties;
   nrs->userDivergence = &bubbleColumn::updateDivergence;
-  nrs->userConvergenceCheck = &bubbleColumn::qgPressureIterationConverged;
 }
 
 void UDF_ExecuteStep(double time, int tstep)
@@ -127,10 +119,6 @@ void UDF_ExecuteStep(double time, int tstep)
   // the bounded mixture velocity is used by diagnostics, output, and the next
   // timestep/CFL evaluation.
   bubbleColumn::clipMixtureVelocity();
-  if (!nrs->timeStepConverged) {
-    return;
-  }
-  bubbleColumn::finishQGPressureIteration();
   if (tstep > 0) {
     bubbleColumn::updateDivergenceHistory();
   }
@@ -189,6 +177,4 @@ void UDF_ExecuteStep(double time, int tstep)
   if (tstep > 0) {
     bubbleColumn::writeValidationChecks(time, tstep);
   }
-  // Validation reuses the QG-iterate workspace for diffusive fluxes.
-  bubbleColumn::restoreQGOuterState();
 }

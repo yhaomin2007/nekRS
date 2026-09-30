@@ -178,44 +178,30 @@ from the current alpha, QG, and density-averaged mixture velocity. Both phase
 velocities are refreshed from the current solved fields immediately before
 checkpoint output.
 
-## QG-pressure correctors
+## One-pass ordering
 
-With `qgPressureIterationEnabled = 1.0`, each physical timestep repeats the
-native nekRS sequence
+There are no corrector iterations inside a time step. nekRS first reconstructs
+`u_g` and constructs all explicit sources, including the conservative
+corrections to its native mixture-velocity scalar advection. It then solves all
+four scalars, refreshes mixture properties and the prescribed divergence, and
+finally solves mixture velocity/pressure. The gas-flux equation therefore uses
+the pressure gradient available at source assembly, not the pressure produced
+later in the same step.
 
-`scalar solve -> properties/divergence -> mixture velocity/pressure solve`.
+When `gasPressureGradientFilterEnabled = 1.0`, that lagged gradient is
+exponentially relaxed once per physical timestep:
 
-Immediately after each scalar solve, the three solved QG fields are relaxed
-against the preceding corrector with `qgOuterRelaxation`; Dirichlet scalar
-values are then reapplied exactly. After the pressure solve, the assembled
-pressure gradient is relaxed with `pressureGradientOuterRelaxation`. The next
-QG forcing uses that relaxed gradient, while the alpha and QG nonlinear scalar
-forcing is rebuilt from the relaxed QG state. BDF/EXT histories advance only
-once per physical timestep and remain read-only during the correctors. A
-corrector changes only the active same-timestep scalar right-hand side by the
-difference between successive nonlinear iterates. No unused right-hand side is
-rebuilt after the timestep satisfies the tolerance or reaches the configured
-maximum number of correctors.
+`gradP_used <- (1 - weight) gradP_used + weight gradP_lagged`.
 
-Convergence requires both the relative QG update and relative pressure-gradient
-update to fall below `qgPressureIterationTolerance`, after at least
-`qgPressureIterationMinimum` correctors. The step is accepted at
-`qgPressureIterationMaximum` even if the tolerance has not been reached, and
-the log marks that event with `(maximum reached)`. Setting
-`qgPressureIterationEnabled = 0.0` restores the original one-pass ordering.
+The stored value consequently contains a decaying history of previous completed
+steps. Setting `gasPressureGradientFilterWeight = 1.0`, or disabling the
+filter, recovers the unfiltered one-pass pressure forcing. This option does not
+change the NekRS BDF/EXT orders, time stepper, or pressure projection.
 
-The first corrector starts from the converged QG and pressure gradient of the
-previous physical timestep rather than an extrapolated pressure gradient. This
-also protects the first scalar solve, which occurs before a same-step pressure
-solution is available.
-
-`gasPressureEnabled` controls the `-grad(p)/rho_g` contribution in the three
-gas-flux equations. With QG-pressure correctors enabled it uses the relaxed
-pressure-gradient iterate; otherwise it uses the pressure gradient available
-during the one-pass source assembly. Use `1.0` for the physical equation or
-`0.0` for a diagnostic run without gas-pressure forcing. This switch does not
-alter the native mixture pressure projection or its variable-density
-coefficient.
+`gasPressureEnabled` controls only the resulting
+`-grad(p)/rho_g` contribution in the three gas-flux equations. Use `1.0` for
+the physical equation or `0.0` for a diagnostic run without gas-pressure
+forcing.
 
 ## Interphase momentum transfer
 

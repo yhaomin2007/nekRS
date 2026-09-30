@@ -93,6 +93,11 @@ mixtureVelocityMaximum = 1.0
 gasMomentumCutoff = 1e-4
 gasMomentumFullyActive = 1e-3
 gasPressureEnabled = 1.0
+# Exponential relaxation of the lagged pressure gradient used by QG:
+# gradP_used^n = (1-weight)*gradP_used^(n-1) + weight*gradP_lagged^n.
+# Set enabled=0 or weight=1 to recover the unfiltered lagged gradient.
+gasPressureGradientFilterEnabled = 1.0
+gasPressureGradientFilterWeight = 0.2
 dragEnabled = 1.0
 bubbleDiameter = 3.0e-3
 # Set to 0.0 to omit -div(tau_d)/rho_m from mixture momentum.
@@ -108,14 +113,6 @@ divergenceFilterStrength = 0.25
 divergenceExtrapolationEnabled = 0.0
 divergenceRampEnabled = 1.0
 divergenceRampSteps = 10000
-# Coupled QG-pressure correctors. QG and grad(p) are relaxed as primary
-# iterates; BDF/EXT history advances only once per physical timestep.
-qgPressureIterationEnabled = 1.0
-qgPressureIterationMinimum = 2
-qgPressureIterationMaximum = 10
-qgPressureIterationTolerance = 1e-3
-qgOuterRelaxation = 0.2
-pressureGradientOuterRelaxation = 0.2
 stabilityMonitorEnabled = 1.0
 stabilityMonitorInterval = 10
 validationOutputInterval = 10
