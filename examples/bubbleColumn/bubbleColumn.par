@@ -108,6 +108,14 @@ divergenceFilterStrength = 0.25
 divergenceExtrapolationEnabled = 0.0
 divergenceRampEnabled = 1.0
 divergenceRampSteps = 10000
+# Coupled QG-pressure correctors. QG and grad(p) are relaxed as primary
+# iterates; BDF/EXT history advances only once per physical timestep.
+qgPressureIterationEnabled = 1.0
+qgPressureIterationMinimum = 2
+qgPressureIterationMaximum = 10
+qgPressureIterationTolerance = 1e-3
+qgOuterRelaxation = 0.2
+pressureGradientOuterRelaxation = 0.2
 stabilityMonitorEnabled = 1.0
 stabilityMonitorInterval = 10
 validationOutputInterval = 10

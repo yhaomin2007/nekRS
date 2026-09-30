@@ -50,6 +50,12 @@ struct Parameters {
   dfloat divergenceExtrapolationEnabled;
   dfloat divergenceRampEnabled;
   int divergenceRampSteps;
+  dfloat qgPressureIterationEnabled;
+  int qgPressureIterationMinimum;
+  int qgPressureIterationMaximum;
+  dfloat qgPressureIterationTolerance;
+  dfloat qgOuterRelaxation;
+  dfloat pressureGradientOuterRelaxation;
   dfloat stabilityMonitorEnabled;
   int stabilityMonitorInterval;
   int validationOutputInterval;
@@ -70,6 +76,7 @@ static deviceMemory<dfloat> o_qgAdvectionFlux;
 static deviceMemory<dfloat> o_divQgAdvectionFlux;
 static deviceMemory<dfloat> o_gradUg;
 static deviceMemory<dfloat> o_gradP;
+static deviceMemory<dfloat> o_gradPOuter;
 static deviceMemory<dfloat> o_rhoM;
 static deviceMemory<dfloat> o_muM;
 static deviceMemory<dfloat> o_divSource;
@@ -108,6 +115,14 @@ static deviceMemory<dfloat> o_validationMassFlux;
 static deviceMemory<dfloat> o_validationDivQg;
 static deviceMemory<dfloat> o_alphaUserAdvectionDiagnostic;
 static deviceMemory<dfloat> o_alphaNativeAdvectionDiagnostic;
+// These validation workspaces are not needed until a physical timestep has
+// converged. Reuse them during the QG-pressure correctors to avoid additional
+// full-field GPU allocations.
+static deviceMemory<dfloat>& o_qgOuterPrevious = o_validationGasDiffusiveFlux;
+static deviceMemory<dfloat>& o_outerScalarNonlinearPrevious =
+    o_alphaNativeAdvectionDiagnostic;
+static deviceMemory<dfloat>& o_outerScalarNonlinearCurrent =
+    o_alphaNativeMaterialAdvection;
 static int alphaAdvectionDiagnosticStep = -1;
 static deviceMemory<dfloat> o_qgBeforeMask;
 static deviceMemory<dfloat> o_qgMaskDelta;
@@ -128,6 +143,11 @@ static dfloat qgMaskDeltaMagnitudeIntegral = 0.0;
 static dfloat cumulativeQgMaskDeltaIntegral[3] = {0.0, 0.0, 0.0};
 static dfloat cumulativeQgMaskDeltaMagnitudeIntegral = 0.0;
 static bool validationInitialized = false;
+static bool rebuildingOuterScalarForcing = false;
+static bool outerIterationStateInitialized = false;
+static dfloat qgOuterResidual = INFINITY;
+static dfloat gradPOuterResidual = INFINITY;
+static dfloat outerIterationTime = 0.0;
 static occa::kernel reconstructGasVelocityKernel;
 static occa::kernel postProcessGasFluxKernel;
 static occa::kernel clipAlphaKernel;
@@ -227,6 +247,37 @@ inline void allocate()
              EXIT_FAILURE,
              "divergenceRampSteps must be positive when the ramp is enabled, but is %d\n",
              p.divergenceRampSteps);
+  nekrsCheck(p.qgPressureIterationEnabled != 0.0
+                 && (p.qgPressureIterationMinimum < 1
+                     || p.qgPressureIterationMaximum
+                            < p.qgPressureIterationMinimum),
+             platform->comm.mpiComm(),
+             EXIT_FAILURE,
+             "QG-pressure iteration counts must satisfy 1 <= minimum <= "
+             "maximum (minimum=%d, maximum=%d)\n",
+             p.qgPressureIterationMinimum,
+             p.qgPressureIterationMaximum);
+  nekrsCheck(p.qgPressureIterationEnabled != 0.0
+                 && (p.qgPressureIterationTolerance <= 0.0
+                     || p.qgOuterRelaxation <= 0.0
+                     || p.qgOuterRelaxation > 1.0
+                     || p.pressureGradientOuterRelaxation <= 0.0
+                     || p.pressureGradientOuterRelaxation > 1.0),
+             platform->comm.mpiComm(),
+             EXIT_FAILURE,
+             "QG-pressure tolerance must be positive and both relaxation "
+             "factors must be in (0,1] (tolerance=%g, qg=%g, gradP=%g)\n",
+             p.qgPressureIterationTolerance,
+             p.qgOuterRelaxation,
+             p.pressureGradientOuterRelaxation);
+  nekrsCheck(p.qgPressureIterationEnabled != 0.0
+                 && p.divergenceExtrapolationEnabled != 0.0,
+             platform->comm.mpiComm(),
+             EXIT_FAILURE,
+             "%s",
+             "QG-pressure iterations require "
+             "divergenceExtrapolationEnabled=0 so every corrector uses the "
+             "current alpha-based mixture divergence\n");
   nekrsCheck(p.zRampTop <= p.zRampBottom,
              platform->comm.mpiComm(),
              EXIT_FAILURE,
@@ -257,6 +308,7 @@ inline void allocate()
   o_divQgAdvectionFlux.resize(3 * offset);
   o_gradUg.resize(9 * offset);
   o_gradP.resize(3 * offset);
+  o_gradPOuter.resize(3 * offset);
   o_rhoM.resize(offset);
   o_muM.resize(offset);
   o_divSource.resize(offset);
@@ -430,6 +482,12 @@ inline void evaluatePointwiseTerms()
   opSEM::strongGradVec(mesh, offset, o_ug, o_gradUg);
   opSEM::strongGradVec(mesh, offset, o_ul, o_gradUl);
   opSEM::strongGrad(mesh, offset, nrs->fluid->o_P, o_gradP);
+  if (p.qgPressureIterationEnabled != 0.0
+      && outerIterationStateInitialized) {
+    // The QG pressure source uses the relaxed pressure-gradient iterate, not
+    // the raw pressure gradient from the most recent fluid corrector.
+    o_gradP.copyFrom(o_gradPOuter, 3 * offset);
+  }
 
   // Form F_ij = q_g,i * u_g,j and take an assembled strong divergence of
   // each tensor row for the conservative QG transport correction.
@@ -517,66 +575,83 @@ inline void evaluatePointwiseTerms()
   }
 }
 
-inline void evaluateNativeAlphaAdvection(deviceMemory<dfloat> &o_advection,
-                                         bool averageSharedNodes)
+inline void evaluateNativeScalarAdvection(const occa::memory& o_solution,
+                                          deviceMemory<dfloat>& o_advection,
+                                          int startScalar,
+                                          int scalarCount,
+                                          bool averageSharedNodes)
 {
   auto mesh = nrs->meshV;
-  const int alphaIndex = nrs->scalar->nameToIndex.at("alpha");
 
-  // Reuse the exact NekRS scalar-advection operator and the contravariant
-  // predicted velocity already prepared for the current timestep.
+  // Reuse the exact NekRS scalar-advection operator and its current
+  // contravariant mixture velocity. This lets a corrector replace only the
+  // present nonlinear contribution without advancing BDF/EXT history again.
   if (platform->options.compareArgs("ADVECTION TYPE", "CUBATURE")) {
     launchKernel("core-strongAdvectionCubatureVolumeScalarHex3D",
                  mesh->Nelements,
-                 1,
+                 scalarCount,
                  0,
                  0,
                  mesh->o_vgeo,
                  mesh->o_cubDiffInterpT,
                  mesh->o_cubInterpT,
                  mesh->o_cubProjectT,
-                 nrs->scalar->o_compute + alphaIndex,
-                 nrs->scalar->o_fieldOffsetScan + alphaIndex,
+                 nrs->scalar->o_compute + startScalar,
+                 nrs->scalar->o_fieldOffsetScan + startScalar,
                  nrs->scalar->vFieldOffset,
                  nrs->scalar->vCubatureOffset,
-                 nrs->scalar->o_S,
+                 o_solution,
                  nrs->scalar->o_relUrst,
                  nrs->scalar->o_rho,
                  o_advection);
   } else {
     launchKernel("core-strongAdvectionVolumeScalarHex3D",
                  mesh->Nelements,
-                 1,
+                 scalarCount,
                  0,
                  mesh->o_vgeo,
                  mesh->o_D,
-                 nrs->scalar->o_compute + alphaIndex,
-                 nrs->scalar->o_fieldOffsetScan + alphaIndex,
+                 nrs->scalar->o_compute + startScalar,
+                 nrs->scalar->o_fieldOffsetScan + startScalar,
                  nrs->scalar->vFieldOffset,
-                 nrs->scalar->o_S,
+                 o_solution,
                  nrs->scalar->o_relUrst,
                  nrs->scalar->o_rho,
                  o_advection);
   }
 
   if (averageSharedNodes) {
-    const dlong alphaOffset = nrs->scalar->fieldOffsetScan[alphaIndex];
-    auto o_alphaAdvection =
-        o_advection.slice(alphaOffset, nrs->fieldOffset);
-    oogs::startFinish(o_alphaAdvection,
-                      1,
-                      0,
-                      ogsDfloat,
-                      ogsAdd,
-                      mesh->oogs);
-    platform->linAlg->axmy(
-        mesh->Nlocal, 1.0, mesh->o_invAJw, o_alphaAdvection);
+    for (int is = startScalar; is < startScalar + scalarCount; ++is) {
+      const dlong scalarOffset = nrs->scalar->fieldOffsetScan[is];
+      auto scalarAdvection =
+          o_advection.slice(scalarOffset, nrs->fieldOffset);
+      oogs::startFinish(scalarAdvection,
+                        1,
+                        0,
+                        ogsDfloat,
+                        ogsAdd,
+                        mesh->oogs);
+      platform->linAlg->axmy(
+          mesh->Nlocal, 1.0, mesh->o_invAJw, scalarAdvection);
+    }
   }
+}
+
+inline void evaluateNativeAlphaAdvection(deviceMemory<dfloat>& o_advection,
+                                         bool averageSharedNodes)
+{
+  const int alphaIndex = nrs->scalar->nameToIndex.at("alpha");
+  evaluateNativeScalarAdvection(nrs->scalar->o_S,
+                                o_advection,
+                                alphaIndex,
+                                1,
+                                averageSharedNodes);
 }
 
 inline void captureAlphaAdvectionDiagnostics()
 {
-  if (nrs->scalar->Nsubsteps != 0
+  if (rebuildingOuterScalarForcing
+      || nrs->scalar->Nsubsteps != 0
       || nrs->tstep <= 0
       || nrs->tstep % p.validationOutputInterval != 0) {
     return;
@@ -604,6 +679,9 @@ inline void initializeHistory()
   const dlong offset = nrs->fieldOffset;
   o_ulPrevious.copyFrom(o_ul, 3 * offset);
   o_ugPrevious.copyFrom(o_ug, 3 * offset);
+  o_qgOuterPrevious.copyFrom(o_qg, 3 * offset);
+  o_gradPOuter.copyFrom(o_gradP, 3 * offset);
+  outerIterationStateInitialized = true;
   platform->linAlg->fill(3 * offset, 0.0, o_virtualMassRelativeAcceleration);
 }
 
@@ -645,13 +723,17 @@ inline void postProcessGasFlux()
         Nlocal, -1.0, o_qgBeforeMask, 1.0, delta, i * offset, 0);
     qgMaskDeltaIntegral[i] = platform->linAlg->innerProd(
         Nlocal, nrs->meshV->o_LMM, delta, comm);
-    cumulativeQgMaskDeltaIntegral[i] += qgMaskDeltaIntegral[i];
+    if (p.qgPressureIterationEnabled == 0.0) {
+      cumulativeQgMaskDeltaIntegral[i] += qgMaskDeltaIntegral[i];
+    }
   }
   platform->linAlg->entrywiseMag(
       Nlocal, 3, offset, o_qgMaskDelta, o_monitorMagnitude);
   qgMaskDeltaMagnitudeIntegral = platform->linAlg->innerProd(
       Nlocal, nrs->meshV->o_LMM, o_monitorMagnitude, comm);
-  cumulativeQgMaskDeltaMagnitudeIntegral += qgMaskDeltaMagnitudeIntegral;
+  if (p.qgPressureIterationEnabled == 0.0) {
+    cumulativeQgMaskDeltaMagnitudeIntegral += qgMaskDeltaMagnitudeIntegral;
+  }
 }
 
 inline void clipAlpha(double, int)
@@ -674,7 +756,9 @@ inline void clipAlpha(double, int)
   const dfloat volumeAfter = platform->linAlg->innerProd(
       Nlocal, nrs->meshV->o_LMM, alpha, comm);
   alphaClipDeltaVolume = volumeAfter - volumeBefore;
-  cumulativeAlphaClipDeltaVolume += alphaClipDeltaVolume;
+  if (p.qgPressureIterationEnabled == 0.0) {
+    cumulativeAlphaClipDeltaVolume += alphaClipDeltaVolume;
+  }
 }
 
 inline void clipMixtureVelocity()
@@ -841,6 +925,259 @@ inline void addExplicitSources(double)
   }
 }
 
+inline dfloat relativeOuterUpdate(const deviceMemory<dfloat>& o_delta,
+                                  const deviceMemory<dfloat>& o_state,
+                                  const deviceMemory<dfloat>& o_previous,
+                                  dlong fieldOffset,
+                                  int fields)
+{
+  const dlong Nlocal = nrs->meshV->Nlocal;
+  const MPI_Comm comm = platform->comm.mpiComm();
+  dfloat residual = 0.0;
+  for (int i = 0; i < fields; ++i) {
+    const auto delta = o_delta.slice(i * fieldOffset, Nlocal);
+    const auto state = o_state.slice(i * fieldOffset, Nlocal);
+    const auto previous = o_previous.slice(i * fieldOffset, Nlocal);
+    const dfloat deltaNorm = platform->linAlg->weightedNorm2(
+        Nlocal, nrs->meshV->o_LMM, delta, comm);
+    const dfloat stateNorm = platform->linAlg->weightedNorm2(
+        Nlocal, nrs->meshV->o_LMM, state, comm);
+    const dfloat previousNorm = platform->linAlg->weightedNorm2(
+        Nlocal, nrs->meshV->o_LMM, previous, comm);
+    residual = std::max(
+        residual,
+        deltaNorm / std::max(std::max(stateNorm, previousNorm), 1.0e-30));
+  }
+  return residual;
+}
+
+inline void postScalarCorrector(double time, int tstep)
+{
+  if (p.qgPressureIterationEnabled != 0.0) {
+    const dlong Nlocal = nrs->meshV->Nlocal;
+    const dlong offset = nrs->fieldOffset;
+    const char *qgNames[3] = {"qgx", "qgy", "qgz"};
+    for (int i = 0; i < 3; ++i) {
+      auto qg = nrs->scalar->o_solution(qgNames[i]);
+      const auto previous = o_qgOuterPrevious.slice(i * offset, Nlocal);
+      platform->linAlg->axpby(Nlocal,
+                              1.0 - p.qgOuterRelaxation,
+                              previous,
+                              p.qgOuterRelaxation,
+                              qg);
+    }
+    // Under-relax only the interior update. Preserve all prescribed scalar
+    // boundary values exactly after modifying the solved QG fields.
+    nrs->scalar->applyDirichlet(time);
+  }
+  clipAlpha(time, tstep);
+}
+
+inline void prepareScalarOuterIteration(double time)
+{
+  auto scalar = nrs->scalar.get();
+  const dlong Nlocal = nrs->meshV->Nlocal;
+  const dlong fieldOffsetSum = scalar->fieldOffsetSum;
+  const int stage = nrs->outerCorrector;
+
+  // makeForcing() shifted the initial current explicit/advection terms into
+  // history slot 1. Reconstruct their combined value before changing Urst.
+  if (stage == 1) {
+    const auto laggedSolution =
+        scalar->o_S.slice(fieldOffsetSum, fieldOffsetSum);
+    evaluateNativeScalarAdvection(laggedSolution,
+                                  o_outerScalarNonlinearCurrent,
+                                  0,
+                                  scalar->NSfields,
+                                  false);
+    o_outerScalarNonlinearPrevious.copyFrom(
+        scalar->o_EXT, fieldOffsetSum, 0, fieldOffsetSum);
+    for (int is = 0; is < scalar->NSfields; ++is) {
+      const dlong scalarOffset = scalar->fieldOffsetScan[is];
+      platform->linAlg->axpby(Nlocal,
+                              -1.0,
+                              o_outerScalarNonlinearCurrent,
+                              1.0,
+                              o_outerScalarNonlinearPrevious,
+                              scalarOffset,
+                              scalarOffset);
+    }
+  }
+
+  rebuildingOuterScalarForcing = true;
+  addExplicitSources(time);
+  for (int is = 0; is < scalar->NSfields; ++is) {
+    if (scalar->compute[is] && !scalar->cvodeSolve[is]) {
+      scalar->makeExplicit(is, time, nrs->tstep);
+    }
+  }
+  rebuildingOuterScalarForcing = false;
+
+  // The next corrector uses the newest mixture velocity in NekRS's native
+  // scalar-advection operator.
+  nrs->computeUrst();
+  evaluateNativeScalarAdvection(scalar->o_S,
+                                o_outerScalarNonlinearCurrent,
+                                0,
+                                scalar->NSfields,
+                                false);
+
+  std::vector<dfloat> coeffEXT(nrs->o_coeffEXT.size());
+  nrs->o_coeffEXT.copyTo(coeffEXT.data());
+  const dfloat beta0 = coeffEXT.front();
+  for (int is = 0; is < scalar->NSfields; ++is) {
+    const dlong scalarOffset = scalar->fieldOffsetScan[is];
+    auto current =
+        o_outerScalarNonlinearCurrent.slice(scalarOffset, Nlocal);
+    auto previous =
+        o_outerScalarNonlinearPrevious.slice(scalarOffset, Nlocal);
+    const auto explicitTerm = scalar->o_EXT.slice(scalarOffset, Nlocal);
+
+    // current = current explicit source - current native advection.
+    platform->linAlg->axpby(Nlocal, 1.0, explicitTerm, -1.0, current);
+    // Reuse previous as delta = current - previous.
+    platform->linAlg->axpby(Nlocal, 1.0, current, -1.0, previous);
+
+    // Preserve BDF and older EXT contributions. Replace only beta0 times the
+    // present nonlinear term in both the active RHS and its history record.
+    platform->linAlg->axpby(Nlocal,
+                            1.0,
+                            previous,
+                            1.0,
+                            scalar->o_EXT,
+                            0,
+                            fieldOffsetSum + scalarOffset);
+    platform->linAlg->axmy(
+        Nlocal, beta0, nrs->meshV->o_LMM, previous);
+    platform->linAlg->axpby(Nlocal,
+                            1.0,
+                            previous,
+                            1.0,
+                            scalar->o_JwF,
+                            0,
+                            scalarOffset);
+    previous.copyFrom(current, Nlocal);
+  }
+}
+
+inline bool qgPressureIterationConverged(int stage)
+{
+  if (p.qgPressureIterationEnabled == 0.0) {
+    return true;
+  }
+
+  // Apply the existing emergency mixture-velocity bound before rebuilding
+  // native scalar advection for another corrector.
+  clipMixtureVelocity();
+
+  const dlong Nlocal = nrs->meshV->Nlocal;
+  const dlong offset = nrs->fieldOffset;
+  const char *qgNames[3] = {"qgx", "qgy", "qgz"};
+
+  // Measure the actual post-mask QG update relative to the previous iterate.
+  for (int i = 0; i < 3; ++i) {
+    auto current = o_qg.slice(i * offset, Nlocal);
+    current.copyFrom(nrs->scalar->o_solution(qgNames[i]), Nlocal);
+    auto delta = o_qgMaskDelta.slice(i * offset, Nlocal);
+    delta.copyFrom(current, Nlocal);
+    platform->linAlg->axpby(Nlocal,
+                            -1.0,
+                            o_qgOuterPrevious,
+                            1.0,
+                            delta,
+                            i * offset,
+                            0);
+  }
+  qgOuterResidual = relativeOuterUpdate(o_qgMaskDelta,
+                                        o_qg,
+                                        o_qgOuterPrevious,
+                                        offset,
+                                        3);
+
+  // Form the pressure gradient from the newest pressure solve, relax the
+  // gradient itself, and measure its change. Pressure gauge shifts therefore
+  // cannot contaminate the convergence test or QG forcing.
+  opSEM::strongGrad(
+      nrs->meshV, offset, nrs->fluid->o_P, o_gradP);
+  for (int i = 0; i < 3; ++i) {
+    auto gradient = o_gradP.slice(i * offset, Nlocal);
+    const auto previous = o_gradPOuter.slice(i * offset, Nlocal);
+    platform->linAlg->axpby(Nlocal,
+                            1.0 - p.pressureGradientOuterRelaxation,
+                            previous,
+                            p.pressureGradientOuterRelaxation,
+                            gradient);
+    auto delta = o_qgMaskDelta.slice(i * offset, Nlocal);
+    delta.copyFrom(gradient, Nlocal);
+    platform->linAlg->axpby(
+        Nlocal, -1.0, previous, 1.0, delta);
+  }
+  gradPOuterResidual = relativeOuterUpdate(o_qgMaskDelta,
+                                           o_gradP,
+                                           o_gradPOuter,
+                                           offset,
+                                           3);
+
+  o_qgOuterPrevious.copyFrom(o_qg, 3 * offset);
+  o_gradPOuter.copyFrom(o_gradP, 3 * offset);
+
+  // Build the next scalar corrector from the relaxed QG and pressure gradient.
+  // This also commits the final converged nonlinear term to EXT history.
+  prepareScalarOuterIteration(outerIterationTime);
+
+  const dfloat residual = std::max(qgOuterResidual, gradPOuterResidual);
+  const bool toleranceMet = stage >= p.qgPressureIterationMinimum
+                            && residual <= p.qgPressureIterationTolerance;
+  const bool maximumReached = stage >= p.qgPressureIterationMaximum;
+  if ((toleranceMet || maximumReached)
+      && platform->comm.mpiRank() == 0
+      && p.stabilityMonitorEnabled != 0.0
+      && p.stabilityMonitorInterval > 0
+      && nrs->tstep % p.stabilityMonitorInterval == 0) {
+    printf("qgPressureCorrectors=%d qgResidual=%.8e gradPResidual=%.8e%s\n",
+           stage,
+           qgOuterResidual,
+           gradPOuterResidual,
+           maximumReached && !toleranceMet ? " (maximum reached)" : "");
+  }
+  return toleranceMet || maximumReached;
+}
+
+inline void finishQGPressureIteration()
+{
+  if (p.qgPressureIterationEnabled == 0.0) {
+    return;
+  }
+  cumulativeAlphaClipDeltaVolume += alphaClipDeltaVolume;
+  for (int i = 0; i < 3; ++i) {
+    cumulativeQgMaskDeltaIntegral[i] += qgMaskDeltaIntegral[i];
+  }
+  cumulativeQgMaskDeltaMagnitudeIntegral += qgMaskDeltaMagnitudeIntegral;
+
+  // The corrector reuses the native-advection diagnostic workspace. Rebuild
+  // the final diagnostic once after convergence.
+  if (nrs->tstep > 0
+      && nrs->tstep % p.validationOutputInterval == 0) {
+    evaluatePointwiseTerms();
+    nrs->computeUrst();
+    captureAlphaAdvectionDiagnostics();
+  }
+}
+
+inline void restoreQGOuterState()
+{
+  if (p.qgPressureIterationEnabled == 0.0) {
+    return;
+  }
+  const dlong Nlocal = nrs->meshV->Nlocal;
+  const dlong offset = nrs->fieldOffset;
+  const char *qgNames[3] = {"qgx", "qgy", "qgz"};
+  for (int i = 0; i < 3; ++i) {
+    o_qgOuterPrevious.copyFrom(
+        nrs->scalar->o_solution(qgNames[i]), Nlocal, i * offset, 0);
+  }
+}
+
 inline void buildDivergenceFromAlphaRhs(deviceMemory<dfloat>& o_divergence)
 {
   const dlong Nlocal = nrs->meshV->Nlocal;
@@ -945,8 +1282,9 @@ inline occa::memory implicitGasDrag(double, int scalarIndex)
   return o_NULL;
 }
 
-inline void updateDivergence(double)
+inline void updateDivergence(double time)
 {
+  outerIterationTime = time;
   const dlong Nlocal = nrs->meshV->Nlocal;
   if (p.divergenceExtrapolationEnabled == 0.0 || divergenceHistoryCount == 0) {
     nrs->fluid->o_div.copyFrom(o_divSource, Nlocal);
