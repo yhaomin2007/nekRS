@@ -38,6 +38,9 @@ struct Parameters {
   dfloat gasMomentumCutoff;
   dfloat gasMomentumFullyActive;
   dfloat gasPressureEnabled;
+  // 0 = assembled strong gradient, 1 = mass-normalized weak gradient
+  // matching the volume pressure operator used by the native velocity RHS.
+  int gasPressureGradientMethod;
   dfloat gasPressureGradientFilterEnabled;
   dfloat gasPressureGradientFilterWeight;
   dfloat dragEnabled;
@@ -71,7 +74,11 @@ static deviceMemory<dfloat> o_divQg;
 static deviceMemory<dfloat> o_qgAdvectionFlux;
 static deviceMemory<dfloat> o_divQgAdvectionFlux;
 static deviceMemory<dfloat> o_gradUg;
+// o_gradP is the selected (and optionally time-filtered) gradient used by QG.
 static deviceMemory<dfloat> o_gradP;
+static deviceMemory<dfloat> o_gradPStrong;
+static deviceMemory<dfloat> o_gradPWeak;
+static deviceMemory<dfloat> o_gradPDifference;
 static deviceMemory<dfloat> o_rhoM;
 static deviceMemory<dfloat> o_muM;
 static deviceMemory<dfloat> o_divSource;
@@ -210,6 +217,12 @@ inline void allocate()
              EXIT_FAILURE,
              "gasVelocityMaximum must be positive when clipping is enabled, but is %g\n",
              p.gasVelocityMaximum);
+  nekrsCheck(p.gasPressureGradientMethod < 0
+                 || p.gasPressureGradientMethod > 1,
+             platform->comm.mpiComm(),
+             EXIT_FAILURE,
+             "gasPressureGradientMethod must be 0 (strong) or 1 (weak), but is %d\n",
+             p.gasPressureGradientMethod);
   nekrsCheck(p.gasPressureGradientFilterEnabled != 0.0
                  && (p.gasPressureGradientFilterWeight <= 0.0
                      || p.gasPressureGradientFilterWeight > 1.0),
@@ -269,6 +282,9 @@ inline void allocate()
   o_divQgAdvectionFlux.resize(3 * offset);
   o_gradUg.resize(9 * offset);
   o_gradP.resize(3 * offset);
+  o_gradPStrong.resize(3 * offset);
+  o_gradPWeak.resize(3 * offset);
+  o_gradPDifference.resize(3 * offset);
   o_rhoM.resize(offset);
   o_muM.resize(offset);
   o_divSource.resize(offset);
@@ -441,24 +457,49 @@ inline void evaluatePointwiseTerms()
   opSEM::strongDivergence(mesh, offset, o_qg, o_divQg);
   opSEM::strongGradVec(mesh, offset, o_ug, o_gradUg);
   opSEM::strongGradVec(mesh, offset, o_ul, o_gradUl);
+  // Compute both pressure-gradient discretizations from the same lagged
+  // pressure field so they can be compared directly.
+  //
+  // Strong: assembled pointwise grad(p), as used previously in this case.
+  opSEM::strongGrad(mesh, offset, nrs->fluid->o_P, o_gradPStrong);
+  //
+  // Weak: reproduce the volume weak-gradient operator used by the native
+  // NekRS velocity RHS. core-wGradientVolumeHex3D returns the element weak
+  // load G_w p. Gather it, divide by the assembled lumped mass, and reverse
+  // sign so o_gradPWeak has the same physical sign convention as +grad(p).
+  // When this field is subsequently multiplied by the scalar mass matrix in
+  // scalar_t::sumMakef, -alpha/rho_g*o_gradPWeak reproduces the weak volume
+  // pressure force (up to the phase coefficient and scalar boundary terms).
+  launchKernel("core-wGradientVolumeHex3D",
+               mesh->Nelements,
+               mesh->o_vgeo,
+               mesh->o_D,
+               offset,
+               nrs->fluid->o_P,
+               o_gradPWeak);
+  oogs::startFinish(
+      o_gradPWeak, mesh->dim, offset, ogsDfloat, ogsAdd, mesh->oogs);
+  platform->linAlg->axmyMany(
+      mesh->Nlocal, mesh->dim, offset, 0, -1.0, mesh->o_invLMM, o_gradPWeak);
+
+  const auto &o_selectedGradP =
+      (p.gasPressureGradientMethod == 1) ? o_gradPWeak : o_gradPStrong;
+
   if (p.gasPressureGradientFilterEnabled == 0.0) {
-    opSEM::strongGrad(mesh, offset, nrs->fluid->o_P, o_gradP);
+    o_gradP.copyFrom(o_selectedGradP, 3 * offset);
   } else {
     // At source assembly, o_P contains the pressure from the most recently
-    // completed physical step. Reuse the validation vector as temporary
-    // storage and advance the exponential history only once per timestep,
-    // because this routine can be called more than once during that step.
-    opSEM::strongGrad(
-        mesh, offset, nrs->fluid->o_P, o_validationMassFlux);
+    // completed physical step. Advance the exponential history only once per
+    // timestep because this routine can be called more than once in that step.
     const int tstep = nrs->tstep;
     if (!pressureGradientFilterInitialized) {
-      o_gradP.copyFrom(o_validationMassFlux, 3 * offset);
+      o_gradP.copyFrom(o_selectedGradP, 3 * offset);
       pressureGradientFilterInitialized = true;
       pressureGradientFilterStep = tstep;
     } else if (tstep != pressureGradientFilterStep) {
       for (int i = 0; i < 3; ++i) {
         const auto laggedGradient =
-            o_validationMassFlux.slice(i * offset, offset);
+            o_selectedGradP.slice(i * offset, offset);
         auto filteredGradient = o_gradP.slice(i * offset, offset);
         platform->linAlg->axpby(mesh->Nlocal,
                                 p.gasPressureGradientFilterWeight,
@@ -1185,6 +1226,53 @@ inline dfloat validationBdfDerivative(dfloat current,
     derivative -= coeff[i] * history[i];
   }
   return derivative / nrs->dt[0];
+}
+
+inline void printPressureGradientComparison(double time, int tstep)
+{
+  if (p.stabilityMonitorEnabled == 0.0
+      || p.stabilityMonitorInterval <= 0
+      || (tstep % p.stabilityMonitorInterval) != 0) {
+    return;
+  }
+
+  auto mesh = nrs->meshV;
+  const dlong Nlocal = mesh->Nlocal;
+  const dlong offset = nrs->fieldOffset;
+
+  o_gradPDifference.copyFrom(o_gradPWeak, 3 * offset);
+  platform->linAlg->axpbyMany(
+      Nlocal, mesh->dim, offset, -1.0, o_gradPStrong, 1.0, o_gradPDifference);
+
+  const dfloat strongL2 = platform->linAlg->weightedNorm2Many(
+      Nlocal, mesh->dim, offset, mesh->o_LMM, o_gradPStrong,
+      platform->comm.mpiComm());
+  const dfloat weakL2 = platform->linAlg->weightedNorm2Many(
+      Nlocal, mesh->dim, offset, mesh->o_LMM, o_gradPWeak,
+      platform->comm.mpiComm());
+  const dfloat differenceL2 = platform->linAlg->weightedNorm2Many(
+      Nlocal, mesh->dim, offset, mesh->o_LMM, o_gradPDifference,
+      platform->comm.mpiComm());
+
+  const dfloat relativeL2 =
+      differenceL2 / std::max(strongL2, static_cast<dfloat>(1.0e-30));
+  // RMS magnitude of the vector difference over the physical domain.
+  const dfloat rmseMagnitude =
+      differenceL2 / std::sqrt(std::max(mesh->volume, static_cast<dfloat>(1.0e-30)));
+
+  if (platform->comm.mpiRank() == 0) {
+    printf("pressureGradientComparison step=%d time=%.8e method=%s "
+           "strongL2=%.8e weakL2=%.8e diffL2=%.8e relL2=%.8e "
+           "rmseMagnitude=%.8e\n",
+           tstep,
+           time,
+           (p.gasPressureGradientMethod == 1) ? "weak" : "strong",
+           strongL2,
+           weakL2,
+           differenceL2,
+           relativeL2,
+           rmseMagnitude);
+  }
 }
 
 inline void writeValidationChecks(double time, int tstep)
