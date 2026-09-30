@@ -76,7 +76,6 @@ static deviceMemory<dfloat> o_qgAdvectionFlux;
 static deviceMemory<dfloat> o_divQgAdvectionFlux;
 static deviceMemory<dfloat> o_gradUg;
 static deviceMemory<dfloat> o_gradP;
-static deviceMemory<dfloat> o_gradPOuter;
 static deviceMemory<dfloat> o_rhoM;
 static deviceMemory<dfloat> o_muM;
 static deviceMemory<dfloat> o_divSource;
@@ -308,7 +307,6 @@ inline void allocate()
   o_divQgAdvectionFlux.resize(3 * offset);
   o_gradUg.resize(9 * offset);
   o_gradP.resize(3 * offset);
-  o_gradPOuter.resize(3 * offset);
   o_rhoM.resize(offset);
   o_muM.resize(offset);
   o_divSource.resize(offset);
@@ -481,12 +479,11 @@ inline void evaluatePointwiseTerms()
   opSEM::strongDivergence(mesh, offset, o_qg, o_divQg);
   opSEM::strongGradVec(mesh, offset, o_ug, o_gradUg);
   opSEM::strongGradVec(mesh, offset, o_ul, o_gradUl);
-  opSEM::strongGrad(mesh, offset, nrs->fluid->o_P, o_gradP);
-  if (p.qgPressureIterationEnabled != 0.0
-      && outerIterationStateInitialized) {
-    // The QG pressure source uses the relaxed pressure-gradient iterate, not
-    // the raw pressure gradient from the most recent fluid corrector.
-    o_gradP.copyFrom(o_gradPOuter, 3 * offset);
+  if (p.qgPressureIterationEnabled == 0.0
+      || !outerIterationStateInitialized) {
+    // Once the corrector is initialized, o_gradP itself retains the relaxed
+    // pressure-gradient iterate used by the QG source.
+    opSEM::strongGrad(mesh, offset, nrs->fluid->o_P, o_gradP);
   }
 
   // Form F_ij = q_g,i * u_g,j and take an assembled strong divergence of
@@ -680,7 +677,6 @@ inline void initializeHistory()
   o_ulPrevious.copyFrom(o_ul, 3 * offset);
   o_ugPrevious.copyFrom(o_ug, 3 * offset);
   o_qgOuterPrevious.copyFrom(o_qg, 3 * offset);
-  o_gradPOuter.copyFrom(o_gradP, 3 * offset);
   outerIterationStateInitialized = true;
   platform->linAlg->fill(3 * offset, 0.0, o_virtualMassRelativeAcceleration);
 }
@@ -1093,33 +1089,38 @@ inline bool qgPressureIterationConverged(int stage)
                                         o_qgOuterPrevious,
                                         offset,
                                         3);
+  for (int i = 0; i < 3; ++i) {
+    o_qgOuterPrevious.copyFrom(
+        nrs->scalar->o_solution(qgNames[i]), Nlocal, i * offset, 0);
+  }
 
   // Form the pressure gradient from the newest pressure solve, relax the
   // gradient itself, and measure its change. Pressure gauge shifts therefore
   // cannot contaminate the convergence test or QG forcing.
   opSEM::strongGrad(
-      nrs->meshV, offset, nrs->fluid->o_P, o_gradP);
+      nrs->meshV, offset, nrs->fluid->o_P, o_qgMaskDelta);
   for (int i = 0; i < 3; ++i) {
-    auto gradient = o_gradP.slice(i * offset, Nlocal);
-    const auto previous = o_gradPOuter.slice(i * offset, Nlocal);
+    auto gradient = o_qgMaskDelta.slice(i * offset, Nlocal);
+    const auto previous = o_gradP.slice(i * offset, Nlocal);
     platform->linAlg->axpby(Nlocal,
                             1.0 - p.pressureGradientOuterRelaxation,
                             previous,
                             p.pressureGradientOuterRelaxation,
                             gradient);
-    auto delta = o_qgMaskDelta.slice(i * offset, Nlocal);
+    // The QG workspace is no longer needed after its residual was evaluated;
+    // reuse it for the relaxed pressure-gradient update.
+    auto delta = o_qg.slice(i * offset, Nlocal);
     delta.copyFrom(gradient, Nlocal);
     platform->linAlg->axpby(
         Nlocal, -1.0, previous, 1.0, delta);
   }
-  gradPOuterResidual = relativeOuterUpdate(o_qgMaskDelta,
+  gradPOuterResidual = relativeOuterUpdate(o_qg,
+                                           o_qgMaskDelta,
                                            o_gradP,
-                                           o_gradPOuter,
                                            offset,
                                            3);
 
-  o_qgOuterPrevious.copyFrom(o_qg, 3 * offset);
-  o_gradPOuter.copyFrom(o_gradP, 3 * offset);
+  o_gradP.copyFrom(o_qgMaskDelta, 3 * offset);
 
   // Build the next scalar corrector from the relaxed QG and pressure gradient.
   // This also commits the final converged nonlinear term to EXT history.
