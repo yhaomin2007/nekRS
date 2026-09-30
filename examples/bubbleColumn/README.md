@@ -188,6 +188,7 @@ finally solves mixture velocity/pressure. The gas-flux equation therefore uses
 the pressure gradient available at source assembly, not the pressure produced
 later in the same step.
 
+- `gasPressureGradientMethod = 0|1` selects the pressure-gradient discretization used by the QG pressure source: 0 uses the assembled strong gradient and 1 uses a mass-normalized weak-gradient field derived from `core-wGradientVolumeHex3D`. Both raw fields are retained for diagnostics; checkpoint output writes `gradpStrong` and `gradpWeak`, and the stability-monitor cadence prints their L2 difference, relative L2 difference, and RMS-magnitude difference.
 When `gasPressureGradientFilterEnabled = 1.0`, that lagged gradient is
 exponentially relaxed once per physical timestep:
 
