@@ -58,6 +58,8 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   platform->par->extract(
       "casedata", "gasmomentumfullyactive", p.gasMomentumFullyActive);
   platform->par->extract("casedata", "gaspressureenabled", p.gasPressureEnabled);
+  platform->par->extract(
+      "casedata", "gaspressuregradientmethod", p.gasPressureGradientMethod);
   platform->par->extract("casedata",
                          "gaspressuregradientfilterenabled",
                          p.gasPressureGradientFilterEnabled);
@@ -127,6 +129,7 @@ void UDF_ExecuteStep(double time, int tstep)
   }
   if (tstep > 0) {
     bubbleColumn::printStabilityMonitors(time, tstep);
+    bubbleColumn::printPressureGradientComparison(time, tstep);
   }
   if (nrs->checkpointStep) {
     // Write reconstructed phase velocities as separate vector fields without
@@ -146,6 +149,23 @@ void UDF_ExecuteStep(double time, int tstep)
         bubbleColumn::o_ul.slice(2 * offset, nrs->meshV->Nlocal)};
     nrs->writeToFile(
         "ul", time, nrs->meshV, {{"velocity", liquidVelocity}});
+
+    // Export the two raw lagged-pressure gradient discretizations used for
+    // comparison. These are cached at QG source assembly, before the native
+    // fluid pressure solve of the current step.
+    std::vector<deviceMemory<dfloat>> gradPStrong = {
+        bubbleColumn::o_gradPStrong.slice(0 * offset, nrs->meshV->Nlocal),
+        bubbleColumn::o_gradPStrong.slice(1 * offset, nrs->meshV->Nlocal),
+        bubbleColumn::o_gradPStrong.slice(2 * offset, nrs->meshV->Nlocal)};
+    std::vector<deviceMemory<dfloat>> gradPWeak = {
+        bubbleColumn::o_gradPWeak.slice(0 * offset, nrs->meshV->Nlocal),
+        bubbleColumn::o_gradPWeak.slice(1 * offset, nrs->meshV->Nlocal),
+        bubbleColumn::o_gradPWeak.slice(2 * offset, nrs->meshV->Nlocal)};
+    nrs->writeToFile(
+        "gradpStrong", time, nrs->meshV, {{"velocity", gradPStrong}});
+    nrs->writeToFile(
+        "gradpWeak", time, nrs->meshV, {{"velocity", gradPWeak}});
+
     // Export both mixture-divergence constructions from the same solution
     // state. scalar00 is method 0 (reconstructed alpha RHS), scalar01 is
     // method 1 (BDF alpha derivative plus native NekRS advection), and
