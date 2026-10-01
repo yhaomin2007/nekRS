@@ -347,41 +347,13 @@ inline void project(double time, int tstep)
 
   nrs->fluid->o_U.copyFrom(o_uCorrected, 3 * offset);
 
-  dfloat pErrorRms = NAN;
-  if (tstep == 1) {
-    const dfloat twoPi = 6.283185307179586476925286766559;
-    const dfloat kx = twoPi / p.xLength;
-    const dfloat ky = twoPi / p.yLength;
-
-    // Exact continuous Helmholtz attenuation for the sinusoidal first-step
-    // predictors. This keeps the analytic pressure check valid now that ug,H
-    // and ul,H are actually solved rather than prescribed.
-    const dfloat gasHelmholtzFactor =
-        (p.rhoGas / nrs->dt[0]) /
-        (p.rhoGas * nrs->g0 / nrs->dt[0] + p.muGas * kx * kx);
-    const dfloat liquidHelmholtzFactor =
-        (p.rhoLiquid / nrs->dt[0]) /
-        (p.rhoLiquid * nrs->g0 / nrs->dt[0] + p.muLiquid * ky * ky);
-
-    buildExactPressureKernel(mesh->Nlocal,
-                             alpha,
-                             p.gasAmplitude * gasHelmholtzFactor,
-                             p.liquidAmplitude * liquidHelmholtzFactor,
-                             p.xOrigin,
-                             p.yOrigin,
-                             p.xLength,
-                             p.yLength,
-                             alpha * DgTransient + beta * DlTransient,
-                             mesh->o_x,
-                             mesh->o_y,
-                             o_pExact);
-    o_pError.copyFrom(nrs->fluid->o_P, mesh->Nlocal);
-    platform->linAlg->axpby(mesh->Nlocal, -1.0, o_pExact, 1.0, o_pError);
-    pErrorRms = rms(o_pError);
-  } else {
-    platform->linAlg->fill(mesh->Nlocal, 0.0, o_pExact);
-    platform->linAlg->fill(mesh->Nlocal, 0.0, o_pError);
-  }
+  // The pressure mobility is now the nodal Helmholtz-diagonal approximation
+  // rAU=M/diag(A), so the pressure operator has a spatially varying SEM nodal
+  // coefficient. The earlier closed-form sinusoidal pressure is no longer the
+  // exact solution of this modified discrete operator.
+  const dfloat pErrorRms = NAN;
+  platform->linAlg->fill(mesh->Nlocal, 0.0, o_pExact);
+  platform->linAlg->fill(mesh->Nlocal, 0.0, o_pError);
 
   const dfloat preRms = rms(o_divPre);
   const dfloat postRms = rms(o_divPost);
