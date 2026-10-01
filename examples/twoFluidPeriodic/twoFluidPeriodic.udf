@@ -47,6 +47,11 @@ static deviceMemory<dfloat> o_lambda1Liquid;
 static deviceMemory<dfloat> o_rhsGas;
 static deviceMemory<dfloat> o_rhsLiquid;
 
+static deviceMemory<dfloat> o_diagGas;
+static deviceMemory<dfloat> o_diagLiquid;
+static deviceMemory<dfloat> o_rAUGas;
+static deviceMemory<dfloat> o_rAULiquid;
+
 static elliptic *gasMomentumSolver = nullptr;
 static elliptic *liquidMomentumSolver = nullptr;
 
@@ -55,6 +60,10 @@ static occa::kernel buildMixtureKernel;
 static occa::kernel correctPhaseVelocitiesKernel;
 static occa::kernel buildExactPressureKernel;
 static occa::kernel buildMomentumRhsKernel;
+static occa::kernel buildScalarHelmholtzDiagonalKernel;
+static occa::kernel finalizeMomentumMobilityKernel;
+static occa::kernel buildPressureMobilityKernel;
+static occa::kernel correctPhaseVelocitiesRAUKernel;
 
 inline void registerKernels(deviceKernelProperties &kernelInfo)
 {
@@ -74,6 +83,14 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
         platform->kernelRequests.load(request, "buildExactPressure");
     buildMomentumRhsKernel =
         platform->kernelRequests.load(request, "buildMomentumRhs");
+    buildScalarHelmholtzDiagonalKernel =
+        platform->kernelRequests.load(request, "buildScalarHelmholtzDiagonal");
+    finalizeMomentumMobilityKernel =
+        platform->kernelRequests.load(request, "finalizeMomentumMobility");
+    buildPressureMobilityKernel =
+        platform->kernelRequests.load(request, "buildPressureMobility");
+    correctPhaseVelocitiesRAUKernel =
+        platform->kernelRequests.load(request, "correctPhaseVelocitiesRAU");
   }
 }
 
@@ -101,6 +118,11 @@ inline void allocate()
   o_lambda1Liquid.resize(offset);
   o_rhsGas.resize(3 * offset);
   o_rhsLiquid.resize(3 * offset);
+
+  o_diagGas.resize(offset);
+  o_diagLiquid.resize(offset);
+  o_rAUGas.resize(offset);
+  o_rAULiquid.resize(offset);
 }
 
 inline void initialize()
@@ -162,6 +184,49 @@ inline dfloat rms(deviceMemory<dfloat> field)
   return l2 / std::sqrt(mesh->volume);
 }
 
+inline void updateMomentumMobilities()
+{
+  auto mesh = nrs->meshV;
+  const dlong offset = nrs->fieldOffset;
+
+  // Build the actual assembled scalar Helmholtz diagonal for each phase:
+  //
+  //   A_k = (rho_k*g0/dt) M + mu_k K .
+  //
+  // The pressure correction acts on a physical nodal gradient, whereas A_k is
+  // a weak-form matrix. Therefore the local pressure mobility used below is
+  //
+  //   rAU_k = M_ii / diag(A_k)_ii .
+  //
+  // In the transient-only limit this reduces exactly to dt/(g0*rho_k).
+  buildScalarHelmholtzDiagonalKernel(mesh->Nelements,
+                                     offset,
+                                     mesh->o_ggeo,
+                                     mesh->o_D,
+                                     o_lambda0Gas,
+                                     o_lambda1Gas,
+                                     o_diagGas);
+  buildScalarHelmholtzDiagonalKernel(mesh->Nelements,
+                                     offset,
+                                     mesh->o_ggeo,
+                                     mesh->o_D,
+                                     o_lambda0Liquid,
+                                     o_lambda1Liquid,
+                                     o_diagLiquid);
+
+  oogs::startFinish(o_diagGas, 1, offset, ogsDfloat, ogsAdd, mesh->oogs);
+  oogs::startFinish(o_diagLiquid, 1, offset, ogsDfloat, ogsAdd, mesh->oogs);
+
+  finalizeMomentumMobilityKernel(mesh->Nlocal,
+                                 mesh->o_LMM,
+                                 o_diagGas,
+                                 o_rAUGas);
+  finalizeMomentumMobilityKernel(mesh->Nlocal,
+                                 mesh->o_LMM,
+                                 o_diagLiquid,
+                                 o_rAULiquid);
+}
+
 inline void solvePhasePredictors()
 {
   setupPhaseMomentumSolvers();
@@ -171,18 +236,18 @@ inline void solvePhasePredictors()
   const dfloat invDt = 1.0 / nrs->dt[0];
   const dfloat g0idt = nrs->g0 * invDt;
 
-  // First prototype momentum equation: backward-Euler transient + implicit
-  // viscous diffusion only,
+  // Backward-Euler transient + implicit viscous diffusion:
   //
   // [rho_k*g0/dt - div(mu_k grad)] u_k,H
   //     = rho_k/dt * u_k^n.
-  //
-  // With tombo1, g0=1 and this is the standard backward-Euler Helmholtz
-  // predictor. Convection, drag and body forces are intentionally absent.
   platform->linAlg->fill(mesh->Nlocal, p.muGas, o_lambda0Gas);
   platform->linAlg->fill(mesh->Nlocal, p.rhoGas * g0idt, o_lambda1Gas);
   platform->linAlg->fill(mesh->Nlocal, p.muLiquid, o_lambda0Liquid);
   platform->linAlg->fill(mesh->Nlocal, p.rhoLiquid * g0idt, o_lambda1Liquid);
+
+  // Keep the pressure mobility consistent with the same discrete Helmholtz
+  // coefficients used by these predictor solves.
+  updateMomentumMobilities();
 
   buildMomentumRhsKernel(mesh->Nlocal,
                          offset,
@@ -225,9 +290,20 @@ inline void project(double time, int tstep)
   const dfloat alpha = p.alphaGas;
   const dfloat beta = 1.0 - alpha;
   const dfloat dtOverG0 = nrs->dt[0] / nrs->g0;
-  const dfloat Dg = dtOverG0 / p.rhoGas;
-  const dfloat Dl = dtOverG0 / p.rhoLiquid;
-  const dfloat lambdaP = alpha * Dg + beta * Dl;
+  const dfloat DgTransient = dtOverG0 / p.rhoGas;
+  const dfloat DlTransient = dtOverG0 / p.rhoLiquid;
+
+  // OpenFOAM-style diagonal momentum response:
+  //
+  //   u_k = u_k,H - rAU_k grad(p),
+  //
+  // where rAU_k = M_ii / diag(A_k)_ii.  The pressure coefficient is therefore
+  // the volume-fraction-weighted sum of the two phase mobilities.
+  buildPressureMobilityKernel(mesh->Nlocal,
+                              alpha,
+                              o_rAUGas,
+                              o_rAULiquid,
+                              o_lambdaP);
 
   buildMixtureKernel(mesh->Nlocal,
                      offset,
@@ -238,7 +314,6 @@ inline void project(double time, int tstep)
 
   opSEM::strongDivergence(mesh, offset, o_uPredictor, o_divPre);
 
-  platform->linAlg->fill(mesh->Nlocal, lambdaP, o_lambdaP);
   launchKernel("core-wDivergenceVolumeHex3D",
                mesh->Nelements,
                mesh->o_vgeo,
@@ -254,13 +329,13 @@ inline void project(double time, int tstep)
 
   o_ug.copyFrom(o_ugPredictor, 3 * offset);
   o_ul.copyFrom(o_ulPredictor, 3 * offset);
-  correctPhaseVelocitiesKernel(mesh->Nlocal,
-                               offset,
-                               Dg,
-                               Dl,
-                               o_gradP,
-                               o_ug,
-                               o_ul);
+  correctPhaseVelocitiesRAUKernel(mesh->Nlocal,
+                                  offset,
+                                  o_rAUGas,
+                                  o_rAULiquid,
+                                  o_gradP,
+                                  o_ug,
+                                  o_ul);
 
   buildMixtureKernel(mesh->Nlocal,
                      offset,
@@ -296,7 +371,7 @@ inline void project(double time, int tstep)
                              p.yOrigin,
                              p.xLength,
                              p.yLength,
-                             lambdaP,
+                             alpha * DgTransient + beta * DlTransient,
                              mesh->o_x,
                              mesh->o_y,
                              o_pExact);
@@ -314,8 +389,14 @@ inline void project(double time, int tstep)
       postRms / std::max(preRms, static_cast<dfloat>(1.0e-30));
 
   if (platform->comm.mpiRank() == 0) {
+    const dfloat rAUGasMin = platform->linAlg->min(mesh->Nlocal, o_rAUGas, platform->comm.mpiComm());
+    const dfloat rAUGasMax = platform->linAlg->max(mesh->Nlocal, o_rAUGas, platform->comm.mpiComm());
+    const dfloat rAULiquidMin = platform->linAlg->min(mesh->Nlocal, o_rAULiquid, platform->comm.mpiComm());
+    const dfloat rAULiquidMax = platform->linAlg->max(mesh->Nlocal, o_rAULiquid, platform->comm.mpiComm());
+
     printf("twoFluidPeriodic step=%d time=%.8e alpha=%.6e "
-           "Dg=%.8e Dl=%.8e lambdaP=%.8e "
+           "DgTransient=%.8e DlTransient=%.8e "
+           "rAUGas[min,max]=[%.8e,%.8e] rAULiquid[min,max]=[%.8e,%.8e] "
            "divPreRMS=%.8e divPostRMS=%.8e divRatio=%.8e "
            "pExactRMSE=%.8e "
            "ugIters=%d ugResidual=%.8e ulIters=%d ulResidual=%.8e "
@@ -323,9 +404,12 @@ inline void project(double time, int tstep)
            tstep,
            time,
            alpha,
-           Dg,
-           Dl,
-           lambdaP,
+           DgTransient,
+           DlTransient,
+           rAUGasMin,
+           rAUGasMax,
+           rAULiquidMin,
+           rAULiquidMax,
            preRms,
            postRms,
            reduction,
