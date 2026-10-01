@@ -198,7 +198,7 @@ inline dfloat schurDot(deviceMemory<dfloat> a, deviceMemory<dfloat> b)
                                              platform->comm.mpiComm());
 }
 
-inline void removePressureNullspace(deviceMemory<dfloat> a)
+inline void removePressureNullspace(occa::memory a)
 {
   auto mesh = nrs->meshV;
   const dfloat mean =
@@ -275,7 +275,7 @@ inline void solvePhasePredictors(int &gasIterations, int &liquidIterations)
 //   S p = -D_w [alpha du_g + (1-alpha) du_l],
 //
 // with D_w the NekRS weak-divergence operator.
-inline void applySchur(deviceMemory<dfloat> pressure,
+inline void applySchur(const occa::memory &pressure,
                        deviceMemory<dfloat> schurResult,
                        SchurStats &stats)
 {
