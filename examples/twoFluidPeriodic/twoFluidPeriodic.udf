@@ -13,18 +13,22 @@ struct Parameters {
   dfloat alphaGas = 0.2;
   dfloat rhoGas = 1.2;
   dfloat rhoLiquid = 998.2;
+  dfloat muGas = 1.8e-5;
+  dfloat muLiquid = 1.0e-3;
   dfloat gasAmplitude = 0.20;
   dfloat liquidAmplitude = 0.10;
-  dfloat xOrigin = 0.0;
-  dfloat yOrigin = 0.0;
-  dfloat xLength = 1.0;
-  dfloat yLength = 1.0;
+  dfloat xOrigin = -0.05;
+  dfloat yOrigin = -0.05;
+  dfloat xLength = 0.10;
+  dfloat yLength = 0.10;
 };
 
 static Parameters p;
 
 static deviceMemory<dfloat> o_ug;
 static deviceMemory<dfloat> o_ul;
+static deviceMemory<dfloat> o_ugPredictor;
+static deviceMemory<dfloat> o_ulPredictor;
 static deviceMemory<dfloat> o_uPredictor;
 static deviceMemory<dfloat> o_uCorrected;
 static deviceMemory<dfloat> o_gradP;
@@ -35,10 +39,21 @@ static deviceMemory<dfloat> o_divPost;
 static deviceMemory<dfloat> o_pExact;
 static deviceMemory<dfloat> o_pError;
 
+static deviceMemory<dfloat> o_lambda0Gas;
+static deviceMemory<dfloat> o_lambda1Gas;
+static deviceMemory<dfloat> o_lambda0Liquid;
+static deviceMemory<dfloat> o_lambda1Liquid;
+static deviceMemory<dfloat> o_rhsGas;
+static deviceMemory<dfloat> o_rhsLiquid;
+
+static elliptic *gasMomentumSolver = nullptr;
+static elliptic *liquidMomentumSolver = nullptr;
+
 static occa::kernel initializePhaseVelocitiesKernel;
 static occa::kernel buildMixtureKernel;
 static occa::kernel correctPhaseVelocitiesKernel;
 static occa::kernel buildExactPressureKernel;
+static occa::kernel buildMomentumRhsKernel;
 
 inline void registerKernels(deviceKernelProperties &kernelInfo)
 {
@@ -56,14 +71,19 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
         platform->kernelRequests.load(request, "correctPhaseVelocities");
     buildExactPressureKernel =
         platform->kernelRequests.load(request, "buildExactPressure");
+    buildMomentumRhsKernel =
+        platform->kernelRequests.load(request, "buildMomentumRhs");
   }
 }
 
 inline void allocate()
 {
   const dlong offset = nrs->fieldOffset;
+
   o_ug.resize(3 * offset);
   o_ul.resize(3 * offset);
+  o_ugPredictor.resize(3 * offset);
+  o_ulPredictor.resize(3 * offset);
   o_uPredictor.resize(3 * offset);
   o_uCorrected.resize(3 * offset);
   o_gradP.resize(3 * offset);
@@ -73,6 +93,13 @@ inline void allocate()
   o_divPost.resize(offset);
   o_pExact.resize(offset);
   o_pError.resize(offset);
+
+  o_lambda0Gas.resize(offset);
+  o_lambda1Gas.resize(offset);
+  o_lambda0Liquid.resize(offset);
+  o_lambda1Liquid.resize(offset);
+  o_rhsGas.resize(3 * offset);
+  o_rhsLiquid.resize(3 * offset);
 }
 
 inline void initialize()
@@ -92,6 +119,32 @@ inline void initialize()
                                   o_ul);
 }
 
+inline void setupPhaseMomentumSolvers()
+{
+  if (gasMomentumSolver && liquidMomentumSolver) {
+    return;
+  }
+
+  auto mesh = nrs->meshV;
+
+  const dfloat g0idt = nrs->g0 / nrs->dt[0];
+
+  platform->linAlg->fill(mesh->Nlocal, p.muGas, o_lambda0Gas);
+  platform->linAlg->fill(mesh->Nlocal, p.rhoGas * g0idt, o_lambda1Gas);
+  platform->linAlg->fill(mesh->Nlocal, p.muLiquid, o_lambda0Liquid);
+  platform->linAlg->fill(mesh->Nlocal, p.rhoLiquid * g0idt, o_lambda1Liquid);
+
+  // Fully periodic domain: there are no physical boundary faces, so all
+  // elliptic face entries are NO_OP. One scalar elliptic solver is reused for
+  // x/y/z components of each phase.
+  std::vector<int> EToB(mesh->Nelements * mesh->Nfaces, ellipticBcType::NO_OP);
+
+  gasMomentumSolver = new elliptic(
+      "ug", mesh, nrs->fieldOffset, EToB, o_lambda0Gas, o_lambda1Gas);
+  liquidMomentumSolver = new elliptic(
+      "ul", mesh, nrs->fieldOffset, EToB, o_lambda0Liquid, o_lambda1Liquid);
+}
+
 inline void neutralizeNativeFluid(double, int)
 {
   const dlong offset = nrs->fieldOffset;
@@ -108,10 +161,65 @@ inline dfloat rms(deviceMemory<dfloat> field)
   return l2 / std::sqrt(mesh->volume);
 }
 
+inline void solvePhasePredictors()
+{
+  setupPhaseMomentumSolvers();
+
+  auto mesh = nrs->meshV;
+  const dlong offset = nrs->fieldOffset;
+  const dfloat invDt = 1.0 / nrs->dt[0];
+  const dfloat g0idt = nrs->g0 * invDt;
+
+  // First prototype momentum equation: backward-Euler transient + implicit
+  // viscous diffusion only,
+  //
+  // [rho_k*g0/dt - div(mu_k grad)] u_k,H
+  //     = rho_k/dt * u_k^n.
+  //
+  // With tombo1, g0=1 and this is the standard backward-Euler Helmholtz
+  // predictor. Convection, drag and body forces are intentionally absent.
+  platform->linAlg->fill(mesh->Nlocal, p.muGas, o_lambda0Gas);
+  platform->linAlg->fill(mesh->Nlocal, p.rhoGas * g0idt, o_lambda1Gas);
+  platform->linAlg->fill(mesh->Nlocal, p.muLiquid, o_lambda0Liquid);
+  platform->linAlg->fill(mesh->Nlocal, p.rhoLiquid * g0idt, o_lambda1Liquid);
+
+  buildMomentumRhsKernel(mesh->Nlocal,
+                         offset,
+                         p.rhoGas * invDt,
+                         mesh->o_LMM,
+                         o_ug,
+                         o_rhsGas);
+  buildMomentumRhsKernel(mesh->Nlocal,
+                         offset,
+                         p.rhoLiquid * invDt,
+                         mesh->o_LMM,
+                         o_ul,
+                         o_rhsLiquid);
+
+  o_ugPredictor.copyFrom(o_ug, 3 * offset);
+  o_ulPredictor.copyFrom(o_ul, 3 * offset);
+
+  for (int i = 0; i < 3; ++i) {
+    gasMomentumSolver->solve(
+        o_lambda0Gas,
+        o_lambda1Gas,
+        o_rhsGas.slice(i * offset, mesh->Nlocal),
+        o_ugPredictor.slice(i * offset, mesh->Nlocal));
+
+    liquidMomentumSolver->solve(
+        o_lambda0Liquid,
+        o_lambda1Liquid,
+        o_rhsLiquid.slice(i * offset, mesh->Nlocal),
+        o_ulPredictor.slice(i * offset, mesh->Nlocal));
+  }
+}
+
 inline void project(double time, int tstep)
 {
   auto mesh = nrs->meshV;
   const dlong offset = nrs->fieldOffset;
+
+  solvePhasePredictors();
 
   const dfloat alpha = p.alphaGas;
   const dfloat beta = 1.0 - alpha;
@@ -123,8 +231,8 @@ inline void project(double time, int tstep)
   buildMixtureKernel(mesh->Nlocal,
                      offset,
                      alpha,
-                     o_ug,
-                     o_ul,
+                     o_ugPredictor,
+                     o_ulPredictor,
                      o_uPredictor);
 
   opSEM::strongDivergence(mesh, offset, o_uPredictor, o_divPre);
@@ -142,6 +250,9 @@ inline void project(double time, int tstep)
       o_lambdaP, o_NULL, o_rhsP, nrs->fluid->o_P.slice(0, mesh->Nlocal));
 
   opSEM::strongGrad(mesh, offset, nrs->fluid->o_P, o_gradP);
+
+  o_ug.copyFrom(o_ugPredictor, 3 * offset);
+  o_ul.copyFrom(o_ulPredictor, 3 * offset);
   correctPhaseVelocitiesKernel(mesh->Nlocal,
                                offset,
                                Dg,
@@ -162,10 +273,24 @@ inline void project(double time, int tstep)
 
   dfloat pErrorRms = NAN;
   if (tstep == 1) {
+    const dfloat twoPi = 6.283185307179586476925286766559;
+    const dfloat kx = twoPi / p.xLength;
+    const dfloat ky = twoPi / p.yLength;
+
+    // Exact continuous Helmholtz attenuation for the sinusoidal first-step
+    // predictors. This keeps the analytic pressure check valid now that ug,H
+    // and ul,H are actually solved rather than prescribed.
+    const dfloat gasHelmholtzFactor =
+        (p.rhoGas / nrs->dt[0]) /
+        (p.rhoGas * nrs->g0 / nrs->dt[0] + p.muGas * kx * kx);
+    const dfloat liquidHelmholtzFactor =
+        (p.rhoLiquid / nrs->dt[0]) /
+        (p.rhoLiquid * nrs->g0 / nrs->dt[0] + p.muLiquid * ky * ky);
+
     buildExactPressureKernel(mesh->Nlocal,
                              alpha,
-                             p.gasAmplitude,
-                             p.liquidAmplitude,
+                             p.gasAmplitude * gasHelmholtzFactor,
+                             p.liquidAmplitude * liquidHelmholtzFactor,
                              p.xOrigin,
                              p.yOrigin,
                              p.xLength,
@@ -178,22 +303,22 @@ inline void project(double time, int tstep)
     platform->linAlg->axpby(mesh->Nlocal, -1.0, o_pExact, 1.0, o_pError);
     pErrorRms = rms(o_pError);
   } else {
-    // The analytic formula corresponds to the deliberately compressible
-    // initial predictor. After step 1 the stored phase velocities are already
-    // projected, so there is no longer a nonzero analytic pressure target.
     platform->linAlg->fill(mesh->Nlocal, 0.0, o_pExact);
     platform->linAlg->fill(mesh->Nlocal, 0.0, o_pError);
   }
 
   const dfloat preRms = rms(o_divPre);
   const dfloat postRms = rms(o_divPost);
-  const dfloat reduction = postRms / std::max(preRms, static_cast<dfloat>(1.0e-30));
+  const dfloat reduction =
+      postRms / std::max(preRms, static_cast<dfloat>(1.0e-30));
 
   if (platform->comm.mpiRank() == 0) {
     printf("twoFluidPeriodic step=%d time=%.8e alpha=%.6e "
            "Dg=%.8e Dl=%.8e lambdaP=%.8e "
            "divPreRMS=%.8e divPostRMS=%.8e divRatio=%.8e "
-           "pExactRMSE=%.8e pIters=%d pResidual=%.8e\n",
+           "pExactRMSE=%.8e "
+           "ugIters=%d ugResidual=%.8e ulIters=%d ulResidual=%.8e "
+           "pIters=%d pResidual=%.8e\n",
            tstep,
            time,
            alpha,
@@ -204,6 +329,10 @@ inline void project(double time, int tstep)
            postRms,
            reduction,
            pErrorRms,
+           gasMomentumSolver->Niter(),
+           gasMomentumSolver->finalResidual(),
+           liquidMomentumSolver->Niter(),
+           liquidMomentumSolver->finalResidual(),
            nrs->fluid->ellipticSolverP->Niter(),
            nrs->fluid->ellipticSolverP->finalResidual());
   }
@@ -222,6 +351,14 @@ inline void writeFields(double time)
       o_ul.slice(0 * offset, mesh->Nlocal),
       o_ul.slice(1 * offset, mesh->Nlocal),
       o_ul.slice(2 * offset, mesh->Nlocal)};
+  std::vector<deviceMemory<dfloat>> ugH = {
+      o_ugPredictor.slice(0 * offset, mesh->Nlocal),
+      o_ugPredictor.slice(1 * offset, mesh->Nlocal),
+      o_ugPredictor.slice(2 * offset, mesh->Nlocal)};
+  std::vector<deviceMemory<dfloat>> ulH = {
+      o_ulPredictor.slice(0 * offset, mesh->Nlocal),
+      o_ulPredictor.slice(1 * offset, mesh->Nlocal),
+      o_ulPredictor.slice(2 * offset, mesh->Nlocal)};
   std::vector<deviceMemory<dfloat>> uPredictor = {
       o_uPredictor.slice(0 * offset, mesh->Nlocal),
       o_uPredictor.slice(1 * offset, mesh->Nlocal),
@@ -235,6 +372,8 @@ inline void writeFields(double time)
       o_gradP.slice(1 * offset, mesh->Nlocal),
       o_gradP.slice(2 * offset, mesh->Nlocal)};
 
+  nrs->writeToFile("ugH", time, mesh, {{"velocity", ugH}});
+  nrs->writeToFile("ulH", time, mesh, {{"velocity", ulH}});
   nrs->writeToFile("ug", time, mesh, {{"velocity", ug}});
   nrs->writeToFile("ul", time, mesh, {{"velocity", ul}});
   nrs->writeToFile("upred", time, mesh, {{"velocity", uPredictor}});
@@ -263,6 +402,8 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   platform->par->extract("casedata", "alphagas", p.alphaGas);
   platform->par->extract("casedata", "rhogas", p.rhoGas);
   platform->par->extract("casedata", "rholiquid", p.rhoLiquid);
+  platform->par->extract("casedata", "mugas", p.muGas);
+  platform->par->extract("casedata", "muliquid", p.muLiquid);
   platform->par->extract("casedata", "gasamplitude", p.gasAmplitude);
   platform->par->extract("casedata", "liquidamplitude", p.liquidAmplitude);
   platform->par->extract("casedata", "xorigin", p.xOrigin);
@@ -280,6 +421,11 @@ void UDF_Setup0(MPI_Comm, setupAide &)
              EXIT_FAILURE,
              "%s",
              "phase densities must be positive\n");
+  nekrsCheck(p.muGas <= 0.0 || p.muLiquid <= 0.0,
+             platform->comm.mpiComm(),
+             EXIT_FAILURE,
+             "%s",
+             "phase viscosities must be positive\n");
   nekrsCheck(p.xLength <= 0.0 || p.yLength <= 0.0,
              platform->comm.mpiComm(),
              EXIT_FAILURE,
@@ -287,6 +433,18 @@ void UDF_Setup0(MPI_Comm, setupAide &)
              "periodic lengths must be positive\n");
 
   platform->options.setArgs("FLUID PRESSURE ELLIPTIC COEFF FIELD", "TRUE");
+
+  // Case-layer scalar Helmholtz solvers used for the three Cartesian
+  // components of each phase momentum predictor.
+  platform->options.setArgs("UG SOLVER", "CG+FLEXIBLE");
+  platform->options.setArgs("UG PRECONDITIONER", "JACOBI");
+  platform->options.setArgs("UG SOLVER TOLERANCE", "1.0e-12");
+  platform->options.setArgs("UG ELLIPTIC COEFF FIELD", "TRUE");
+
+  platform->options.setArgs("UL SOLVER", "CG+FLEXIBLE");
+  platform->options.setArgs("UL PRECONDITIONER", "JACOBI");
+  platform->options.setArgs("UL SOLVER TOLERANCE", "1.0e-12");
+  platform->options.setArgs("UL ELLIPTIC COEFF FIELD", "TRUE");
 }
 
 void UDF_Setup()
@@ -308,3 +466,9 @@ void UDF_ExecuteStep(double time, int tstep)
     twoFluidPeriodic::writeFields(time);
   }
 }
+
+#ifdef __okl__
+void udfDirichlet(bcData *bc){}
+void udfNeumann(bcData *bc){}
+void udfRobin(bcData *bc){}
+#endif
