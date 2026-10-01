@@ -22,6 +22,14 @@ struct Parameters {
   dfloat yOrigin = -0.05;
   dfloat xLength = 0.10;
   dfloat yLength = 0.10;
+  dfloat schurTolerance = 1.0e-10;
+  int schurMaxIterations = 50;
+};
+
+struct SchurStats {
+  int applications = 0;
+  long long gasInnerIterations = 0;
+  long long liquidInnerIterations = 0;
 };
 
 static Parameters p;
@@ -33,12 +41,8 @@ static deviceMemory<dfloat> o_ulPredictor;
 static deviceMemory<dfloat> o_uPredictor;
 static deviceMemory<dfloat> o_uCorrected;
 static deviceMemory<dfloat> o_gradP;
-static deviceMemory<dfloat> o_lambdaP;
-static deviceMemory<dfloat> o_rhsP;
 static deviceMemory<dfloat> o_divPre;
 static deviceMemory<dfloat> o_divPost;
-static deviceMemory<dfloat> o_pExact;
-static deviceMemory<dfloat> o_pError;
 
 static deviceMemory<dfloat> o_lambda0Gas;
 static deviceMemory<dfloat> o_lambda1Gas;
@@ -47,23 +51,27 @@ static deviceMemory<dfloat> o_lambda1Liquid;
 static deviceMemory<dfloat> o_rhsGas;
 static deviceMemory<dfloat> o_rhsLiquid;
 
-static deviceMemory<dfloat> o_diagGas;
-static deviceMemory<dfloat> o_diagLiquid;
-static deviceMemory<dfloat> o_rAUGas;
-static deviceMemory<dfloat> o_rAULiquid;
+// Exact pressure-response / Schur-complement workspace.
+static deviceMemory<dfloat> o_pressureLoad;
+static deviceMemory<dfloat> o_duGas;
+static deviceMemory<dfloat> o_duLiquid;
+static deviceMemory<dfloat> o_duMixture;
+static deviceMemory<dfloat> o_schurRhs;
+static deviceMemory<dfloat> o_schurResidual;
+static deviceMemory<dfloat> o_schurDirection;
+static deviceMemory<dfloat> o_schurAd;
+static deviceMemory<dfloat> o_weakDivPost;
+static deviceMemory<dfloat> o_weakDivPostPhysical;
+static deviceMemory<dfloat> o_one;
+
+static dfloat pressureMeanDenominator = 1.0;
 
 static elliptic *gasMomentumSolver = nullptr;
 static elliptic *liquidMomentumSolver = nullptr;
 
 static occa::kernel initializePhaseVelocitiesKernel;
 static occa::kernel buildMixtureKernel;
-static occa::kernel correctPhaseVelocitiesKernel;
-static occa::kernel buildExactPressureKernel;
 static occa::kernel buildMomentumRhsKernel;
-static occa::kernel buildScalarHelmholtzDiagonalKernel;
-static occa::kernel finalizeMomentumMobilityKernel;
-static occa::kernel buildPressureMobilityKernel;
-static occa::kernel correctPhaseVelocitiesRAUKernel;
 
 inline void registerKernels(deviceKernelProperties &kernelInfo)
 {
@@ -77,20 +85,8 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
         platform->kernelRequests.load(request, "initializePhaseVelocities");
     buildMixtureKernel =
         platform->kernelRequests.load(request, "buildMixture");
-    correctPhaseVelocitiesKernel =
-        platform->kernelRequests.load(request, "correctPhaseVelocities");
-    buildExactPressureKernel =
-        platform->kernelRequests.load(request, "buildExactPressure");
     buildMomentumRhsKernel =
         platform->kernelRequests.load(request, "buildMomentumRhs");
-    buildScalarHelmholtzDiagonalKernel =
-        platform->kernelRequests.load(request, "buildScalarHelmholtzDiagonal");
-    finalizeMomentumMobilityKernel =
-        platform->kernelRequests.load(request, "finalizeMomentumMobility");
-    buildPressureMobilityKernel =
-        platform->kernelRequests.load(request, "buildPressureMobility");
-    correctPhaseVelocitiesRAUKernel =
-        platform->kernelRequests.load(request, "correctPhaseVelocitiesRAU");
   }
 }
 
@@ -105,12 +101,8 @@ inline void allocate()
   o_uPredictor.resize(3 * offset);
   o_uCorrected.resize(3 * offset);
   o_gradP.resize(3 * offset);
-  o_lambdaP.resize(offset);
-  o_rhsP.resize(offset);
   o_divPre.resize(offset);
   o_divPost.resize(offset);
-  o_pExact.resize(offset);
-  o_pError.resize(offset);
 
   o_lambda0Gas.resize(offset);
   o_lambda1Gas.resize(offset);
@@ -119,10 +111,26 @@ inline void allocate()
   o_rhsGas.resize(3 * offset);
   o_rhsLiquid.resize(3 * offset);
 
-  o_diagGas.resize(offset);
-  o_diagLiquid.resize(offset);
-  o_rAUGas.resize(offset);
-  o_rAULiquid.resize(offset);
+  o_pressureLoad.resize(3 * offset);
+  o_duGas.resize(3 * offset);
+  o_duLiquid.resize(3 * offset);
+  o_duMixture.resize(3 * offset);
+  o_schurRhs.resize(offset);
+  o_schurResidual.resize(offset);
+  o_schurDirection.resize(offset);
+  o_schurAd.resize(offset);
+  o_weakDivPost.resize(offset);
+  o_weakDivPostPhysical.resize(offset);
+  o_one.resize(offset);
+
+  auto mesh = nrs->meshV;
+  platform->linAlg->fill(mesh->Nlocal, 1.0, o_one);
+  pressureMeanDenominator =
+      platform->linAlg->weightedInnerProd(mesh->Nlocal,
+                                         mesh->ogs->o_invDegree,
+                                         o_one,
+                                         o_one,
+                                         platform->comm.mpiComm());
 }
 
 inline void initialize()
@@ -149,7 +157,6 @@ inline void setupPhaseMomentumSolvers()
   }
 
   auto mesh = nrs->meshV;
-
   const dfloat g0idt = nrs->g0 / nrs->dt[0];
 
   platform->linAlg->fill(mesh->Nlocal, p.muGas, o_lambda0Gas);
@@ -157,9 +164,6 @@ inline void setupPhaseMomentumSolvers()
   platform->linAlg->fill(mesh->Nlocal, p.muLiquid, o_lambda0Liquid);
   platform->linAlg->fill(mesh->Nlocal, p.rhoLiquid * g0idt, o_lambda1Liquid);
 
-  // Fully periodic domain: there are no physical boundary faces, so all
-  // elliptic face entries are NO_OP. One scalar elliptic solver is reused for
-  // x/y/z components of each phase.
   std::vector<int> EToB(mesh->Nelements * mesh->Nfaces, ellipticBcType::NO_OP);
 
   gasMomentumSolver = new elliptic(
@@ -184,50 +188,30 @@ inline dfloat rms(deviceMemory<dfloat> field)
   return l2 / std::sqrt(mesh->volume);
 }
 
-inline void updateMomentumMobilities()
+inline dfloat schurDot(deviceMemory<dfloat> a, deviceMemory<dfloat> b)
 {
   auto mesh = nrs->meshV;
-  const dlong offset = nrs->fieldOffset;
-
-  // Build the actual assembled scalar Helmholtz diagonal for each phase:
-  //
-  //   A_k = (rho_k*g0/dt) M + mu_k K .
-  //
-  // The pressure correction acts on a physical nodal gradient, whereas A_k is
-  // a weak-form matrix. Therefore the local pressure mobility used below is
-  //
-  //   rAU_k = M_ii / diag(A_k)_ii .
-  //
-  // In the transient-only limit this reduces exactly to dt/(g0*rho_k).
-  buildScalarHelmholtzDiagonalKernel(mesh->Nelements,
-                                     offset,
-                                     mesh->o_ggeo,
-                                     mesh->o_D,
-                                     o_lambda0Gas,
-                                     o_lambda1Gas,
-                                     o_diagGas);
-  buildScalarHelmholtzDiagonalKernel(mesh->Nelements,
-                                     offset,
-                                     mesh->o_ggeo,
-                                     mesh->o_D,
-                                     o_lambda0Liquid,
-                                     o_lambda1Liquid,
-                                     o_diagLiquid);
-
-  oogs::startFinish(o_diagGas, 1, offset, ogsDfloat, ogsAdd, mesh->oogs);
-  oogs::startFinish(o_diagLiquid, 1, offset, ogsDfloat, ogsAdd, mesh->oogs);
-
-  finalizeMomentumMobilityKernel(mesh->Nlocal,
-                                 mesh->o_LMM,
-                                 o_diagGas,
-                                 o_rAUGas);
-  finalizeMomentumMobilityKernel(mesh->Nlocal,
-                                 mesh->o_LMM,
-                                 o_diagLiquid,
-                                 o_rAULiquid);
+  return platform->linAlg->weightedInnerProd(mesh->Nlocal,
+                                             mesh->ogs->o_invDegree,
+                                             a,
+                                             b,
+                                             platform->comm.mpiComm());
 }
 
-inline void solvePhasePredictors()
+inline void removePressureNullspace(deviceMemory<dfloat> a)
+{
+  auto mesh = nrs->meshV;
+  const dfloat mean =
+      platform->linAlg->weightedInnerProd(mesh->Nlocal,
+                                         mesh->ogs->o_invDegree,
+                                         o_one,
+                                         a,
+                                         platform->comm.mpiComm()) /
+      pressureMeanDenominator;
+  platform->linAlg->add(mesh->Nlocal, -mean, a);
+}
+
+inline void solvePhasePredictors(int &gasIterations, int &liquidIterations)
 {
   setupPhaseMomentumSolvers();
 
@@ -236,18 +220,10 @@ inline void solvePhasePredictors()
   const dfloat invDt = 1.0 / nrs->dt[0];
   const dfloat g0idt = nrs->g0 * invDt;
 
-  // Backward-Euler transient + implicit viscous diffusion:
-  //
-  // [rho_k*g0/dt - div(mu_k grad)] u_k,H
-  //     = rho_k/dt * u_k^n.
   platform->linAlg->fill(mesh->Nlocal, p.muGas, o_lambda0Gas);
   platform->linAlg->fill(mesh->Nlocal, p.rhoGas * g0idt, o_lambda1Gas);
   platform->linAlg->fill(mesh->Nlocal, p.muLiquid, o_lambda0Liquid);
   platform->linAlg->fill(mesh->Nlocal, p.rhoLiquid * g0idt, o_lambda1Liquid);
-
-  // Keep the pressure mobility consistent with the same discrete Helmholtz
-  // coefficients used by these predictor solves.
-  updateMomentumMobilities();
 
   buildMomentumRhsKernel(mesh->Nlocal,
                          offset,
@@ -265,45 +241,193 @@ inline void solvePhasePredictors()
   o_ugPredictor.copyFrom(o_ug, 3 * offset);
   o_ulPredictor.copyFrom(o_ul, 3 * offset);
 
+  gasIterations = 0;
+  liquidIterations = 0;
+
   for (int i = 0; i < 3; ++i) {
     gasMomentumSolver->solve(
         o_lambda0Gas,
         o_lambda1Gas,
         o_rhsGas.slice(i * offset, mesh->Nlocal),
         o_ugPredictor.slice(i * offset, mesh->Nlocal));
+    gasIterations += gasMomentumSolver->Niter();
 
     liquidMomentumSolver->solve(
         o_lambda0Liquid,
         o_lambda1Liquid,
         o_rhsLiquid.slice(i * offset, mesh->Nlocal),
         o_ulPredictor.slice(i * offset, mesh->Nlocal));
+    liquidIterations += liquidMomentumSolver->Niter();
   }
+}
+
+// Apply the exact discrete phase response to a trial pressure:
+//
+//   A_g du_g = G_w p,
+//   A_l du_l = G_w p,
+//
+// where G_w is NekRS's weak pressure-gradient load. For a periodic domain,
+// G_w p represents the weak form of -grad(p), so du_k is the physical pressure
+// correction to phase k.
+//
+// The positive Schur operator is then
+//
+//   S p = -D_w [alpha du_g + (1-alpha) du_l],
+//
+// with D_w the NekRS weak-divergence operator.
+inline void applySchur(deviceMemory<dfloat> pressure,
+                       deviceMemory<dfloat> schurResult,
+                       SchurStats &stats)
+{
+  auto mesh = nrs->meshV;
+  const dlong offset = nrs->fieldOffset;
+  const dfloat alpha = p.alphaGas;
+
+  launchKernel("core-wGradientVolumeHex3D",
+               mesh->Nelements,
+               mesh->o_vgeo,
+               mesh->o_D,
+               offset,
+               pressure,
+               o_pressureLoad);
+
+  platform->linAlg->fill(3 * offset, 0.0, o_duGas);
+  platform->linAlg->fill(3 * offset, 0.0, o_duLiquid);
+
+  for (int i = 0; i < 3; ++i) {
+    gasMomentumSolver->solve(
+        o_lambda0Gas,
+        o_lambda1Gas,
+        o_pressureLoad.slice(i * offset, mesh->Nlocal),
+        o_duGas.slice(i * offset, mesh->Nlocal));
+    stats.gasInnerIterations += gasMomentumSolver->Niter();
+
+    liquidMomentumSolver->solve(
+        o_lambda0Liquid,
+        o_lambda1Liquid,
+        o_pressureLoad.slice(i * offset, mesh->Nlocal),
+        o_duLiquid.slice(i * offset, mesh->Nlocal));
+    stats.liquidInnerIterations += liquidMomentumSolver->Niter();
+  }
+
+  buildMixtureKernel(mesh->Nlocal,
+                     offset,
+                     alpha,
+                     o_duGas,
+                     o_duLiquid,
+                     o_duMixture);
+
+  launchKernel("core-wDivergenceVolumeHex3D",
+               mesh->Nelements,
+               mesh->o_vgeo,
+               mesh->o_D,
+               offset,
+               o_duMixture,
+               schurResult);
+
+  oogs::startFinish(schurResult, 1, offset, ogsDfloat, ogsAdd, mesh->oogs);
+
+  // D_w A^{-1} G_w is negative semidefinite on the periodic domain.
+  // Negating it gives the SPD Schur operator used by CG.
+  platform->linAlg->scale(mesh->Nlocal, -1.0, schurResult);
+  removePressureNullspace(schurResult);
+
+  stats.applications++;
+}
+
+inline int solveExactSchur(dfloat &relativeResidual, SchurStats &stats)
+{
+  auto mesh = nrs->meshV;
+  auto pressure = nrs->fluid->o_P.slice(0, mesh->Nlocal);
+
+  // b = D_w U_H.  The exact pressure correction satisfies
+  //
+  //   S p = b,
+  //
+  // because D_w(U_H + du) = b - S p.
+  launchKernel("core-wDivergenceVolumeHex3D",
+               mesh->Nelements,
+               mesh->o_vgeo,
+               mesh->o_D,
+               nrs->fieldOffset,
+               o_uPredictor,
+               o_schurRhs);
+  oogs::startFinish(o_schurRhs, 1, nrs->fieldOffset, ogsDfloat, ogsAdd, mesh->oogs);
+  removePressureNullspace(o_schurRhs);
+
+  platform->linAlg->fill(mesh->Nlocal, 0.0, pressure);
+  o_schurResidual.copyFrom(o_schurRhs, mesh->Nlocal);
+  o_schurDirection.copyFrom(o_schurResidual, mesh->Nlocal);
+
+  const dfloat rhsNorm2 = schurDot(o_schurRhs, o_schurRhs);
+  if (rhsNorm2 <= 1.0e-60) {
+    relativeResidual = 0.0;
+    return 0;
+  }
+
+  dfloat rr = schurDot(o_schurResidual, o_schurResidual);
+  relativeResidual = std::sqrt(rr / rhsNorm2);
+
+  int iter = 0;
+  for (; iter < p.schurMaxIterations && relativeResidual > p.schurTolerance; ++iter) {
+    applySchur(o_schurDirection, o_schurAd, stats);
+
+    const dfloat dAd = schurDot(o_schurDirection, o_schurAd);
+    nekrsCheck(!(dAd > 0.0) || !std::isfinite(dAd),
+               platform->comm.mpiComm(),
+               EXIT_FAILURE,
+               "Exact Schur operator is not positive: dAd=%.15e at iter=%d\n",
+               dAd,
+               iter + 1);
+
+    const dfloat alphaCG = rr / dAd;
+
+    platform->linAlg->axpby(mesh->Nlocal,
+                            alphaCG,
+                            o_schurDirection,
+                            1.0,
+                            pressure);
+    platform->linAlg->axpby(mesh->Nlocal,
+                            -alphaCG,
+                            o_schurAd,
+                            1.0,
+                            o_schurResidual);
+
+    removePressureNullspace(pressure);
+    removePressureNullspace(o_schurResidual);
+
+    const dfloat rrNew = schurDot(o_schurResidual, o_schurResidual);
+    relativeResidual = std::sqrt(rrNew / rhsNorm2);
+
+    if (relativeResidual <= p.schurTolerance) {
+      rr = rrNew;
+      ++iter;
+      break;
+    }
+
+    const dfloat betaCG = rrNew / rr;
+    platform->linAlg->axpby(mesh->Nlocal,
+                            1.0,
+                            o_schurResidual,
+                            betaCG,
+                            o_schurDirection);
+    removePressureNullspace(o_schurDirection);
+    rr = rrNew;
+  }
+
+  removePressureNullspace(pressure);
+  return iter;
 }
 
 inline void project(double time, int tstep)
 {
   auto mesh = nrs->meshV;
   const dlong offset = nrs->fieldOffset;
-
-  solvePhasePredictors();
-
   const dfloat alpha = p.alphaGas;
-  const dfloat beta = 1.0 - alpha;
-  const dfloat dtOverG0 = nrs->dt[0] / nrs->g0;
-  const dfloat DgTransient = dtOverG0 / p.rhoGas;
-  const dfloat DlTransient = dtOverG0 / p.rhoLiquid;
 
-  // OpenFOAM-style diagonal momentum response:
-  //
-  //   u_k = u_k,H - rAU_k grad(p),
-  //
-  // where rAU_k = M_ii / diag(A_k)_ii.  The pressure coefficient is therefore
-  // the volume-fraction-weighted sum of the two phase mobilities.
-  buildPressureMobilityKernel(mesh->Nlocal,
-                              alpha,
-                              o_rAUGas,
-                              o_rAULiquid,
-                              o_lambdaP);
+  int predictorGasIterations = 0;
+  int predictorLiquidIterations = 0;
+  solvePhasePredictors(predictorGasIterations, predictorLiquidIterations);
 
   buildMixtureKernel(mesh->Nlocal,
                      offset,
@@ -314,28 +438,34 @@ inline void project(double time, int tstep)
 
   opSEM::strongDivergence(mesh, offset, o_uPredictor, o_divPre);
 
-  launchKernel("core-wDivergenceVolumeHex3D",
-               mesh->Nelements,
-               mesh->o_vgeo,
-               mesh->o_D,
-               offset,
-               o_uPredictor,
-               o_rhsP);
+  SchurStats schurStats;
+  dfloat schurRelativeResidual = 1.0;
+  const int schurIterations =
+      solveExactSchur(schurRelativeResidual, schurStats);
 
-  nrs->fluid->ellipticSolverP->solve(
-      o_lambdaP, o_NULL, o_rhsP, nrs->fluid->o_P.slice(0, mesh->Nlocal));
-
-  opSEM::strongGrad(mesh, offset, nrs->fluid->o_P, o_gradP);
+  // One final exact Schur application gives the phase pressure responses for
+  // the converged pressure. It also produces S p for an independent
+  // continuity check.
+  applySchur(nrs->fluid->o_P.slice(0, mesh->Nlocal),
+             o_schurAd,
+             schurStats);
 
   o_ug.copyFrom(o_ugPredictor, 3 * offset);
   o_ul.copyFrom(o_ulPredictor, 3 * offset);
-  correctPhaseVelocitiesRAUKernel(mesh->Nlocal,
-                                  offset,
-                                  o_rAUGas,
-                                  o_rAULiquid,
-                                  o_gradP,
-                                  o_ug,
-                                  o_ul);
+  platform->linAlg->axpbyMany(mesh->Nlocal,
+                              3,
+                              offset,
+                              1.0,
+                              o_duGas,
+                              1.0,
+                              o_ug);
+  platform->linAlg->axpbyMany(mesh->Nlocal,
+                              3,
+                              offset,
+                              1.0,
+                              o_duLiquid,
+                              1.0,
+                              o_ul);
 
   buildMixtureKernel(mesh->Nlocal,
                      offset,
@@ -343,55 +473,55 @@ inline void project(double time, int tstep)
                      o_ug,
                      o_ul,
                      o_uCorrected);
+
   opSEM::strongDivergence(mesh, offset, o_uCorrected, o_divPost);
 
-  nrs->fluid->o_U.copyFrom(o_uCorrected, 3 * offset);
+  // Exact weak continuity residual:
+  // D_w U_corrected = b - S p.
+  o_weakDivPost.copyFrom(o_schurRhs, mesh->Nlocal);
+  platform->linAlg->axpby(mesh->Nlocal,
+                          -1.0,
+                          o_schurAd,
+                          1.0,
+                          o_weakDivPost);
 
-  // The pressure mobility is now the nodal Helmholtz-diagonal approximation
-  // rAU=M/diag(A), so the pressure operator has a spatially varying SEM nodal
-  // coefficient. The earlier closed-form sinusoidal pressure is no longer the
-  // exact solution of this modified discrete operator.
-  const dfloat pErrorRms = NAN;
-  platform->linAlg->fill(mesh->Nlocal, 0.0, o_pExact);
-  platform->linAlg->fill(mesh->Nlocal, 0.0, o_pError);
+  // Convert assembled weak residual to a nodal divergence-like field only for
+  // diagnostics/output.
+  platform->linAlg->axmyz(mesh->Nlocal,
+                          1.0,
+                          mesh->o_invLMM,
+                          o_weakDivPost,
+                          o_weakDivPostPhysical);
+
+  nrs->fluid->o_U.copyFrom(o_uCorrected, 3 * offset);
+  opSEM::strongGrad(mesh, offset, nrs->fluid->o_P, o_gradP);
 
   const dfloat preRms = rms(o_divPre);
   const dfloat postRms = rms(o_divPost);
+  const dfloat weakPostRms = rms(o_weakDivPostPhysical);
   const dfloat reduction =
       postRms / std::max(preRms, static_cast<dfloat>(1.0e-30));
 
   if (platform->comm.mpiRank() == 0) {
-    const dfloat rAUGasMin = platform->linAlg->min(mesh->Nlocal, o_rAUGas, platform->comm.mpiComm());
-    const dfloat rAUGasMax = platform->linAlg->max(mesh->Nlocal, o_rAUGas, platform->comm.mpiComm());
-    const dfloat rAULiquidMin = platform->linAlg->min(mesh->Nlocal, o_rAULiquid, platform->comm.mpiComm());
-    const dfloat rAULiquidMax = platform->linAlg->max(mesh->Nlocal, o_rAULiquid, platform->comm.mpiComm());
-
-    printf("twoFluidPeriodic step=%d time=%.8e alpha=%.6e "
-           "DgTransient=%.8e DlTransient=%.8e "
-           "rAUGas[min,max]=[%.8e,%.8e] rAULiquid[min,max]=[%.8e,%.8e] "
+    printf("twoFluidPeriodic exactSchur step=%d time=%.8e alpha=%.6e "
            "divPreRMS=%.8e divPostRMS=%.8e divRatio=%.8e "
-           "pExactRMSE=%.8e "
-           "ugIters=%d ugResidual=%.8e ulIters=%d ulResidual=%.8e "
-           "pIters=%d pResidual=%.8e\n",
+           "weakDivPostRMS=%.8e schurIters=%d schurRelRes=%.8e "
+           "schurApps=%d predictorUgIters=%d predictorUlIters=%d "
+           "schurUgInnerIters=%lld schurUlInnerIters=%lld\n",
            tstep,
            time,
            alpha,
-           DgTransient,
-           DlTransient,
-           rAUGasMin,
-           rAUGasMax,
-           rAULiquidMin,
-           rAULiquidMax,
            preRms,
            postRms,
            reduction,
-           pErrorRms,
-           gasMomentumSolver->Niter(),
-           gasMomentumSolver->finalResidual(),
-           liquidMomentumSolver->Niter(),
-           liquidMomentumSolver->finalResidual(),
-           nrs->fluid->ellipticSolverP->Niter(),
-           nrs->fluid->ellipticSolverP->finalResidual());
+           weakPostRms,
+           schurIterations,
+           schurRelativeResidual,
+           schurStats.applications,
+           predictorGasIterations,
+           predictorLiquidIterations,
+           schurStats.gasInnerIterations,
+           schurStats.liquidInnerIterations);
   }
 }
 
@@ -441,8 +571,8 @@ inline void writeFields(double time)
                    mesh,
                    {{"scalar00", {o_divPre.slice(0, mesh->Nlocal)}},
                     {"scalar01", {o_divPost.slice(0, mesh->Nlocal)}},
-                    {"scalar02", {o_pExact.slice(0, mesh->Nlocal)}},
-                    {"scalar03", {o_pError.slice(0, mesh->Nlocal)}}});
+                    {"scalar02", {o_weakDivPostPhysical.slice(0, mesh->Nlocal)}},
+                    {"scalar03", {o_schurResidual.slice(0, mesh->Nlocal)}}});
 }
 
 } // namespace twoFluidPeriodic
@@ -451,12 +581,8 @@ void UDF_LoadKernels(deviceKernelProperties &kernelInfo)
 {
   twoFluidPeriodic::registerKernels(kernelInfo);
 
-  // The case creates its own scalar Helmholtz solver for each phase. These
-  // solvers need the non-Poisson scalar elliptic Ax/preconditioner kernels,
-  // which are not registered by the native pressure (Poisson) or velocity
-  // (3-field block) solvers. UG and UL use the same discretization/options, so
-  // one registration supplies the generic scalar Helmholtz kernel requests
-  // used by both case-level solvers.
+  // Scalar non-Poisson Helmholtz kernels for the independent phase momentum
+  // inverses used by both the predictor and the exact Schur operator.
   registerEllipticKernels("ug", false);
 }
 
@@ -475,6 +601,8 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   platform->par->extract("casedata", "yorigin", p.yOrigin);
   platform->par->extract("casedata", "xlength", p.xLength);
   platform->par->extract("casedata", "ylength", p.yLength);
+  platform->par->extract("casedata", "schurtolerance", p.schurTolerance);
+  platform->par->extract("casedata", "schurmaxiterations", p.schurMaxIterations);
 
   nekrsCheck(p.alphaGas <= 0.0 || p.alphaGas >= 1.0,
              platform->comm.mpiComm(),
@@ -496,20 +624,24 @@ void UDF_Setup0(MPI_Comm, setupAide &)
              EXIT_FAILURE,
              "%s",
              "periodic lengths must be positive\n");
+  nekrsCheck(p.schurTolerance <= 0.0 || p.schurMaxIterations < 1,
+             platform->comm.mpiComm(),
+             EXIT_FAILURE,
+             "invalid Schur controls: tolerance=%g maxIterations=%d\n",
+             p.schurTolerance,
+             p.schurMaxIterations);
 
-  platform->options.setArgs("FLUID PRESSURE ELLIPTIC COEFF FIELD", "TRUE");
-
-  // Case-layer scalar Helmholtz solvers used for the three Cartesian
-  // components of each phase momentum predictor.
   platform->options.setArgs("UG SOLVER", "CG+FLEXIBLE");
   platform->options.setArgs("UG PRECONDITIONER", "JACOBI");
   platform->options.setArgs("UG SOLVER TOLERANCE", "1.0e-12");
   platform->options.setArgs("UG ELLIPTIC COEFF FIELD", "TRUE");
+  platform->options.setArgs("UG INITIAL GUESS", "ZERO");
 
   platform->options.setArgs("UL SOLVER", "CG+FLEXIBLE");
   platform->options.setArgs("UL PRECONDITIONER", "JACOBI");
   platform->options.setArgs("UL SOLVER TOLERANCE", "1.0e-12");
   platform->options.setArgs("UL ELLIPTIC COEFF FIELD", "TRUE");
+  platform->options.setArgs("UL INITIAL GUESS", "ZERO");
 }
 
 void UDF_Setup()
