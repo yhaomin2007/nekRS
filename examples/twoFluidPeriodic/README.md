@@ -1,13 +1,13 @@
-# Two-fluid periodic-box pressure-projection prototype
+# Two-fluid periodic-box pressure-coupling prototype
 
-This case is a case-layer prototype for testing two independent phase
+This case is a case-layer prototype for testing two independently solved phase
 velocities coupled to one common pressure field without modifying NekRS core
 code.
 
-It intentionally contains no drag, viscosity, convection, lift, virtual mass,
-wall lubrication, phase change, or alpha transport. The first goal is only to
-prove that a common pressure can project two phase velocities so that the
-volumetric mixture velocity satisfies continuity.
+The current version now contains two actual phase Helmholtz momentum predictor
+solves plus one common-pressure projection. It still intentionally excludes
+convection, drag, gravity, lift, virtual mass, wall lubrication, phase change,
+and alpha transport.
 
 ## Mesh required
 
@@ -15,30 +15,59 @@ Create a mesh named:
 
 `twoFluidPeriodic.re2`
 
-The first test should be a rectangular box that is fully periodic in x, y, and
-z. The default parameters assume x and y both span [0,1]. Update `xOrigin`,
-`yOrigin`, `xLength`, and `yLength` if your mesh is different.
+The current box is
 
-There should be no physical boundary faces in this first prototype.
-Periodicity must be encoded in the Nek mesh connectivity. Therefore the par
-file uses:
+- x in [-0.05, 0.05] m,
+- y in [-0.05, 0.05] m,
+- z in [0, 0.10] m,
 
-```ini
-[FLUID VELOCITY]
-boundaryTypeMap = none
-```
+and should be fully periodic in x, y, and z. There should be no physical
+boundary faces. `usrdat2` resets all `boundaryID` values to zero.
 
-## Algorithm
+## Phase momentum predictor
 
-The phase predictors are initialized as
+The stored phase velocities are initialized as
 
 [
-u_{g,H}=(A_gsin(2pi(x-x_0)/L_x),0,0),
+u_g^0=(A_gsin(2pi(x-x_0)/L_x),0,0),
 ]
 
 [
-u_{l,H}=(0,A_lsin(2pi(y-y_0)/L_y),0).
+u_l^0=(0,A_lsin(2pi(y-y_0)/L_y),0).
 ]
+
+At every timestep, gas and liquid predictors are now solved independently from
+
+[
+left[
+rac{ho_ggamma_0}{Delta t}
+-
+ablacdot(mu_g
+abla)
+ight]u_{g,H}
+=
+rac{ho_g}{Delta t}u_g^n,
+]
+
+[
+left[
+rac{ho_lgamma_0}{Delta t}
+-
+ablacdot(mu_l
+abla)
+ight]u_{l,H}
+=
+rac{ho_l}{Delta t}u_l^n.
+]
+
+The present case uses `tombo1`, so (gamma_0=1) and this is a
+backward-Euler transient-plus-viscous-diffusion predictor.
+
+Two case-layer NekRS `elliptic` solvers named `ug` and `ul` are created
+without any core modification. Each scalar Helmholtz solver is reused for the
+x, y, and z components of its phase.
+
+## Common pressure projection
 
 For constant gas volume fraction alpha,
 
@@ -60,8 +89,8 @@ and
 lambda_p=alpha D_g+(1-alpha)D_l.
 ]
 
-The prototype reuses the already-created native NekRS pressure elliptic solver,
-but supplies its own two-fluid pressure coefficient and RHS:
+The prototype reuses the native NekRS pressure elliptic solver but supplies its
+own two-fluid coefficient and RHS:
 
 [
 
@@ -70,56 +99,73 @@ abla p)=
 ablacdot U_H.
 ]
 
-Then both phases are corrected with the same pressure:
+The same pressure then corrects both phase velocities:
 
 [
-u_g=u_{g,H}-D_g
+u_g^{n+1}=u_{g,H}-D_g
 abla p,
 ]
 
 [
-u_l=u_{l,H}-D_l
+u_l^{n+1}=u_{l,H}-D_l
 abla p.
 ]
 
-The acceptance criterion is
+The primary continuity diagnostic is
 
 [
 
-ablacdot(alpha u_g+(1-alpha)u_l)ightarrow 0.
+ablacdotleft[alpha u_g^{n+1}+(1-alpha)u_l^{n+1}ight].
 ]
+
+## What is deliberately not included yet
+
+The momentum predictor currently contains only:
+
+- transient term,
+- implicit viscous diffusion.
+
+It does **not** yet contain:
+
+- convection,
+- drag,
+- gravity,
+- lift,
+- virtual mass,
+- turbulent dispersion,
+- wall lubrication.
+
+Those terms should be added only after the two-velocity/one-pressure skeleton
+is verified.
 
 ## Printed diagnostics
 
 Each step prints a line beginning with `twoFluidPeriodic` containing:
 
-- `divPreRMS`: RMS mixture divergence before projection,
-- `divPostRMS`: RMS mixture divergence after projection,
+- `divPreRMS`: mixture-divergence RMS after the two phase predictor solves,
+- `divPostRMS`: mixture-divergence RMS after common-pressure correction,
 - `divRatio`: post/pre divergence ratio,
-- `pExactRMSE`: error relative to the analytic zero-mean pressure solution,
-- pressure iteration count and final residual.
+- `pExactRMSE`: first-step analytic pressure check,
+- `ugIters`, `ugResidual`: final gas-component Helmholtz solve diagnostics,
+- `ulIters`, `ulResidual`: final liquid-component Helmholtz solve diagnostics,
+- pressure iterations and residual.
 
 ## Checkpoint files
 
-At checkpoint steps the case writes:
+At checkpoint steps:
 
-- `ug`: corrected gas velocity,
-- `ul`: corrected liquid velocity,
-- `upred`: mixture predictor,
-- `ucorr`: corrected mixture velocity,
-- `gradp`: pressure gradient,
+- `ugH`: gas momentum predictor,
+- `ulH`: liquid momentum predictor,
+- `ug`: pressure-corrected gas velocity,
+- `ul`: pressure-corrected liquid velocity,
+- `upred`: volumetric mixture predictor,
+- `ucorr`: corrected volumetric mixture velocity,
+- `gradp`: common pressure gradient,
 - `tfdiag`:
   - scalar00 = pre-projection mixture divergence,
   - scalar01 = post-projection mixture divergence,
-  - scalar02 = analytic pressure,
-  - scalar03 = numerical pressure minus analytic pressure.
+  - scalar02 = first-step analytic pressure,
+  - scalar03 = numerical minus analytic pressure.
 
-The native NekRS U field is overwritten with the corrected volumetric mixture
-velocity only for visualization/checkpoint convenience.
-
-## Scope
-
-This first version proves only the pressure projection. The phase predictors are
-not yet full phase momentum/Helmholtz solves. Once this works, the next step is
-to replace the analytic predictors with two actual phase momentum solves while
-keeping the same common-pressure projection.
+The native NekRS fluid velocity is used only as an auxiliary/output field. The
+actual phase velocities are the case-layer `ug` and `ul` fields.
