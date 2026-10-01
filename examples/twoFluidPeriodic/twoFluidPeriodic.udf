@@ -1,0 +1,295 @@
+#include <cmath>
+#include <vector>
+
+#include "opSEM.hpp"
+
+namespace twoFluidPeriodic
+{
+struct Parameters {
+  dfloat alphaGas = 0.2;
+  dfloat rhoGas = 1.2;
+  dfloat rhoLiquid = 998.2;
+  dfloat gasAmplitude = 0.20;
+  dfloat liquidAmplitude = 0.10;
+  dfloat xOrigin = 0.0;
+  dfloat yOrigin = 0.0;
+  dfloat xLength = 1.0;
+  dfloat yLength = 1.0;
+};
+
+static Parameters p;
+
+static deviceMemory<dfloat> o_ug;
+static deviceMemory<dfloat> o_ul;
+static deviceMemory<dfloat> o_uPredictor;
+static deviceMemory<dfloat> o_uCorrected;
+static deviceMemory<dfloat> o_gradP;
+static deviceMemory<dfloat> o_lambdaP;
+static deviceMemory<dfloat> o_rhsP;
+static deviceMemory<dfloat> o_divPre;
+static deviceMemory<dfloat> o_divPost;
+static deviceMemory<dfloat> o_pExact;
+static deviceMemory<dfloat> o_pError;
+
+static occa::kernel initializePhaseVelocitiesKernel;
+static occa::kernel buildMixtureKernel;
+static occa::kernel correctPhaseVelocitiesKernel;
+static occa::kernel buildExactPressureKernel;
+
+inline void registerKernels(deviceKernelProperties &kernelInfo)
+{
+  const std::string request = "twoFluidPeriodic::equations";
+  const std::string fileName = "twoFluidPeriodicEquations.okl";
+
+  if (platform->options.compareArgs("REGISTER ONLY", "TRUE")) {
+    platform->kernelRequests.add(request, fileName, kernelInfo);
+  } else {
+    initializePhaseVelocitiesKernel =
+        platform->kernelRequests.load(request, "initializePhaseVelocities");
+    buildMixtureKernel =
+        platform->kernelRequests.load(request, "buildMixture");
+    correctPhaseVelocitiesKernel =
+        platform->kernelRequests.load(request, "correctPhaseVelocities");
+    buildExactPressureKernel =
+        platform->kernelRequests.load(request, "buildExactPressure");
+  }
+}
+
+inline void allocate()
+{
+  const dlong offset = nrs->fieldOffset;
+  o_ug.resize(3 * offset);
+  o_ul.resize(3 * offset);
+  o_uPredictor.resize(3 * offset);
+  o_uCorrected.resize(3 * offset);
+  o_gradP.resize(3 * offset);
+  o_lambdaP.resize(offset);
+  o_rhsP.resize(offset);
+  o_divPre.resize(offset);
+  o_divPost.resize(offset);
+  o_pExact.resize(offset);
+  o_pError.resize(offset);
+}
+
+inline void initialize()
+{
+  auto mesh = nrs->meshV;
+  initializePhaseVelocitiesKernel(mesh->Nlocal,
+                                  nrs->fieldOffset,
+                                  p.gasAmplitude,
+                                  p.liquidAmplitude,
+                                  p.xOrigin,
+                                  p.yOrigin,
+                                  p.xLength,
+                                  p.yLength,
+                                  mesh->o_x,
+                                  mesh->o_y,
+                                  o_ug,
+                                  o_ul);
+}
+
+inline void neutralizeNativeFluid(double, int)
+{
+  const dlong offset = nrs->fieldOffset;
+  platform->linAlg->fill(3 * offset, 0.0, nrs->fluid->o_U);
+  platform->linAlg->fill(3 * offset, 0.0, nrs->fluid->o_JwF);
+  platform->linAlg->fill(offset, 0.0, nrs->fluid->o_P);
+}
+
+inline dfloat rms(deviceMemory<dfloat> field)
+{
+  auto mesh = nrs->meshV;
+  const dfloat l2 = platform->linAlg->weightedNorm2(
+      mesh->Nlocal, mesh->o_LMM, field, platform->comm.mpiComm());
+  return l2 / std::sqrt(mesh->volume);
+}
+
+inline void project(double time, int tstep)
+{
+  auto mesh = nrs->meshV;
+  const dlong offset = nrs->fieldOffset;
+
+  const dfloat alpha = p.alphaGas;
+  const dfloat beta = 1.0 - alpha;
+  const dfloat dtOverG0 = nrs->dt[0] / nrs->g0;
+  const dfloat Dg = dtOverG0 / p.rhoGas;
+  const dfloat Dl = dtOverG0 / p.rhoLiquid;
+  const dfloat lambdaP = alpha * Dg + beta * Dl;
+
+  buildMixtureKernel(mesh->Nlocal,
+                     offset,
+                     alpha,
+                     o_ug,
+                     o_ul,
+                     o_uPredictor);
+
+  opSEM::strongDivergence(mesh, offset, o_uPredictor, o_divPre);
+
+  platform->linAlg->fill(mesh->Nlocal, lambdaP, o_lambdaP);
+  launchKernel("core-wDivergenceVolumeHex3D",
+               mesh->Nelements,
+               mesh->o_vgeo,
+               mesh->o_D,
+               offset,
+               o_uPredictor,
+               o_rhsP);
+
+  nrs->fluid->ellipticSolverP->solve(
+      o_lambdaP, o_NULL, o_rhsP, nrs->fluid->o_P.slice(0, mesh->Nlocal));
+
+  opSEM::strongGrad(mesh, offset, nrs->fluid->o_P, o_gradP);
+  correctPhaseVelocitiesKernel(mesh->Nlocal,
+                               offset,
+                               Dg,
+                               Dl,
+                               o_gradP,
+                               o_ug,
+                               o_ul);
+
+  buildMixtureKernel(mesh->Nlocal,
+                     offset,
+                     alpha,
+                     o_ug,
+                     o_ul,
+                     o_uCorrected);
+  opSEM::strongDivergence(mesh, offset, o_uCorrected, o_divPost);
+
+  nrs->fluid->o_U.copyFrom(o_uCorrected, 3 * offset);
+
+  buildExactPressureKernel(mesh->Nlocal,
+                           alpha,
+                           p.gasAmplitude,
+                           p.liquidAmplitude,
+                           p.xOrigin,
+                           p.yOrigin,
+                           p.xLength,
+                           p.yLength,
+                           lambdaP,
+                           mesh->o_x,
+                           mesh->o_y,
+                           o_pExact);
+  o_pError.copyFrom(nrs->fluid->o_P, mesh->Nlocal);
+  platform->linAlg->axpby(mesh->Nlocal, -1.0, o_pExact, 1.0, o_pError);
+
+  const dfloat preRms = rms(o_divPre);
+  const dfloat postRms = rms(o_divPost);
+  const dfloat pErrorRms = rms(o_pError);
+  const dfloat reduction = postRms / std::max(preRms, static_cast<dfloat>(1.0e-30));
+
+  if (platform->comm.mpiRank() == 0) {
+    printf("twoFluidPeriodic step=%d time=%.8e alpha=%.6e "
+           "Dg=%.8e Dl=%.8e lambdaP=%.8e "
+           "divPreRMS=%.8e divPostRMS=%.8e divRatio=%.8e "
+           "pExactRMSE=%.8e pIters=%d pResidual=%.8e\n",
+           tstep,
+           time,
+           alpha,
+           Dg,
+           Dl,
+           lambdaP,
+           preRms,
+           postRms,
+           reduction,
+           pErrorRms,
+           nrs->fluid->ellipticSolverP->Niter(),
+           nrs->fluid->ellipticSolverP->finalResidual());
+  }
+}
+
+inline void writeFields(double time)
+{
+  auto mesh = nrs->meshV;
+  const dlong offset = nrs->fieldOffset;
+
+  std::vector<deviceMemory<dfloat>> ug = {
+      o_ug.slice(0 * offset, mesh->Nlocal),
+      o_ug.slice(1 * offset, mesh->Nlocal),
+      o_ug.slice(2 * offset, mesh->Nlocal)};
+  std::vector<deviceMemory<dfloat>> ul = {
+      o_ul.slice(0 * offset, mesh->Nlocal),
+      o_ul.slice(1 * offset, mesh->Nlocal),
+      o_ul.slice(2 * offset, mesh->Nlocal)};
+  std::vector<deviceMemory<dfloat>> uPredictor = {
+      o_uPredictor.slice(0 * offset, mesh->Nlocal),
+      o_uPredictor.slice(1 * offset, mesh->Nlocal),
+      o_uPredictor.slice(2 * offset, mesh->Nlocal)};
+  std::vector<deviceMemory<dfloat>> uCorrected = {
+      o_uCorrected.slice(0 * offset, mesh->Nlocal),
+      o_uCorrected.slice(1 * offset, mesh->Nlocal),
+      o_uCorrected.slice(2 * offset, mesh->Nlocal)};
+  std::vector<deviceMemory<dfloat>> gradP = {
+      o_gradP.slice(0 * offset, mesh->Nlocal),
+      o_gradP.slice(1 * offset, mesh->Nlocal),
+      o_gradP.slice(2 * offset, mesh->Nlocal)};
+
+  nrs->writeToFile("ug", time, mesh, {{"velocity", ug}});
+  nrs->writeToFile("ul", time, mesh, {{"velocity", ul}});
+  nrs->writeToFile("upred", time, mesh, {{"velocity", uPredictor}});
+  nrs->writeToFile("ucorr", time, mesh, {{"velocity", uCorrected}});
+  nrs->writeToFile("gradp", time, mesh, {{"velocity", gradP}});
+  nrs->writeToFile("tfdiag",
+                   time,
+                   mesh,
+                   {{"scalar00", {o_divPre.slice(0, mesh->Nlocal)}},
+                    {"scalar01", {o_divPost.slice(0, mesh->Nlocal)}},
+                    {"scalar02", {o_pExact.slice(0, mesh->Nlocal)}},
+                    {"scalar03", {o_pError.slice(0, mesh->Nlocal)}}});
+}
+
+} // namespace twoFluidPeriodic
+
+void UDF_LoadKernels(deviceKernelProperties &kernelInfo)
+{
+  twoFluidPeriodic::registerKernels(kernelInfo);
+}
+
+void UDF_Setup0(MPI_Comm, setupAide &)
+{
+  auto &p = twoFluidPeriodic::p;
+
+  platform->par->extract("casedata", "alphagas", p.alphaGas);
+  platform->par->extract("casedata", "rhogas", p.rhoGas);
+  platform->par->extract("casedata", "rholiquid", p.rhoLiquid);
+  platform->par->extract("casedata", "gasamplitude", p.gasAmplitude);
+  platform->par->extract("casedata", "liquidamplitude", p.liquidAmplitude);
+  platform->par->extract("casedata", "xorigin", p.xOrigin);
+  platform->par->extract("casedata", "yorigin", p.yOrigin);
+  platform->par->extract("casedata", "xlength", p.xLength);
+  platform->par->extract("casedata", "ylength", p.yLength);
+
+  nekrsCheck(p.alphaGas <= 0.0 || p.alphaGas >= 1.0,
+             platform->comm.mpiComm(),
+             EXIT_FAILURE,
+             "alphaGas must satisfy 0 < alphaGas < 1, got %g\n",
+             p.alphaGas);
+  nekrsCheck(p.rhoGas <= 0.0 || p.rhoLiquid <= 0.0,
+             platform->comm.mpiComm(),
+             EXIT_FAILURE,
+             "phase densities must be positive\n");
+  nekrsCheck(p.xLength <= 0.0 || p.yLength <= 0.0,
+             platform->comm.mpiComm(),
+             EXIT_FAILURE,
+             "periodic lengths must be positive\n");
+
+  platform->options.setArgs("FLUID PRESSURE ELLIPTIC COEFF FIELD", "TRUE");
+}
+
+void UDF_Setup()
+{
+  twoFluidPeriodic::allocate();
+  twoFluidPeriodic::initialize();
+  nrs->preFluid = &twoFluidPeriodic::neutralizeNativeFluid;
+}
+
+void UDF_ExecuteStep(double time, int tstep)
+{
+  if (tstep <= 0) {
+    return;
+  }
+
+  twoFluidPeriodic::project(time, tstep);
+
+  if (nrs->checkpointStep) {
+    twoFluidPeriodic::writeFields(time);
+  }
+}
