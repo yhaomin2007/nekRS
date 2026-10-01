@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "opSEM.hpp"
+#include "registerKernels.hpp"
 
 namespace twoFluidPeriodic
 {
@@ -393,6 +394,14 @@ inline void writeFields(double time)
 void UDF_LoadKernels(deviceKernelProperties &kernelInfo)
 {
   twoFluidPeriodic::registerKernels(kernelInfo);
+
+  // The case creates its own scalar Helmholtz solver for each phase. These
+  // solvers need the non-Poisson scalar elliptic Ax/preconditioner kernels,
+  // which are not registered by the native pressure (Poisson) or velocity
+  // (3-field block) solvers. UG and UL use the same discretization/options, so
+  // one registration supplies the generic scalar Helmholtz kernel requests
+  // used by both case-level solvers.
+  registerEllipticKernels("ug", false);
 }
 
 void UDF_Setup0(MPI_Comm, setupAide &)
