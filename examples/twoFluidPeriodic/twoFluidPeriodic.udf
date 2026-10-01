@@ -1,3 +1,7 @@
+#ifdef __okl__
+
+#endif
+
 #include <cmath>
 #include <vector>
 
@@ -274,10 +278,12 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   nekrsCheck(p.rhoGas <= 0.0 || p.rhoLiquid <= 0.0,
              platform->comm.mpiComm(),
              EXIT_FAILURE,
+             "%s",
              "phase densities must be positive\n");
   nekrsCheck(p.xLength <= 0.0 || p.yLength <= 0.0,
              platform->comm.mpiComm(),
              EXIT_FAILURE,
+             "%s",
              "periodic lengths must be positive\n");
 
   platform->options.setArgs("FLUID PRESSURE ELLIPTIC COEFF FIELD", "TRUE");
