@@ -156,24 +156,33 @@ inline void project(double time, int tstep)
 
   nrs->fluid->o_U.copyFrom(o_uCorrected, 3 * offset);
 
-  buildExactPressureKernel(mesh->Nlocal,
-                           alpha,
-                           p.gasAmplitude,
-                           p.liquidAmplitude,
-                           p.xOrigin,
-                           p.yOrigin,
-                           p.xLength,
-                           p.yLength,
-                           lambdaP,
-                           mesh->o_x,
-                           mesh->o_y,
-                           o_pExact);
-  o_pError.copyFrom(nrs->fluid->o_P, mesh->Nlocal);
-  platform->linAlg->axpby(mesh->Nlocal, -1.0, o_pExact, 1.0, o_pError);
+  dfloat pErrorRms = NAN;
+  if (tstep == 1) {
+    buildExactPressureKernel(mesh->Nlocal,
+                             alpha,
+                             p.gasAmplitude,
+                             p.liquidAmplitude,
+                             p.xOrigin,
+                             p.yOrigin,
+                             p.xLength,
+                             p.yLength,
+                             lambdaP,
+                             mesh->o_x,
+                             mesh->o_y,
+                             o_pExact);
+    o_pError.copyFrom(nrs->fluid->o_P, mesh->Nlocal);
+    platform->linAlg->axpby(mesh->Nlocal, -1.0, o_pExact, 1.0, o_pError);
+    pErrorRms = rms(o_pError);
+  } else {
+    // The analytic formula corresponds to the deliberately compressible
+    // initial predictor. After step 1 the stored phase velocities are already
+    // projected, so there is no longer a nonzero analytic pressure target.
+    platform->linAlg->fill(mesh->Nlocal, 0.0, o_pExact);
+    platform->linAlg->fill(mesh->Nlocal, 0.0, o_pError);
+  }
 
   const dfloat preRms = rms(o_divPre);
   const dfloat postRms = rms(o_divPost);
-  const dfloat pErrorRms = rms(o_pError);
   const dfloat reduction = postRms / std::max(preRms, static_cast<dfloat>(1.0e-30));
 
   if (platform->comm.mpiRank() == 0) {
