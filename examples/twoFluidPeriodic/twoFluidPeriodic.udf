@@ -2,6 +2,7 @@
 
 #endif
 
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
@@ -22,26 +23,19 @@ struct Parameters {
   dfloat yOrigin = -0.05;
   dfloat xLength = 0.10;
   dfloat yLength = 0.10;
-  dfloat schurTolerance = 1.0e-10;
-  int schurMaxIterations = 50;
-};
-
-struct SchurStats {
-  int applications = 0;
-  long long gasInnerIterations = 0;
-  long long liquidInnerIterations = 0;
 };
 
 static Parameters p;
 
 static deviceMemory<dfloat> o_ug;
 static deviceMemory<dfloat> o_ul;
-static deviceMemory<dfloat> o_ugPredictor;
-static deviceMemory<dfloat> o_ulPredictor;
-static deviceMemory<dfloat> o_uPredictor;
+static deviceMemory<dfloat> o_uPressurePredictor;
 static deviceMemory<dfloat> o_uCorrected;
 static deviceMemory<dfloat> o_gradP;
-static deviceMemory<dfloat> o_divPre;
+
+static deviceMemory<dfloat> o_lambdaP;
+static deviceMemory<dfloat> o_rhsP;
+static deviceMemory<dfloat> o_divPressurePredictor;
 static deviceMemory<dfloat> o_divPost;
 
 static deviceMemory<dfloat> o_lambda0Gas;
@@ -50,21 +44,7 @@ static deviceMemory<dfloat> o_lambda0Liquid;
 static deviceMemory<dfloat> o_lambda1Liquid;
 static deviceMemory<dfloat> o_rhsGas;
 static deviceMemory<dfloat> o_rhsLiquid;
-
-// Exact pressure-response / Schur-complement workspace.
 static deviceMemory<dfloat> o_pressureLoad;
-static deviceMemory<dfloat> o_duGas;
-static deviceMemory<dfloat> o_duLiquid;
-static deviceMemory<dfloat> o_duMixture;
-static deviceMemory<dfloat> o_schurRhs;
-static deviceMemory<dfloat> o_schurResidual;
-static deviceMemory<dfloat> o_schurDirection;
-static deviceMemory<dfloat> o_schurAd;
-static deviceMemory<dfloat> o_weakDivPost;
-static deviceMemory<dfloat> o_weakDivPostPhysical;
-static deviceMemory<dfloat> o_one;
-
-static dfloat pressureMeanDenominator = 1.0;
 
 static elliptic *gasMomentumSolver = nullptr;
 static elliptic *liquidMomentumSolver = nullptr;
@@ -96,12 +76,13 @@ inline void allocate()
 
   o_ug.resize(3 * offset);
   o_ul.resize(3 * offset);
-  o_ugPredictor.resize(3 * offset);
-  o_ulPredictor.resize(3 * offset);
-  o_uPredictor.resize(3 * offset);
+  o_uPressurePredictor.resize(3 * offset);
   o_uCorrected.resize(3 * offset);
   o_gradP.resize(3 * offset);
-  o_divPre.resize(offset);
+
+  o_lambdaP.resize(offset);
+  o_rhsP.resize(offset);
+  o_divPressurePredictor.resize(offset);
   o_divPost.resize(offset);
 
   o_lambda0Gas.resize(offset);
@@ -110,27 +91,7 @@ inline void allocate()
   o_lambda1Liquid.resize(offset);
   o_rhsGas.resize(3 * offset);
   o_rhsLiquid.resize(3 * offset);
-
   o_pressureLoad.resize(3 * offset);
-  o_duGas.resize(3 * offset);
-  o_duLiquid.resize(3 * offset);
-  o_duMixture.resize(3 * offset);
-  o_schurRhs.resize(offset);
-  o_schurResidual.resize(offset);
-  o_schurDirection.resize(offset);
-  o_schurAd.resize(offset);
-  o_weakDivPost.resize(offset);
-  o_weakDivPostPhysical.resize(offset);
-  o_one.resize(offset);
-
-  auto mesh = nrs->meshV;
-  platform->linAlg->fill(mesh->Nlocal, 1.0, o_one);
-  pressureMeanDenominator =
-      platform->linAlg->weightedInnerProd(mesh->Nlocal,
-                                         mesh->ogs->o_invDegree,
-                                         o_one,
-                                         o_one,
-                                         platform->comm.mpiComm());
 }
 
 inline void initialize()
@@ -188,43 +149,87 @@ inline dfloat rms(deviceMemory<dfloat> field)
   return l2 / std::sqrt(mesh->volume);
 }
 
-inline dfloat schurDot(deviceMemory<dfloat> a, deviceMemory<dfloat> b)
-{
-  auto mesh = nrs->meshV;
-  return platform->linAlg->weightedInnerProd(mesh->Nlocal,
-                                             mesh->ogs->o_invDegree,
-                                             a,
-                                             b,
-                                             platform->comm.mpiComm());
-}
-
-inline void removePressureNullspace(occa::memory a)
-{
-  auto mesh = nrs->meshV;
-  const dfloat mean =
-      platform->linAlg->weightedInnerProd(mesh->Nlocal,
-                                         mesh->ogs->o_invDegree,
-                                         o_one,
-                                         a,
-                                         platform->comm.mpiComm()) /
-      pressureMeanDenominator;
-  platform->linAlg->add(mesh->Nlocal, -mean, a);
-}
-
-inline void solvePhasePredictors(int &gasIterations, int &liquidIterations)
+// NekRS-native ordering for the simplified two-fluid Stokes prototype:
+//
+//  1. Build the pressure predictor from the phase velocities / explicit
+//     forcing, before the implicit viscous Helmholtz solves.
+//  2. Solve one common pressure equation using the transient pressure response.
+//  3. Insert the NekRS weak pressure-gradient load directly into each phase
+//     momentum RHS.
+//  4. Solve the FINAL gas and liquid Helmholtz equations with viscosity and
+//     pressure present in the same solve.
+//
+// This intentionally follows the native pressure-before-velocity-Helmholtz
+// splitting.  It is not an exact monolithic Schur complement.
+inline void project(double time, int tstep)
 {
   setupPhaseMomentumSolvers();
 
   auto mesh = nrs->meshV;
   const dlong offset = nrs->fieldOffset;
+  const dfloat alpha = p.alphaGas;
+  const dfloat beta = 1.0 - alpha;
   const dfloat invDt = 1.0 / nrs->dt[0];
   const dfloat g0idt = nrs->g0 * invDt;
+  const dfloat dtOverG0 = nrs->dt[0] / nrs->g0;
 
+  // Keep the phase Helmholtz operators synchronized with the current timestep:
+  //
+  //   A_k = (rho_k*g0/dt) M + mu_k K.
   platform->linAlg->fill(mesh->Nlocal, p.muGas, o_lambda0Gas);
   platform->linAlg->fill(mesh->Nlocal, p.rhoGas * g0idt, o_lambda1Gas);
   platform->linAlg->fill(mesh->Nlocal, p.muLiquid, o_lambda0Liquid);
   platform->linAlg->fill(mesh->Nlocal, p.rhoLiquid * g0idt, o_lambda1Liquid);
 
+  // Pressure predictor.  For tombo1 and this Stokes test the explicit/transient
+  // state is simply the current phase velocity.  This is the two-fluid analogue
+  // of forming the native NekRS pressure RHS before the implicit velocity
+  // Helmholtz solve.
+  buildMixtureKernel(mesh->Nlocal,
+                     offset,
+                     alpha,
+                     o_ug,
+                     o_ul,
+                     o_uPressurePredictor);
+
+  opSEM::strongDivergence(
+      mesh, offset, o_uPressurePredictor, o_divPressurePredictor);
+
+  // Transient two-fluid pressure response:
+  //
+  // lambda_p = dt/g0 * [alpha/rho_g + (1-alpha)/rho_l].
+  //
+  // The viscous operators are NOT folded into a local pressure mobility.
+  // Instead, viscosity is handled in the final phase Helmholtz solves below,
+  // exactly in the spirit of native NekRS splitting.
+  const dfloat lambdaP =
+      dtOverG0 * (alpha / p.rhoGas + beta / p.rhoLiquid);
+  platform->linAlg->fill(mesh->Nlocal, lambdaP, o_lambdaP);
+
+  launchKernel("core-wDivergenceVolumeHex3D",
+               mesh->Nelements,
+               mesh->o_vgeo,
+               mesh->o_D,
+               offset,
+               o_uPressurePredictor,
+               o_rhsP);
+
+  nrs->fluid->ellipticSolverP->solve(
+      o_lambdaP,
+      o_NULL,
+      o_rhsP,
+      nrs->fluid->o_P.slice(0, mesh->Nlocal));
+
+  // Native NekRS uses the weak pressure-gradient load in the velocity RHS.
+  launchKernel("core-wGradientVolumeHex3D",
+               mesh->Nelements,
+               mesh->o_vgeo,
+               mesh->o_D,
+               offset,
+               nrs->fluid->o_P,
+               o_pressureLoad);
+
+  // Non-pressure transient phase RHS.
   buildMomentumRhsKernel(mesh->Nlocal,
                          offset,
                          p.rhoGas * invDt,
@@ -238,234 +243,43 @@ inline void solvePhasePredictors(int &gasIterations, int &liquidIterations)
                          o_ul,
                          o_rhsLiquid);
 
-  o_ugPredictor.copyFrom(o_ug, 3 * offset);
-  o_ulPredictor.copyFrom(o_ul, 3 * offset);
+  // Add the SAME common weak pressure load to both phase momentum equations:
+  //
+  //   A_g u_g^{n+1} = H_g + G_w p
+  //   A_l u_l^{n+1} = H_l + G_w p.
+  //
+  // Since A_k contains mu_k K, the pressure response now passes through the
+  // full phase Helmholtz operator instead of being appended afterward as
+  // -(dt/rho_k) grad(p).
+  platform->linAlg->axpbyMany(
+      mesh->Nlocal, 3, offset, 1.0, o_pressureLoad, 1.0, o_rhsGas);
+  platform->linAlg->axpbyMany(
+      mesh->Nlocal, 3, offset, 1.0, o_pressureLoad, 1.0, o_rhsLiquid);
 
-  gasIterations = 0;
-  liquidIterations = 0;
+  int gasIterations = 0;
+  int liquidIterations = 0;
+  dfloat gasResidualMax = 0.0;
+  dfloat liquidResidualMax = 0.0;
 
   for (int i = 0; i < 3; ++i) {
     gasMomentumSolver->solve(
         o_lambda0Gas,
         o_lambda1Gas,
         o_rhsGas.slice(i * offset, mesh->Nlocal),
-        o_ugPredictor.slice(i * offset, mesh->Nlocal));
+        o_ug.slice(i * offset, mesh->Nlocal));
     gasIterations += gasMomentumSolver->Niter();
+    gasResidualMax =
+        std::max(gasResidualMax, gasMomentumSolver->finalResidual());
 
     liquidMomentumSolver->solve(
         o_lambda0Liquid,
         o_lambda1Liquid,
         o_rhsLiquid.slice(i * offset, mesh->Nlocal),
-        o_ulPredictor.slice(i * offset, mesh->Nlocal));
+        o_ul.slice(i * offset, mesh->Nlocal));
     liquidIterations += liquidMomentumSolver->Niter();
+    liquidResidualMax =
+        std::max(liquidResidualMax, liquidMomentumSolver->finalResidual());
   }
-}
-
-// Apply the exact discrete phase response to a trial pressure:
-//
-//   A_g du_g = G_w p,
-//   A_l du_l = G_w p,
-//
-// where G_w is NekRS's weak pressure-gradient load. For a periodic domain,
-// G_w p represents the weak form of -grad(p), so du_k is the physical pressure
-// correction to phase k.
-//
-// The positive Schur operator is then
-//
-//   S p = -D_w [alpha du_g + (1-alpha) du_l],
-//
-// with D_w the NekRS weak-divergence operator.
-inline void applySchur(const occa::memory &pressure,
-                       deviceMemory<dfloat> schurResult,
-                       SchurStats &stats)
-{
-  auto mesh = nrs->meshV;
-  const dlong offset = nrs->fieldOffset;
-  const dfloat alpha = p.alphaGas;
-
-  launchKernel("core-wGradientVolumeHex3D",
-               mesh->Nelements,
-               mesh->o_vgeo,
-               mesh->o_D,
-               offset,
-               pressure,
-               o_pressureLoad);
-
-  platform->linAlg->fill(3 * offset, 0.0, o_duGas);
-  platform->linAlg->fill(3 * offset, 0.0, o_duLiquid);
-
-  for (int i = 0; i < 3; ++i) {
-    gasMomentumSolver->solve(
-        o_lambda0Gas,
-        o_lambda1Gas,
-        o_pressureLoad.slice(i * offset, mesh->Nlocal),
-        o_duGas.slice(i * offset, mesh->Nlocal));
-    stats.gasInnerIterations += gasMomentumSolver->Niter();
-
-    liquidMomentumSolver->solve(
-        o_lambda0Liquid,
-        o_lambda1Liquid,
-        o_pressureLoad.slice(i * offset, mesh->Nlocal),
-        o_duLiquid.slice(i * offset, mesh->Nlocal));
-    stats.liquidInnerIterations += liquidMomentumSolver->Niter();
-  }
-
-  buildMixtureKernel(mesh->Nlocal,
-                     offset,
-                     alpha,
-                     o_duGas,
-                     o_duLiquid,
-                     o_duMixture);
-
-  launchKernel("core-wDivergenceVolumeHex3D",
-               mesh->Nelements,
-               mesh->o_vgeo,
-               mesh->o_D,
-               offset,
-               o_duMixture,
-               schurResult);
-
-  oogs::startFinish(schurResult, 1, offset, ogsDfloat, ogsAdd, mesh->oogs);
-
-  // D_w A^{-1} G_w is negative semidefinite on the periodic domain.
-  // Negating it gives the SPD Schur operator used by CG.
-  platform->linAlg->scale(mesh->Nlocal, -1.0, schurResult);
-  removePressureNullspace(schurResult);
-
-  stats.applications++;
-}
-
-inline int solveExactSchur(dfloat &relativeResidual, SchurStats &stats)
-{
-  auto mesh = nrs->meshV;
-  auto pressure = nrs->fluid->o_P.slice(0, mesh->Nlocal);
-
-  // b = D_w U_H.  The exact pressure correction satisfies
-  //
-  //   S p = b,
-  //
-  // because D_w(U_H + du) = b - S p.
-  launchKernel("core-wDivergenceVolumeHex3D",
-               mesh->Nelements,
-               mesh->o_vgeo,
-               mesh->o_D,
-               nrs->fieldOffset,
-               o_uPredictor,
-               o_schurRhs);
-  oogs::startFinish(o_schurRhs, 1, nrs->fieldOffset, ogsDfloat, ogsAdd, mesh->oogs);
-  removePressureNullspace(o_schurRhs);
-
-  platform->linAlg->fill(mesh->Nlocal, 0.0, pressure);
-  o_schurResidual.copyFrom(o_schurRhs, mesh->Nlocal);
-  o_schurDirection.copyFrom(o_schurResidual, mesh->Nlocal);
-
-  const dfloat rhsNorm2 = schurDot(o_schurRhs, o_schurRhs);
-  if (rhsNorm2 <= 1.0e-60) {
-    relativeResidual = 0.0;
-    return 0;
-  }
-
-  dfloat rr = schurDot(o_schurResidual, o_schurResidual);
-  relativeResidual = std::sqrt(rr / rhsNorm2);
-
-  int iter = 0;
-  for (; iter < p.schurMaxIterations && relativeResidual > p.schurTolerance; ++iter) {
-    applySchur(o_schurDirection, o_schurAd, stats);
-
-    const dfloat dAd = schurDot(o_schurDirection, o_schurAd);
-    nekrsCheck(!(dAd > 0.0) || !std::isfinite(dAd),
-               platform->comm.mpiComm(),
-               EXIT_FAILURE,
-               "Exact Schur operator is not positive: dAd=%.15e at iter=%d\n",
-               dAd,
-               iter + 1);
-
-    const dfloat alphaCG = rr / dAd;
-
-    platform->linAlg->axpby(mesh->Nlocal,
-                            alphaCG,
-                            o_schurDirection,
-                            1.0,
-                            pressure);
-    platform->linAlg->axpby(mesh->Nlocal,
-                            -alphaCG,
-                            o_schurAd,
-                            1.0,
-                            o_schurResidual);
-
-    removePressureNullspace(pressure);
-    removePressureNullspace(o_schurResidual);
-
-    const dfloat rrNew = schurDot(o_schurResidual, o_schurResidual);
-    relativeResidual = std::sqrt(rrNew / rhsNorm2);
-
-    if (relativeResidual <= p.schurTolerance) {
-      rr = rrNew;
-      ++iter;
-      break;
-    }
-
-    const dfloat betaCG = rrNew / rr;
-    platform->linAlg->axpby(mesh->Nlocal,
-                            1.0,
-                            o_schurResidual,
-                            betaCG,
-                            o_schurDirection);
-    removePressureNullspace(o_schurDirection);
-    rr = rrNew;
-  }
-
-  removePressureNullspace(pressure);
-  return iter;
-}
-
-inline void project(double time, int tstep)
-{
-  auto mesh = nrs->meshV;
-  const dlong offset = nrs->fieldOffset;
-  const dfloat alpha = p.alphaGas;
-
-  int predictorGasIterations = 0;
-  int predictorLiquidIterations = 0;
-  solvePhasePredictors(predictorGasIterations, predictorLiquidIterations);
-
-  buildMixtureKernel(mesh->Nlocal,
-                     offset,
-                     alpha,
-                     o_ugPredictor,
-                     o_ulPredictor,
-                     o_uPredictor);
-
-  opSEM::strongDivergence(mesh, offset, o_uPredictor, o_divPre);
-
-  SchurStats schurStats;
-  dfloat schurRelativeResidual = 1.0;
-  const int schurIterations =
-      solveExactSchur(schurRelativeResidual, schurStats);
-
-  // One final exact Schur application gives the phase pressure responses for
-  // the converged pressure. It also produces S p for an independent
-  // continuity check.
-  applySchur(nrs->fluid->o_P.slice(0, mesh->Nlocal),
-             o_schurAd,
-             schurStats);
-
-  o_ug.copyFrom(o_ugPredictor, 3 * offset);
-  o_ul.copyFrom(o_ulPredictor, 3 * offset);
-  platform->linAlg->axpbyMany(mesh->Nlocal,
-                              3,
-                              offset,
-                              1.0,
-                              o_duGas,
-                              1.0,
-                              o_ug);
-  platform->linAlg->axpbyMany(mesh->Nlocal,
-                              3,
-                              offset,
-                              1.0,
-                              o_duLiquid,
-                              1.0,
-                              o_ul);
 
   buildMixtureKernel(mesh->Nlocal,
                      offset,
@@ -475,53 +289,36 @@ inline void project(double time, int tstep)
                      o_uCorrected);
 
   opSEM::strongDivergence(mesh, offset, o_uCorrected, o_divPost);
-
-  // Exact weak continuity residual:
-  // D_w U_corrected = b - S p.
-  o_weakDivPost.copyFrom(o_schurRhs, mesh->Nlocal);
-  platform->linAlg->axpby(mesh->Nlocal,
-                          -1.0,
-                          o_schurAd,
-                          1.0,
-                          o_weakDivPost);
-
-  // Convert assembled weak residual to a nodal divergence-like field only for
-  // diagnostics/output.
-  platform->linAlg->axmyz(mesh->Nlocal,
-                          1.0,
-                          mesh->o_invLMM,
-                          o_weakDivPost,
-                          o_weakDivPostPhysical);
-
   nrs->fluid->o_U.copyFrom(o_uCorrected, 3 * offset);
+
+  // Physical strong gradient is only exported as a diagnostic.  The momentum
+  // solve itself uses o_pressureLoad from the native weak-gradient kernel.
   opSEM::strongGrad(mesh, offset, nrs->fluid->o_P, o_gradP);
 
-  const dfloat preRms = rms(o_divPre);
+  const dfloat preRms = rms(o_divPressurePredictor);
   const dfloat postRms = rms(o_divPost);
-  const dfloat weakPostRms = rms(o_weakDivPostPhysical);
   const dfloat reduction =
       postRms / std::max(preRms, static_cast<dfloat>(1.0e-30));
 
   if (platform->comm.mpiRank() == 0) {
-    printf("twoFluidPeriodic exactSchur step=%d time=%.8e alpha=%.6e "
-           "divPreRMS=%.8e divPostRMS=%.8e divRatio=%.8e "
-           "weakDivPostRMS=%.8e schurIters=%d schurRelRes=%.8e "
-           "schurApps=%d predictorUgIters=%d predictorUlIters=%d "
-           "schurUgInnerIters=%lld schurUlInnerIters=%lld\n",
+    printf("twoFluidPeriodic nekrsNative step=%d time=%.8e alpha=%.6e "
+           "lambdaP=%.8e divPressureRMS=%.8e divPostRMS=%.8e "
+           "divRatio=%.8e pIters=%d pResidual=%.8e "
+           "ugIters=%d ugResidualMax=%.8e "
+           "ulIters=%d ulResidualMax=%.8e\n",
            tstep,
            time,
            alpha,
+           lambdaP,
            preRms,
            postRms,
            reduction,
-           weakPostRms,
-           schurIterations,
-           schurRelativeResidual,
-           schurStats.applications,
-           predictorGasIterations,
-           predictorLiquidIterations,
-           schurStats.gasInnerIterations,
-           schurStats.liquidInnerIterations);
+           nrs->fluid->ellipticSolverP->Niter(),
+           nrs->fluid->ellipticSolverP->finalResidual(),
+           gasIterations,
+           gasResidualMax,
+           liquidIterations,
+           liquidResidualMax);
   }
 }
 
@@ -538,41 +335,29 @@ inline void writeFields(double time)
       o_ul.slice(0 * offset, mesh->Nlocal),
       o_ul.slice(1 * offset, mesh->Nlocal),
       o_ul.slice(2 * offset, mesh->Nlocal)};
-  std::vector<deviceMemory<dfloat>> ugH = {
-      o_ugPredictor.slice(0 * offset, mesh->Nlocal),
-      o_ugPredictor.slice(1 * offset, mesh->Nlocal),
-      o_ugPredictor.slice(2 * offset, mesh->Nlocal)};
-  std::vector<deviceMemory<dfloat>> ulH = {
-      o_ulPredictor.slice(0 * offset, mesh->Nlocal),
-      o_ulPredictor.slice(1 * offset, mesh->Nlocal),
-      o_ulPredictor.slice(2 * offset, mesh->Nlocal)};
-  std::vector<deviceMemory<dfloat>> uPredictor = {
-      o_uPredictor.slice(0 * offset, mesh->Nlocal),
-      o_uPredictor.slice(1 * offset, mesh->Nlocal),
-      o_uPredictor.slice(2 * offset, mesh->Nlocal)};
-  std::vector<deviceMemory<dfloat>> uCorrected = {
+  std::vector<deviceMemory<dfloat>> up = {
+      o_uPressurePredictor.slice(0 * offset, mesh->Nlocal),
+      o_uPressurePredictor.slice(1 * offset, mesh->Nlocal),
+      o_uPressurePredictor.slice(2 * offset, mesh->Nlocal)};
+  std::vector<deviceMemory<dfloat>> uc = {
       o_uCorrected.slice(0 * offset, mesh->Nlocal),
       o_uCorrected.slice(1 * offset, mesh->Nlocal),
       o_uCorrected.slice(2 * offset, mesh->Nlocal)};
-  std::vector<deviceMemory<dfloat>> gradP = {
+  std::vector<deviceMemory<dfloat>> gp = {
       o_gradP.slice(0 * offset, mesh->Nlocal),
       o_gradP.slice(1 * offset, mesh->Nlocal),
       o_gradP.slice(2 * offset, mesh->Nlocal)};
 
-  nrs->writeToFile("ugH", time, mesh, {{"velocity", ugH}});
-  nrs->writeToFile("ulH", time, mesh, {{"velocity", ulH}});
   nrs->writeToFile("ug", time, mesh, {{"velocity", ug}});
   nrs->writeToFile("ul", time, mesh, {{"velocity", ul}});
-  nrs->writeToFile("upred", time, mesh, {{"velocity", uPredictor}});
-  nrs->writeToFile("ucorr", time, mesh, {{"velocity", uCorrected}});
-  nrs->writeToFile("gradp", time, mesh, {{"velocity", gradP}});
+  nrs->writeToFile("upress", time, mesh, {{"velocity", up}});
+  nrs->writeToFile("ucorr", time, mesh, {{"velocity", uc}});
+  nrs->writeToFile("gradp", time, mesh, {{"velocity", gp}});
   nrs->writeToFile("tfdiag",
                    time,
                    mesh,
-                   {{"scalar00", {o_divPre.slice(0, mesh->Nlocal)}},
-                    {"scalar01", {o_divPost.slice(0, mesh->Nlocal)}},
-                    {"scalar02", {o_weakDivPostPhysical.slice(0, mesh->Nlocal)}},
-                    {"scalar03", {o_schurResidual.slice(0, mesh->Nlocal)}}});
+                   {{"scalar00", {o_divPressurePredictor.slice(0, mesh->Nlocal)}},
+                    {"scalar01", {o_divPost.slice(0, mesh->Nlocal)}}});
 }
 
 } // namespace twoFluidPeriodic
@@ -581,8 +366,8 @@ void UDF_LoadKernels(deviceKernelProperties &kernelInfo)
 {
   twoFluidPeriodic::registerKernels(kernelInfo);
 
-  // Scalar non-Poisson Helmholtz kernels for the independent phase momentum
-  // inverses used by both the predictor and the exact Schur operator.
+  // Independent scalar non-Poisson Helmholtz kernels for the final gas and
+  // liquid momentum solves.
   registerEllipticKernels("ug", false);
 }
 
@@ -601,8 +386,6 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   platform->par->extract("casedata", "yorigin", p.yOrigin);
   platform->par->extract("casedata", "xlength", p.xLength);
   platform->par->extract("casedata", "ylength", p.yLength);
-  platform->par->extract("casedata", "schurtolerance", p.schurTolerance);
-  platform->par->extract("casedata", "schurmaxiterations", p.schurMaxIterations);
 
   nekrsCheck(p.alphaGas <= 0.0 || p.alphaGas >= 1.0,
              platform->comm.mpiComm(),
@@ -619,29 +402,19 @@ void UDF_Setup0(MPI_Comm, setupAide &)
              EXIT_FAILURE,
              "%s",
              "phase viscosities must be positive\n");
-  nekrsCheck(p.xLength <= 0.0 || p.yLength <= 0.0,
-             platform->comm.mpiComm(),
-             EXIT_FAILURE,
-             "%s",
-             "periodic lengths must be positive\n");
-  nekrsCheck(p.schurTolerance <= 0.0 || p.schurMaxIterations < 1,
-             platform->comm.mpiComm(),
-             EXIT_FAILURE,
-             "invalid Schur controls: tolerance=%g maxIterations=%d\n",
-             p.schurTolerance,
-             p.schurMaxIterations);
+
+  // The common pressure coefficient is supplied as a nodal field.
+  platform->options.setArgs("FLUID PRESSURE ELLIPTIC COEFF FIELD", "TRUE");
 
   platform->options.setArgs("UG SOLVER", "CG+FLEXIBLE");
   platform->options.setArgs("UG PRECONDITIONER", "JACOBI");
   platform->options.setArgs("UG SOLVER TOLERANCE", "1.0e-12");
   platform->options.setArgs("UG ELLIPTIC COEFF FIELD", "TRUE");
-  platform->options.setArgs("UG INITIAL GUESS", "ZERO");
 
   platform->options.setArgs("UL SOLVER", "CG+FLEXIBLE");
   platform->options.setArgs("UL PRECONDITIONER", "JACOBI");
   platform->options.setArgs("UL SOLVER TOLERANCE", "1.0e-12");
   platform->options.setArgs("UL ELLIPTIC COEFF FIELD", "TRUE");
-  platform->options.setArgs("UL INITIAL GUESS", "ZERO");
 }
 
 void UDF_Setup()
