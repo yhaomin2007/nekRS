@@ -34,6 +34,10 @@ muLiquid = 1.00e-3
 gasAmplitude = 0.20
 liquidAmplitude = 0.10
 
+# Matrix-free exact Schur-complement CG controls.
+schurTolerance = 1.0e-10
+schurMaxIterations = 50
+
 xOrigin = -0.05
 yOrigin = -0.05
 xLength = 0.10
