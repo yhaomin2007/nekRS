@@ -233,74 +233,74 @@ Because the resulting pressure coefficient varies over SEM nodes, the previous
 closed-form sinusoidal pressure check is no longer exact and `pExactRMSE` is
 therefore reported as `nan`.
 
+## NekRS-native two-fluid pressure-first splitting
 
-## Exact matrix-free Schur pressure prototype
+The current prototype follows the ordering used by the native NekRS fluid
+solver rather than an OpenFOAM-style local `rAU` correction or an exact
+nested Schur complement.
 
-The diagonal-`rAU` experiment has been removed because the SEM Jacobi
-diagonal is an algebraic basis-dependent quantity and did not produce a
-pressure correction consistent with the weak SEM operators.
+For the simplified constant-alpha Stokes test, define
 
-The current prototype now applies the exact discrete phase momentum response
-inside a matrix-free pressure Schur operator.  For a trial pressure `p`,
+\[
+A_k = \frac{\rho_k\gamma_0}{\Delta t}M + \mu_k K.
+\]
 
-[
-A_g,delta u_g = G_w p,
-qquad
-A_l,delta u_l = G_w p,
-]
+At each step the algorithm is:
 
-where (G_w) is the NekRS weak pressure-gradient load and
+1. Build the pressure predictor from the current phase velocities,
 
-[
-A_k=
-rac{ho_kgamma_0}{Delta t}M+mu_k K.
-]
+\[
+U_p = \alpha_g u_g^n + (1-\alpha_g)u_l^n.
+\]
 
-The positive pressure Schur operator is
+2. Solve one common pressure equation using the transient pressure response,
 
-[
-S p =
--D_wleft[
-alpha_gdelta u_g+
-(1-alpha_g)delta u_l
-ight],
-]
+\[
+-\nabla\cdot\left(\lambda_p\nabla p\right)
+= D_w U_p,
+\]
 
-with (D_w) the NekRS weak-divergence operator.  The pressure solve is
+with
 
-[
-S p = D_w U_H,
-qquad
-U_H=alpha_g u_{g,H}+(1-alpha_g)u_{l,H}.
-]
+\[
+\lambda_p =
+\frac{\Delta t}{\gamma_0}
+\left(
+\frac{\alpha_g}{\rho_g}
++
+\frac{1-\alpha_g}{\rho_l}
+\right).
+\]
 
-An outer case-level CG iteration solves this matrix-free Schur system.  Every
-Schur matrix-vector product therefore performs three gas and three liquid
-Helmholtz solves.  This is intentionally expensive and is used only as a
-proof-of-concept reference for the fully coupled pressure response.
+3. Form the NekRS weak pressure-gradient load \(G_w p\).
 
-After convergence,
+4. Solve the FINAL phase momentum equations,
 
-[
-u_g=u_{g,H}+delta u_g,
-qquad
-u_l=u_{l,H}+delta u_l.
-]
+\[
+A_g u_g^{n+1}=H_g+G_w p,
+\]
 
-The periodic pressure nullspace is explicitly projected out during the outer
-CG iteration.
+\[
+A_l u_l^{n+1}=H_l+G_w p.
+\]
 
-The log now reports:
+Thus viscosity and pressure act together inside the final phase Helmholtz
+solves. There is no post-processing correction of the form
+\(-\Delta t\,\nabla p/\rho_k\), no SEM-diagonal `rAU`, and no nested
+\(A_k^{-1}G\) pressure Krylov operator.
 
-- `schurIters`: outer exact-Schur CG iterations,
-- `schurRelRes`: final outer relative residual,
-- `schurApps`: total Schur applications including the final correction,
-- `predictorUgIters`, `predictorUlIters`: phase predictor Helmholtz work,
-- `schurUgInnerIters`, `schurUlInnerIters`: total phase Helmholtz work
-  performed inside the Schur operator,
-- `weakDivPostRMS`: corrected weak continuity residual converted back to a
-  nodal divergence-like diagnostic,
-- `divPostRMS`: the existing strong-divergence diagnostic.
+This is still a pressure-splitting method rather than a monolithic exact Schur
+solve. The key verification metric is therefore the final mixture continuity
+error after the phase Helmholtz solves.
 
-For the first test, use only a few timesteps.  This implementation is a
-reference Schur-complement solve, not an optimized production algorithm.
+The log reports:
+
+- `lambdaP`
+- `divPressureRMS`: divergence of the pressure predictor
+- `divPostRMS`: divergence after the final gas/liquid Helmholtz solves
+- `divRatio`
+- pressure iterations/residual
+- total gas/liquid Helmholtz iterations and maximum component residual
+
+For the first test, use only a few timesteps and compare `divPostRMS` with the
+earlier post-correction prototype.
