@@ -169,3 +169,66 @@ At checkpoint steps:
 
 The native NekRS fluid velocity is used only as an auxiliary/output field. The
 actual phase velocities are the case-layer `ug` and `ul` fields.
+
+
+## Helmholtz-diagonal pressure mobility
+
+The pressure response has now been upgraded from the transient-only
+approximation
+
+[
+D_k = rac{Delta t}{gamma_0ho_k}
+]
+
+to an OpenFOAM-style diagonal momentum response based on the actual assembled
+SEM Helmholtz diagonal.
+
+For each phase,
+
+[
+A_k = rac{ho_kgamma_0}{Delta t}M + mu_k K,
+]
+
+and the nodal pressure mobility is approximated as
+
+[
+rAU_k = rac{M_{ii}}{operatorname{diag}(A_k)_{ii}}.
+]
+
+The mass factor is required because the Helmholtz matrix is a weak-form
+operator whereas the pressure correction is applied to the physical nodal
+gradient. In the transient-only limit,
+
+[
+rAU_k ightarrow rac{Delta t}{gamma_0ho_k}.
+]
+
+The common pressure coefficient is now
+
+[
+lambda_p(mathbf{x})
+=
+alpha_g rAU_g(mathbf{x})
++
+(1-alpha_g)rAU_l(mathbf{x}),
+]
+
+and the phase correction is
+
+[
+u_g^{n+1}=u_{g,H}-rAU_g
+abla p,
+]
+
+[
+u_l^{n+1}=u_{l,H}-rAU_l
+abla p.
+]
+
+This is still a diagonal approximation to the full Schur complement
+(A_k^{-1}G), but it is consistent with the actual phase Helmholtz operators
+rather than using only their transient terms.
+
+Because the resulting pressure coefficient varies over SEM nodes, the previous
+closed-form sinusoidal pressure check is no longer exact and `pExactRMSE` is
+therefore reported as `nan`.
