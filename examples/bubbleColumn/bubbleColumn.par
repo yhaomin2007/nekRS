@@ -97,7 +97,7 @@ gasPressureEnabled = 1.0
 # 0 = assembled strong gradient, 1 = mass-normalized weak gradient matching
 # the volume pressure operator used by the native NekRS velocity RHS.
 # Both raw forms are always computed, compared, and exported at checkpoints.
-gasPressureGradientMethod = 1
+gasPressureGradientMethod = 0
 # Exponential relaxation of the selected lagged pressure gradient used by QG:
 # gradP_used^n = (1-weight)*gradP_used^(n-1) + weight*gradP_lagged^n.
 # Set enabled=0 or weight=1 to recover the unfiltered lagged gradient.
