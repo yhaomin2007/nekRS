@@ -30,7 +30,7 @@ rhoLiquid = 998.20
 gasAmplitude = 0.20
 liquidAmplitude = 0.10
 
-xOrigin = 0.0
-yOrigin = 0.0
-xLength = 1.0
-yLength = 1.0
+xOrigin = -0.05
+yOrigin = -0.05
+xLength = 0.10
+yLength = 0.10
