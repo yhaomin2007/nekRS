@@ -29,6 +29,22 @@
   }
 }
 
+@kernel void buildMomentumRhs(
+    const dlong N,
+    const dlong offset,
+    const dfloat rhoOverDt,
+    @ restrict const dfloat *LMM,
+    @ restrict const dfloat *uOld,
+    @ restrict dfloat *rhs)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    const dfloat coeff = LMM[n] * rhoOverDt;
+    for (int i = 0; i < 3; ++i) {
+      rhs[n + i * offset] = coeff * uOld[n + i * offset];
+    }
+  }
+}
+
 @kernel void buildMixture(
     const dlong N,
     const dlong offset,
