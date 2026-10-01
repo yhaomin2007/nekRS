@@ -111,3 +111,128 @@
     pExact[n] = px + py;
   }
 }
+
+
+@kernel void buildScalarHelmholtzDiagonal(
+    const dlong Nelements,
+    const dlong offset,
+    @ restrict const dfloat *ggeo,
+    @ restrict const dfloat *D,
+    @ restrict const dfloat *lambda0,
+    @ restrict const dfloat *lambda1,
+    @ restrict dfloat *diagA)
+{
+  for (dlong e = 0; e < Nelements; ++e; @outer(0)) {
+    @shared dfloat s_D[p_Nq][p_Nq];
+    @shared dfloat s_lambda0[p_Nq][p_Nq];
+    @shared dfloat s_Grr[p_Nq][p_Nq];
+    @shared dfloat s_Gss[p_Nq][p_Nq];
+    @exclusive dfloat s_Gtt[p_Nq];
+    @exclusive dfloat s_lambdat[p_Nq];
+
+    for (int k = 0; k < p_Nq; ++k) {
+      for (int j = 0; j < p_Nq; ++j; @inner(1)) {
+        for (int i = 0; i < p_Nq; ++i; @inner(0)) {
+          const dlong id = e * p_Np + k * p_Nq * p_Nq + j * p_Nq + i;
+          const dlong base = e * p_Nggeo * p_Np + k * p_Nq * p_Nq + j * p_Nq + i;
+
+          if (k == 0) {
+            s_D[j][i] = D[i + p_Nq * j];
+          }
+
+          s_Grr[j][i] = ggeo[base + p_G00ID * p_Np];
+          s_Gss[j][i] = ggeo[base + p_G11ID * p_Np];
+          s_lambda0[j][i] = lambda0[id];
+
+          if (k == 0) {
+            for (int l = 0; l < p_Nq; ++l) {
+              const dlong otherBase =
+                  e * p_Nggeo * p_Np + l * p_Nq * p_Nq + j * p_Nq + i;
+              const dlong otherId =
+                  e * p_Np + l * p_Nq * p_Nq + j * p_Nq + i;
+              s_Gtt[l] = ggeo[otherBase + p_G22ID * p_Np];
+              s_lambdat[l] = lambda0[otherId];
+            }
+          }
+        }
+      }
+      @barrier();
+
+      for (int j = 0; j < p_Nq; ++j; @inner(1)) {
+        for (int i = 0; i < p_Nq; ++i; @inner(0)) {
+          const dlong id = e * p_Np + k * p_Nq * p_Nq + j * p_Nq + i;
+          const dlong base =
+              e * p_Nggeo * p_Np + k * p_Nq * p_Nq + j * p_Nq + i;
+
+          const dfloat grs = ggeo[base + p_G01ID * p_Np];
+          const dfloat grt = ggeo[base + p_G02ID * p_Np];
+          const dfloat gst = ggeo[base + p_G12ID * p_Np];
+          const dfloat lbda0 = s_lambda0[j][i];
+
+          dfloat aq = 0.0;
+          aq += 2.0 * grs * lbda0 * s_D[i][i] * s_D[j][j];
+          aq += 2.0 * grt * lbda0 * s_D[i][i] * s_D[k][k];
+          aq += 2.0 * gst * lbda0 * s_D[j][j] * s_D[k][k];
+
+          for (int m = 0; m < p_Nq; ++m) {
+            aq += s_Grr[j][m] * s_lambda0[j][m] * s_D[m][i] * s_D[m][i];
+            aq += s_Gss[m][i] * s_lambda0[m][i] * s_D[m][j] * s_D[m][j];
+            aq += s_Gtt[m] * s_lambdat[m] * s_D[m][k] * s_D[m][k];
+          }
+
+          const dfloat gwJ = ggeo[base + p_GWJID * p_Np];
+          aq += gwJ * lambda1[id];
+
+          diagA[id] = aq;
+        }
+      }
+      @barrier();
+    }
+  }
+}
+
+@kernel void finalizeMomentumMobility(
+    const dlong N,
+    @ restrict const dfloat *LMM,
+    @ restrict const dfloat *diagA,
+    @ restrict dfloat *rAU)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    rAU[n] = LMM[n] / diagA[n];
+  }
+}
+
+@kernel void buildPressureMobility(
+    const dlong N,
+    const dfloat alphaGas,
+    @ restrict const dfloat *rAUGas,
+    @ restrict const dfloat *rAULiquid,
+    @ restrict dfloat *lambdaP)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    const dfloat alphaLiquid = 1.0 - alphaGas;
+    lambdaP[n] =
+        alphaGas * rAUGas[n]
+        + alphaLiquid * rAULiquid[n];
+  }
+}
+
+@kernel void correctPhaseVelocitiesRAU(
+    const dlong N,
+    const dlong offset,
+    @ restrict const dfloat *rAUGas,
+    @ restrict const dfloat *rAULiquid,
+    @ restrict const dfloat *gradP,
+    @ restrict dfloat *ug,
+    @ restrict dfloat *ul)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    const dfloat rg = rAUGas[n];
+    const dfloat rl = rAULiquid[n];
+    for (int i = 0; i < 3; ++i) {
+      const dfloat gp = gradP[n + i * offset];
+      ug[n + i * offset] -= rg * gp;
+      ul[n + i * offset] -= rl * gp;
+    }
+  }
+}
