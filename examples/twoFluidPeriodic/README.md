@@ -232,3 +232,75 @@ rather than using only their transient terms.
 Because the resulting pressure coefficient varies over SEM nodes, the previous
 closed-form sinusoidal pressure check is no longer exact and `pExactRMSE` is
 therefore reported as `nan`.
+
+
+## Exact matrix-free Schur pressure prototype
+
+The diagonal-`rAU` experiment has been removed because the SEM Jacobi
+diagonal is an algebraic basis-dependent quantity and did not produce a
+pressure correction consistent with the weak SEM operators.
+
+The current prototype now applies the exact discrete phase momentum response
+inside a matrix-free pressure Schur operator.  For a trial pressure `p`,
+
+[
+A_g,delta u_g = G_w p,
+qquad
+A_l,delta u_l = G_w p,
+]
+
+where (G_w) is the NekRS weak pressure-gradient load and
+
+[
+A_k=
+rac{ho_kgamma_0}{Delta t}M+mu_k K.
+]
+
+The positive pressure Schur operator is
+
+[
+S p =
+-D_wleft[
+alpha_gdelta u_g+
+(1-alpha_g)delta u_l
+ight],
+]
+
+with (D_w) the NekRS weak-divergence operator.  The pressure solve is
+
+[
+S p = D_w U_H,
+qquad
+U_H=alpha_g u_{g,H}+(1-alpha_g)u_{l,H}.
+]
+
+An outer case-level CG iteration solves this matrix-free Schur system.  Every
+Schur matrix-vector product therefore performs three gas and three liquid
+Helmholtz solves.  This is intentionally expensive and is used only as a
+proof-of-concept reference for the fully coupled pressure response.
+
+After convergence,
+
+[
+u_g=u_{g,H}+delta u_g,
+qquad
+u_l=u_{l,H}+delta u_l.
+]
+
+The periodic pressure nullspace is explicitly projected out during the outer
+CG iteration.
+
+The log now reports:
+
+- `schurIters`: outer exact-Schur CG iterations,
+- `schurRelRes`: final outer relative residual,
+- `schurApps`: total Schur applications including the final correction,
+- `predictorUgIters`, `predictorUlIters`: phase predictor Helmholtz work,
+- `schurUgInnerIters`, `schurUlInnerIters`: total phase Helmholtz work
+  performed inside the Schur operator,
+- `weakDivPostRMS`: corrected weak continuity residual converted back to a
+  nodal divergence-like diagnostic,
+- `divPostRMS`: the existing strong-divergence diagnostic.
+
+For the first test, use only a few timesteps.  This implementation is a
+reference Schur-complement solve, not an optimized production algorithm.
