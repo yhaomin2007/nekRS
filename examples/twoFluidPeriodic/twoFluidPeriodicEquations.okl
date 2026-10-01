@@ -1,0 +1,100 @@
+@kernel void initializePhaseVelocities(
+    const dlong N,
+    const dlong offset,
+    const dfloat gasAmplitude,
+    const dfloat liquidAmplitude,
+    const dfloat xOrigin,
+    const dfloat yOrigin,
+    const dfloat xLength,
+    const dfloat yLength,
+    @ restrict const dfloat *x,
+    @ restrict const dfloat *y,
+    @ restrict dfloat *ug,
+    @ restrict dfloat *ul)
+{
+  const dfloat twoPi = 6.283185307179586476925286766559;
+  const dfloat kx = twoPi / xLength;
+  const dfloat ky = twoPi / yLength;
+
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    const dfloat sx = sin(kx * (x[n] - xOrigin));
+    const dfloat sy = sin(ky * (y[n] - yOrigin));
+
+    ug[n + 0 * offset] = gasAmplitude * sx;
+    ug[n + 1 * offset] = 0.0;
+    ug[n + 2 * offset] = 0.0;
+
+    ul[n + 0 * offset] = 0.0;
+    ul[n + 1 * offset] = liquidAmplitude * sy;
+    ul[n + 2 * offset] = 0.0;
+  }
+}
+
+@kernel void buildMixture(
+    const dlong N,
+    const dlong offset,
+    const dfloat alphaGas,
+    @ restrict const dfloat *ug,
+    @ restrict const dfloat *ul,
+    @ restrict dfloat *um)
+{
+  const dfloat alphaLiquid = 1.0 - alphaGas;
+
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    for (int i = 0; i < 3; ++i) {
+      um[n + i * offset] =
+          alphaGas * ug[n + i * offset]
+          + alphaLiquid * ul[n + i * offset];
+    }
+  }
+}
+
+@kernel void correctPhaseVelocities(
+    const dlong N,
+    const dlong offset,
+    const dfloat Dg,
+    const dfloat Dl,
+    @ restrict const dfloat *gradP,
+    @ restrict dfloat *ug,
+    @ restrict dfloat *ul)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    for (int i = 0; i < 3; ++i) {
+      const dfloat gp = gradP[n + i * offset];
+      ug[n + i * offset] -= Dg * gp;
+      ul[n + i * offset] -= Dl * gp;
+    }
+  }
+}
+
+@kernel void buildExactPressure(
+    const dlong N,
+    const dfloat alphaGas,
+    const dfloat gasAmplitude,
+    const dfloat liquidAmplitude,
+    const dfloat xOrigin,
+    const dfloat yOrigin,
+    const dfloat xLength,
+    const dfloat yLength,
+    const dfloat lambdaP,
+    @ restrict const dfloat *x,
+    @ restrict const dfloat *y,
+    @ restrict dfloat *pExact)
+{
+  const dfloat twoPi = 6.283185307179586476925286766559;
+  const dfloat kx = twoPi / xLength;
+  const dfloat ky = twoPi / yLength;
+  const dfloat alphaLiquid = 1.0 - alphaGas;
+
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    const dfloat px =
+        -alphaGas * gasAmplitude
+        / (lambdaP * kx)
+        * cos(kx * (x[n] - xOrigin));
+    const dfloat py =
+        -alphaLiquid * liquidAmplitude
+        / (lambdaP * ky)
+        * cos(ky * (y[n] - yOrigin));
+    pExact[n] = px + py;
+  }
+}
