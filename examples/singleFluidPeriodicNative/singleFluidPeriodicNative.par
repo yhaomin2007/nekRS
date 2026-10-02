@@ -1,0 +1,28 @@
+userSections = CASEDATA
+
+[GENERAL]
+polynomialOrder = 5
+stopAt = numSteps
+numSteps = 5
+dt = 1.0e-3
+timeStepper = tombo1
+checkpointInterval = 1
+
+[PROBLEMTYPE]
+equation = Stokes
+
+[FLUID PRESSURE]
+residualTol = 1.0e-12
+solver = cg + flexible
+preconditioner = multigrid
+
+[FLUID VELOCITY]
+boundaryTypeMap = none
+residualTol = 1.0e-12
+rho = 1.20
+viscosity = 1.80e-5
+
+[CASEDATA]
+amplitude = 0.20
+xOrigin = -0.05
+xLength = 0.10
