@@ -46,3 +46,24 @@ physical two-phase stress minus native base stress correction. Set it to `1.0`
 to recover that correction from commit `1179116`. The option defaults to zero
 even when omitted. Native implicit viscosity, outlet damping, gas stress,
 drag, filters, masks, diagnostics and the lagged gas pressure remain unchanged.
+
+### Drag controls and local diagnostics
+
+`mixtureImplicitDragEnabled = 1.0` retains the previous mixture drag split;
+`0.0` uses the complete explicit mixture drag, removes its added cancellation
+source and does not register the mixture drag implicit callback. QG drag remains
+implicit in both modes. `dragEnabled` retains its existing global meaning.
+
+`dragAlphaCutoff = 0.0` preserves the previous behavior. Set a positive value
+(e.g. `1e-4`) to set drag to zero wherever bounded alpha is strictly below this
+value, consistently in QG and mixture equations. It does not alter pressure,
+virtual mass, gas reconstruction or other force switches.
+
+At `stabilityMonitorInterval`, two `dragLocation` records identify the global
+maximum completed-step QG drag diagonal and physical mixture drag magnitude
+(excluding virtual mass), with rank, local node, coordinates, raw alpha,
+lambdaD, lambdaD*dt, QG, gas/liquid/mixture velocities, slip magnitude, Reynolds number, raw Ki and
+physical mixture drag rate/magnitude.
+These use completed-step coefficients, not the frozen source-stage diagonal.
+Host copies occur only at monitor intervals; set the interval to 1 when
+investigating startup failures.

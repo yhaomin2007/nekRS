@@ -98,6 +98,11 @@ gasMomentumCutoff = 1e-4
 gasMomentumFullyActive = 1e-3
 gasPressureEnabled = 1.0
 dragEnabled = 1.0
+# Mixture drag: 0 explicit, 1 implicit. QG drag remains implicit.
+mixtureImplicitDragEnabled = 1.0
+# Disable drag in BOTH phase/mixture equations when alpha < this threshold.
+# 0 preserves the previous drag behavior.
+dragAlphaCutoff = 0.0
 bubbleDiameter = 3.0e-3
 # Set to 0.0 to omit the kinematic drift-tensor divergence from volume momentum.
 driftStressEnabled = 1.0

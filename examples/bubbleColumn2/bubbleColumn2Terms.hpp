@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <fstream>
 #include <iomanip>
@@ -38,6 +39,8 @@ struct Parameters {
   dfloat gasMomentumFullyActive;
   dfloat gasPressureEnabled;
   dfloat dragEnabled;
+  dfloat mixtureImplicitDragEnabled = 1.0;
+  dfloat dragAlphaCutoff = 0.0;
   dfloat bubbleDiameter;
   dfloat driftStressEnabled;
   dfloat mixtureViscousCorrectionEnabled = 0.0;
@@ -389,6 +392,7 @@ inline void evaluatePointwiseTerms()
                            p.alphaFloor,
                            p.gasPressureEnabled,
                            p.dragEnabled,
+                           p.dragAlphaCutoff,
                            p.bubbleDiameter,
                            p.virtualMassEnabled,
                            p.virtualMassCoefficient,
@@ -719,7 +723,7 @@ inline void evaluateMixtureForce()
     opSEM::strongDivergence(mesh, offset, row, div);
   }
   addMixtureStressAndSplitDragKernel(mesh->Nlocal, offset, p.rhoLiquid, p.rhoGas,
-      p.mixtureViscousCorrectionEnabled,
+      p.mixtureViscousCorrectionEnabled, p.mixtureImplicitDragEnabled,
       nrs->scalar->o_solution("alpha"), o_rhoPressure, o_dragLambda,
       nrs->fluid->o_U, o_divExactMixtureStress, o_divBaseNativeStress,
       o_mixtureDragRate, o_mixtureForce);
@@ -1168,6 +1172,84 @@ inline void writeValidationChecks(double time, int tstep)
   }
 }
 
+// Host copies are made only at the requested monitor interval. Report both
+// the largest gas drag diagonal and the largest physical mixture drag force.
+inline void printDragLocations(double time, int tstep)
+{
+  const dlong N = nrs->meshV->Nlocal;
+  const dlong offset = nrs->fieldOffset;
+  const int rank = platform->comm.mpiRank();
+  const MPI_Comm comm = platform->comm.mpiComm();
+  std::vector<dfloat> a(N), rate(N), q(3*N), ug(3*N), ul(3*N), um(3*N);
+  nrs->scalar->o_solution("alpha").copyTo(a.data(), N);
+  o_dragLambda.copyTo(rate.data(), N);
+  for (int c = 0; c < 3; ++c) {
+    o_qg.slice(c*offset, N).copyTo(q.data()+c*N);
+    o_ug.slice(c*offset, N).copyTo(ug.data()+c*N);
+    o_ul.slice(c*offset, N).copyTo(ul.data()+c*N);
+    nrs->fluid->o_U.slice(c*offset, N).copyTo(um.data()+c*N);
+  }
+  dlong indices[2] = {0, 0};
+  double maxima[2] = {-1.0, -1.0};
+  for (dlong n = 0; n < N; ++n) {
+    const double ac = std::max(0.0, std::min(1.0, double(a[n])));
+    const double beta = std::max(1.0-ac, double(p.alphaFloor));
+    double force2 = 0.0;
+    for (int c = 0; c < 3; ++c) {
+      const double f = ac*(1.0-p.rhoGas/p.rhoLiquid)*rate[n]*beta
+                       *(ul[n+c*N]-ug[n+c*N]);
+      force2 += f*f;
+    }
+    const double values[2] = {double(rate[n]), std::sqrt(force2)};
+    for (int k = 0; k < 2; ++k) {
+      if (values[k] > maxima[k]) { maxima[k] = values[k]; indices[k] = n; }
+    }
+  }
+  for (int k = 0; k < 2; ++k) {
+    struct { double value; int rank; } local{maxima[k], rank}, global;
+    MPI_Allreduce(&local, &global, 1, MPI_DOUBLE_INT, MPI_MAXLOC, comm);
+    double data[24] = {};
+    if (rank == global.rank && N > 0) {
+      const dlong n = indices[k];
+      dfloat xyz[3];
+      nrs->meshV->o_x.slice(n, 1).copyTo(&xyz[0]);
+      nrs->meshV->o_y.slice(n, 1).copyTo(&xyz[1]);
+      nrs->meshV->o_z.slice(n, 1).copyTo(&xyz[2]);
+      data[0] = double(n); data[1] = xyz[0]; data[2] = xyz[1]; data[3] = xyz[2];
+      data[4] = a[n]; data[5] = rate[n]; data[6] = rate[n]*nrs->dt[0];
+      double slip2 = 0.0;
+      for (int c = 0; c < 3; ++c) {
+        data[7+c] = q[n+c*N]; data[10+c] = ug[n+c*N];
+        data[13+c] = ul[n+c*N]; data[16+c] = um[n+c*N];
+        const double slip = ug[n+c*N]-ul[n+c*N]; slip2 += slip*slip;
+      }
+      data[19] = std::sqrt(slip2);
+      data[20] = p.rhoLiquid*p.bubbleDiameter*data[19]/p.muLiquid;
+      const double cdRe = data[20] < 1000.0
+          ? 24.0*(1.0+0.15*std::pow(data[20],0.687)) : 0.44*data[20];
+      data[21] = 0.75*cdRe*p.muLiquid/(p.bubbleDiameter*p.bubbleDiameter);
+      const double ac = std::max(0.0, std::min(1.0, double(a[n])));
+      const double beta = std::max(1.0-ac, double(p.alphaFloor));
+      data[22] = ac*(1.0-p.rhoGas/p.rhoLiquid)*rate[n];
+      data[23] = data[22]*beta*data[19];
+    }
+    MPI_Bcast(data, 24, MPI_DOUBLE, global.rank, comm);
+    if (rank == 0) {
+      printf("bubbleColumn2 dragLocation step=%d time=%.8e criterion=%s maximum=%.8e "
+             "rank=%d localNode=%.0f xyz=(%.8e,%.8e,%.8e) alpha=%.8e "
+             "lambdaD=%.8e lambdaDdt=%.8e qg=(%.8e,%.8e,%.8e) "
+             "ug=(%.8e,%.8e,%.8e) ul=(%.8e,%.8e,%.8e) "
+             "um=(%.8e,%.8e,%.8e) slip=%.8e Re=%.8e KiRaw=%.8e "
+             "mixtureRate=%.8e |FD|=%.8e\n",
+             tstep, time, k == 0 ? "lambdaD" : "mixtureDragMagnitude", global.value,
+             global.rank, data[0], data[1], data[2], data[3], data[4], data[5], data[6],
+             data[7], data[8], data[9], data[10], data[11], data[12],
+             data[13], data[14], data[15], data[16], data[17], data[18], data[19],
+             data[20], data[21], data[22], data[23]);
+    }
+  }
+}
+
 inline void printStabilityMonitors(double time, int tstep)
 {
   if (p.stabilityMonitorEnabled == 0.0
@@ -1231,6 +1313,7 @@ inline void printStabilityMonitors(double time, int tstep)
   const dfloat maxDragLambda =
       platform->linAlg->max(Nlocal, o_dragLambda, comm);
   const dfloat maxDragStep = maxDragLambda * nrs->dt[0];
+  printDragLocations(time, tstep);
 
   // Boundary-integrated checks for the alpha inlet.  These distinguish an
   // incorrectly applied Dirichlet value from a layer that develops in the

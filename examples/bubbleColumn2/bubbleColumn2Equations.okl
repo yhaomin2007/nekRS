@@ -186,6 +186,7 @@
                                 const dfloat alphaFloor,
                                 const dfloat gasPressureEnabled,
                                 const dfloat dragEnabled,
+                                const dfloat dragAlphaCutoff,
                                 const dfloat bubbleDiameter,
                                 const dfloat virtualMassEnabled,
                                 const dfloat virtualMassCoefficient,
@@ -303,7 +304,8 @@
                       / (bubbleDiameter * bubbleDiameter);
     // M_D/rho_g = alpha*Ki/rho_g*(u_l-u_g). Since q_g=alpha*u_g,
     // The reconstructed liquid feedback is also placed on the implicit diagonal.
-    const dfloat dragRate = dragEnabled * Ki / rhoGas;
+    const dfloat dragRate = (a >= dragAlphaCutoff && dragEnabled != 0.0)
+        ? dragEnabled * Ki / rhoGas : 0.0;
     // u_l=(u_v-q_g)/beta: retain the q_g dependence implicitly as well.
     // M_D/rho_g = (dragRate/beta)*(alpha*u_v-q_g).
     dragLambda[n] = dragRate / betaSafe;
@@ -470,6 +472,7 @@
 @kernel void addMixtureStressAndSplitDrag(const dlong N, const dlong offset,
                                          const dfloat rhoLiquid, const dfloat rhoGas,
                                          const dfloat mixtureViscousCorrectionEnabled,
+                                         const dfloat mixtureImplicitDragEnabled,
                                          @ restrict const dfloat *alpha,
                                          @ restrict const dfloat *rhoPressure,
                                          @ restrict const dfloat *dragLambda,
@@ -481,7 +484,8 @@
 {
   for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
     const dfloat a = alpha[n] < 0 ? 0 : (alpha[n] > 1 ? 1 : alpha[n]);
-    const dfloat rate = a * (1.0 - rhoGas / rhoLiquid) * dragLambda[n];
+    const dfloat rate = mixtureImplicitDragEnabled != 0.0
+        ? a * (1.0 - rhoGas / rhoLiquid) * dragLambda[n] : 0.0;
     dragRate[n] = rate;
     for (int i = 0; i < 3; ++i) {
       // The switch controls only the explicit physical-minus-base stress.
