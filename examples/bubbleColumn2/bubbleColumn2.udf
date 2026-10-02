@@ -62,7 +62,7 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   platform->par->extract("casedata", "mixtureimplicitdragenabled", p.mixtureImplicitDragEnabled);
   platform->par->extract("casedata", "dragalphacutoff", p.dragAlphaCutoff);
   nekrsCheck(!(p.dragAlphaCutoff >= 0.0 && p.dragAlphaCutoff <= 1.0),
-             platform->comm.mpiComm(), EXIT_FAILURE, "dragAlphaCutoff must be in [0,1]!");
+             platform->comm.mpiComm(), EXIT_FAILURE, "dragAlphaCutoff must be in [0,1], got %g\n", p.dragAlphaCutoff);
   platform->par->extract("casedata", "bubblediameter", p.bubbleDiameter);
   platform->par->extract("casedata", "driftstressenabled", p.driftStressEnabled);
   platform->par->extract("casedata", "mixtureviscouscorrectionenabled",

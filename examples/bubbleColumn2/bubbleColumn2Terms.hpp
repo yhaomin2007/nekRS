@@ -1181,12 +1181,12 @@ inline void printDragLocations(double time, int tstep)
   const int rank = platform->comm.mpiRank();
   const MPI_Comm comm = platform->comm.mpiComm();
   std::vector<dfloat> a(N), rate(N), q(3*N), ug(3*N), ul(3*N), um(3*N);
-  nrs->scalar->o_solution("alpha").copyTo(a.data(), N);
-  o_dragLambda.copyTo(rate.data(), N);
+  nrs->scalar->o_solution("alpha").copyTo(a, N);
+  o_dragLambda.copyTo(rate, N);
   for (int c = 0; c < 3; ++c) {
-    o_qg.slice(c*offset, N).copyTo(q.data()+c*N);
-    o_ug.slice(c*offset, N).copyTo(ug.data()+c*N);
-    o_ul.slice(c*offset, N).copyTo(ul.data()+c*N);
+    o_qg.copyTo(q, N, c*offset, c*N);
+    o_ug.copyTo(ug, N, c*offset, c*N);
+    o_ul.copyTo(ul, N, c*offset, c*N);
     nrs->fluid->o_U.slice(c*offset, N).copyTo(um.data()+c*N);
   }
   dlong indices[2] = {0, 0};
