@@ -1,0 +1,138 @@
+#ifdef __okl__
+
+#endif
+
+#include <cmath>
+#include "opSEM.hpp"
+
+namespace singleFluidPeriodicNative
+{
+struct Parameters {
+  dfloat amplitude = 0.20;
+  dfloat xOrigin = -0.05;
+  dfloat xLength = 0.10;
+};
+
+static Parameters p;
+static occa::kernel initializeVelocityKernel;
+static deviceMemory<dfloat> o_divU;
+
+inline void registerKernels(deviceKernelProperties &kernelInfo)
+{
+  const std::string request = "singleFluidPeriodicNative::equations";
+  const std::string fileName = "singleFluidPeriodicNative.okl";
+
+  if (platform->options.compareArgs("REGISTER ONLY", "TRUE")) {
+    platform->kernelRequests.add(request, fileName, kernelInfo);
+  } else {
+    initializeVelocityKernel =
+        platform->kernelRequests.load(request, "initializeVelocity");
+  }
+}
+
+inline dfloat divergenceRms()
+{
+  auto mesh = nrs->meshV;
+  opSEM::strongDivergence(mesh, nrs->fieldOffset, nrs->fluid->o_U, o_divU);
+
+  const dfloat l2 = platform->linAlg->weightedNorm2(
+      mesh->Nlocal, mesh->o_LMM, o_divU, platform->comm.mpiComm());
+
+  return l2 / std::sqrt(mesh->volume);
+}
+
+inline void initialize()
+{
+  auto mesh = nrs->meshV;
+  const dlong offset = nrs->fieldOffset;
+
+  o_divU.resize(offset);
+
+  initializeVelocityKernel(mesh->Nlocal,
+                           offset,
+                           p.amplitude,
+                           p.xOrigin,
+                           p.xLength,
+                           mesh->o_x,
+                           nrs->fluid->o_U);
+
+  platform->linAlg->fill(offset, 0.0, nrs->fluid->o_P);
+
+  const dfloat div0 = divergenceRms();
+  if (platform->comm.mpiRank() == 0) {
+    printf("singleFluidPeriodicNative initial amplitude=%.8e divRMS=%.8e\n",
+           p.amplitude,
+           div0);
+  }
+}
+
+inline void diagnostics(double time, int tstep)
+{
+  auto mesh = nrs->meshV;
+  const dlong offset = nrs->fieldOffset;
+
+  const dfloat divRms = divergenceRms();
+
+  const dfloat uRms = platform->linAlg->weightedNorm2Many(
+      mesh->Nlocal,
+      3,
+      offset,
+      mesh->o_LMM,
+      nrs->fluid->o_U,
+      platform->comm.mpiComm()) / std::sqrt(mesh->volume);
+
+  const dfloat pRms = platform->linAlg->weightedNorm2(
+      mesh->Nlocal,
+      mesh->o_LMM,
+      nrs->fluid->o_P,
+      platform->comm.mpiComm()) / std::sqrt(mesh->volume);
+
+  if (platform->comm.mpiRank() == 0) {
+    printf("singleFluidPeriodicNative step=%d time=%.8e "
+           "divRMS=%.8e uRMS=%.8e pRMS=%.8e\n",
+           tstep,
+           time,
+           divRms,
+           uRms,
+           pRms);
+  }
+}
+
+} // namespace singleFluidPeriodicNative
+
+void UDF_LoadKernels(deviceKernelProperties &kernelInfo)
+{
+  singleFluidPeriodicNative::registerKernels(kernelInfo);
+}
+
+void UDF_Setup0(MPI_Comm, setupAide &)
+{
+  auto &p = singleFluidPeriodicNative::p;
+  platform->par->extract("casedata", "amplitude", p.amplitude);
+  platform->par->extract("casedata", "xorigin", p.xOrigin);
+  platform->par->extract("casedata", "xlength", p.xLength);
+
+  nekrsCheck(p.xLength <= 0.0,
+             platform->comm.mpiComm(),
+             EXIT_FAILURE,
+             "xLength must be positive, got %g\n",
+             p.xLength);
+}
+
+void UDF_Setup()
+{
+  singleFluidPeriodicNative::initialize();
+}
+
+void UDF_ExecuteStep(double time, int tstep)
+{
+  if (tstep > 0) {
+    singleFluidPeriodicNative::diagnostics(time, tstep);
+  }
+}
+
+#ifdef __okl__
+void udfDirichlet(bcData *bc){}
+void udfNeumann(bcData *bc){}
+void udfRobin(bcData *bc){}
+#endif
