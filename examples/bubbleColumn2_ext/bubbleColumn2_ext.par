@@ -1,0 +1,129 @@
+userSections = CASEDATA
+
+[GENERAL]
+polynomialOrder = 9
+#startFrom = bubblecolumn20.f00044
+stopAt = numSteps
+numSteps = 100000
+#dt = initial=1.0e-6+targetCFL=0.01+max=1e-2
+dt = 1e-5
+timeStepper = tombo2
+checkpointInterval = 1000
+scalars = ALPHA, QGX, QGY, QGZ
+
+[PROBLEMTYPE]
+equation = navierStokes+variableViscosity
+
+[FLUID PRESSURE]
+residualTol = 1e-6
+#initialGuess = previous
+solver = gmres + flexible + nVector=30 + maxIter=500
+preconditioner = multigrid
+smootherType = ASM + FourthOptChebyshev + degree=3
+coarseSolver = boomerAMG + cpu
+
+#solver = PFGMRES + nVector = 25
+initialGuess = projection+nVector=25
+#smootherType = FourthChebyshev+jac
+
+
+[FLUID VELOCITY]
+# Boundary IDs: 1=inlet, 2=outlet, 3=wall
+boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
+residualTol = 1e-6
+rho = 998.2
+viscosity = 1.0e-3
+regularization = hpfrt + nModes=1 + scalingCoeff=100.0
+
+[SCALAR ALPHA]
+boundaryTypeMap = udfDirichlet, zeroNeumann, zeroNeumann
+residualTol = 1e-6
+transportCoeff = 1.0
+diffusionCoeff = 1e-5
+# NekRS native high-pass-filter relaxation. Use regularization = none to disable.
+regularization = hpfrt + nModes=2 + scalingCoeff=10.0
+
+[SCALAR QGX]
+boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
+residualTol = 1e-6
+transportCoeff = 1.0
+diffusionCoeff = 1e-5
+regularization = hpfrt + nModes=2 + scalingCoeff=10.0
+
+[SCALAR QGY]
+boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
+residualTol = 1e-6
+transportCoeff = 1.0
+diffusionCoeff =1e-5
+regularization = hpfrt + nModes=2 + scalingCoeff=10.0
+
+[SCALAR QGZ]
+boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
+residualTol = 1e-6
+transportCoeff = 1.0
+diffusionCoeff = 1e-5
+regularization = hpfrt + nModes=2 + scalingCoeff=10.0
+
+[CASEDATA]
+# Picard iterations within one BDF timestep; refresh all nonlinear RHS terms.
+couplingMinIterations = 2
+couplingMaxIterations = 20
+couplingRelativeTolerance = 1e-5
+couplingAbsoluteTolerance = 1e-8
+couplingDivergenceTolerance = 1e-4
+couplingRelaxation = 0.7
+couplingRequireConvergence = 1.0
+
+rhoLiquid = 998.2
+rhoGas = 1.2
+muLiquid = 1.0e-3
+muGas = 1.8e-5
+alphaInitial = 0.0
+alphaInlet = 0.05
+gasInletVelocity = 0.1
+initialPlumeHeight = 5.0e-2
+initialPlumeThickness = 1.0e-2
+gravityX = 0.0
+gravityY = 0.0
+gravityZ = -9.81
+alphaFloor = 1e-6
+alphaClipEnabled = 1.0
+alphaMinimum = 0.0
+alphaMaximum = 1.0
+subtractAlphaDiffusion = 0.0
+subtractQgxDiffusion = 0.0
+subtractQgyDiffusion = 0.0
+subtractQgzDiffusion = 0.0
+zRampBottom = 0.9
+zRampTop = 0.95
+outletDampingFactor = 20.0
+smoothGasVelocityMaskEnabled = 1.0
+gasVelocityClipEnabled = 0.0
+gasVelocityMaximum = 0.5
+# Emergency limiter for the projected volume-averaged velocity.
+volumeVelocityClipEnabled = 0.0
+volumeVelocityMaximum = 1.0
+gasMomentumCutoff = 1e-4
+gasMomentumFullyActive = 1e-3
+gasPressureEnabled = 1.0
+dragEnabled = 1.0
+# 0 disables only mixture drag; QG drag and virtual mass are retained.
+mixtureDragEnabled = 1.0
+# Mixture drag: 0 explicit, 1 implicit. QG drag remains implicit.
+mixtureImplicitDragEnabled = 1.0
+# Disable drag in BOTH phase/mixture equations when alpha < this threshold.
+# 0 preserves the previous drag behavior.
+dragAlphaCutoff = 0.0
+# Limit |ug-um| ONLY in drag (m/s); leave qg and convection untouched.
+dragSlipLimitEnabled = 0.0
+dragSlipMaximum = 1.0
+bubbleDiameter = 3.0e-3
+# Set to 0.0 to omit the kinematic drift-tensor divergence from volume momentum.
+driftStressEnabled = 1.0
+# 0: native implicit mixture viscosity only; 1: add lagged two-phase stress correction.
+mixtureViscousCorrectionEnabled = 0.0
+virtualMassEnabled = 0.0
+virtualMassCoefficient = 0.5
+stabilityMonitorEnabled = 1.0
+stabilityMonitorInterval = 1
+validationOutputInterval = 10
