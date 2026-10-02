@@ -105,6 +105,9 @@ mixtureImplicitDragEnabled = 1.0
 # Disable drag in BOTH phase/mixture equations when alpha < this threshold.
 # 0 preserves the previous drag behavior.
 dragAlphaCutoff = 0.0
+# Limit |ug-um| ONLY in drag (m/s); leave qg and convection untouched.
+dragSlipLimitEnabled = 0.0
+dragSlipMaximum = 1.0
 bubbleDiameter = 3.0e-3
 # Set to 0.0 to omit the kinematic drift-tensor divergence from volume momentum.
 driftStressEnabled = 1.0

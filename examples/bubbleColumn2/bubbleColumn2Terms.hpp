@@ -42,6 +42,8 @@ struct Parameters {
   dfloat mixtureImplicitDragEnabled = 1.0;
   dfloat mixtureDragEnabled = 1.0;
   dfloat dragAlphaCutoff = 0.0;
+  dfloat dragSlipLimitEnabled = 0.0;
+  dfloat dragSlipMaximum = 1.0;
   dfloat bubbleDiameter;
   dfloat driftStressEnabled;
   dfloat mixtureViscousCorrectionEnabled = 0.0;
@@ -397,6 +399,8 @@ inline void evaluatePointwiseTerms()
                            p.dragEnabled,
                            p.mixtureDragEnabled,
                            p.dragAlphaCutoff,
+                           p.dragSlipLimitEnabled,
+                           p.dragSlipMaximum,
                            p.bubbleDiameter,
                            p.virtualMassEnabled,
                            p.virtualMassCoefficient,
@@ -1213,7 +1217,7 @@ inline void printDragLocations(double time, int tstep)
   for (int k = 0; k < 2; ++k) {
     struct { double value; int rank; } local{maxima[k], rank}, global;
     MPI_Allreduce(&local, &global, 1, MPI_DOUBLE_INT, MPI_MAXLOC, comm);
-    double data[24] = {};
+    double data[27] = {};
     if (rank == global.rank && N > 0) {
       const dlong n = indices[k];
       dfloat xyz[3];
@@ -1237,20 +1241,28 @@ inline void printDragLocations(double time, int tstep)
       const double beta = std::max(1.0-ac, double(p.alphaFloor));
       data[22] = (p.mixtureDragEnabled != 0.0 ? 1.0 : 0.0)*ac*(1.0-p.rhoGas/p.rhoLiquid)*rate[n];
       data[23] = data[22]*beta*data[19];
+      double delta2 = 0.0;
+      for (int c = 0; c < 3; ++c) {
+        const double delta = ug[n+c*N]-um[n+c*N]; delta2 += delta*delta;
+      }
+      data[24] = std::sqrt(delta2);
+      data[25] = p.dragSlipLimitEnabled != 0.0 && data[24] > p.dragSlipMaximum
+          ? p.dragSlipMaximum/data[24] : 1.0;
+      data[26] = data[20]*data[25];
     }
-    MPI_Bcast(data, 24, MPI_DOUBLE, global.rank, comm);
+    MPI_Bcast(data, 27, MPI_DOUBLE, global.rank, comm);
     if (rank == 0) {
       printf("bubbleColumn2 dragLocation step=%d time=%.8e criterion=%s maximum=%.8e "
              "rank=%d localNode=%.0f xyz=(%.8e,%.8e,%.8e) alpha=%.8e "
              "lambdaD=%.8e lambdaDdt=%.8e qg=(%.8e,%.8e,%.8e) "
              "ug=(%.8e,%.8e,%.8e) ul=(%.8e,%.8e,%.8e) "
              "um=(%.8e,%.8e,%.8e) slip=%.8e Re=%.8e KiRaw=%.8e "
-             "mixtureRate=%.8e |FD|=%.8e\n",
+             "mixtureRate=%.8e |FD|=%.8e |ug-um|=%.8e dragSlipFactor=%.8e ReUsed=%.8e\n",
              tstep, time, k == 0 ? "lambdaD" : "mixtureDragMagnitude", global.value,
              global.rank, data[0], data[1], data[2], data[3], data[4], data[5], data[6],
              data[7], data[8], data[9], data[10], data[11], data[12],
              data[13], data[14], data[15], data[16], data[17], data[18], data[19],
-             data[20], data[21], data[22], data[23]);
+             data[20], data[21], data[22], data[23], data[24], data[25], data[26]);
     }
   }
 }

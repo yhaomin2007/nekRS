@@ -64,6 +64,12 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   platform->par->extract("casedata", "mixturedragenabled", p.mixtureDragEnabled);
   platform->par->extract("casedata", "mixtureimplicitdragenabled", p.mixtureImplicitDragEnabled);
   platform->par->extract("casedata", "dragalphacutoff", p.dragAlphaCutoff);
+  platform->par->extract("casedata", "dragsliplimitenabled", p.dragSlipLimitEnabled);
+  platform->par->extract("casedata", "dragslipmaximum", p.dragSlipMaximum);
+  nekrsCheck(p.dragSlipLimitEnabled != 0.0
+                 && !(std::isfinite(p.dragSlipMaximum) && p.dragSlipMaximum > 0.0),
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "dragSlipMaximum must be finite and positive, got %g\n", p.dragSlipMaximum);
   nekrsCheck(!(p.dragAlphaCutoff >= 0.0 && p.dragAlphaCutoff <= 1.0),
              platform->comm.mpiComm(), EXIT_FAILURE, "dragAlphaCutoff must be in [0,1], got %g\n", p.dragAlphaCutoff);
   platform->par->extract("casedata", "bubblediameter", p.bubbleDiameter);

@@ -75,3 +75,11 @@ mass retain their existing switches. The default `1.0` preserves prior behavior.
 Alpha clipping reads the documented `alphaClipEnabled` key, retaining the old
 misspelled key as an alias. Magnitude diagnostics use a case-local kernel to
 avoid offset shadowing in the native entrywiseMag implementation.
+
+`dragSlipLimitEnabled = 1.0` limits the magnitude of ug-um used only for
+drag to `dragSlipMaximum` (positive, finite, m/s). The default is disabled.
+With f=min(1,dragSlipMaximum/|ug-um|), Schiller-Naumann uses f*|ug-ul|
+and the shared drag rate is f*Ki(f*|ug-ul|)/rhoG. QG and mixture explicit
+sources, implicit diagonals and split compensation use this same rate.
+No transported QG, alpha, convection, pressure, drift or stress is clipped.
+Drag-location diagnostics also report |ug-um|, dragSlipFactor and ReUsed.
