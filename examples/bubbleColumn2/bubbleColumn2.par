@@ -101,6 +101,8 @@ dragEnabled = 1.0
 bubbleDiameter = 3.0e-3
 # Set to 0.0 to omit the kinematic drift-tensor divergence from volume momentum.
 driftStressEnabled = 1.0
+# 0: native implicit mixture viscosity only; 1: add lagged two-phase stress correction.
+mixtureViscousCorrectionEnabled = 0.0
 virtualMassEnabled = 0.0
 virtualMassCoefficient = 0.5
 stabilityMonitorEnabled = 1.0

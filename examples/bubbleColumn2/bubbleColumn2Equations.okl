@@ -469,6 +469,7 @@
 
 @kernel void addMixtureStressAndSplitDrag(const dlong N, const dlong offset,
                                          const dfloat rhoLiquid, const dfloat rhoGas,
+                                         const dfloat mixtureViscousCorrectionEnabled,
                                          @ restrict const dfloat *alpha,
                                          @ restrict const dfloat *rhoPressure,
                                          @ restrict const dfloat *dragLambda,
@@ -483,9 +484,13 @@
     const dfloat rate = a * (1.0 - rhoGas / rhoLiquid) * dragLambda[n];
     dragRate[n] = rate;
     for (int i = 0; i < 3; ++i) {
-      force[n + i * offset] += divExactStress[n + i * offset]
-          - divBaseStress[n + i * offset] / rhoPressure[n]
-          + rate * uv[n + i * offset];
+      // The switch controls only the explicit physical-minus-base stress.
+      // Implicit native viscosity, outlet damping and drag are unaffected.
+      if (mixtureViscousCorrectionEnabled != 0.0) {
+        force[n + i * offset] += divExactStress[n + i * offset]
+            - divBaseStress[n + i * offset] / rhoPressure[n];
+      }
+      force[n + i * offset] += rate * uv[n + i * offset];
     }
   }
 }

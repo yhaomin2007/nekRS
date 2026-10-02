@@ -40,6 +40,7 @@ struct Parameters {
   dfloat dragEnabled;
   dfloat bubbleDiameter;
   dfloat driftStressEnabled;
+  dfloat mixtureViscousCorrectionEnabled = 0.0;
   dfloat virtualMassEnabled;
   dfloat virtualMassCoefficient;
   dfloat stabilityMonitorEnabled;
@@ -718,6 +719,7 @@ inline void evaluateMixtureForce()
     opSEM::strongDivergence(mesh, offset, row, div);
   }
   addMixtureStressAndSplitDragKernel(mesh->Nlocal, offset, p.rhoLiquid, p.rhoGas,
+      p.mixtureViscousCorrectionEnabled,
       nrs->scalar->o_solution("alpha"), o_rhoPressure, o_dragLambda,
       nrs->fluid->o_U, o_divExactMixtureStress, o_divBaseNativeStress,
       o_mixtureDragRate, o_mixtureForce);

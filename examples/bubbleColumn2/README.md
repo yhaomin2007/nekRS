@@ -38,3 +38,11 @@ mixture stress corrections remain explicit and may restrict the timestep.
 CPU-translated pointwise-kernel syntax/algebra and baseline-preservation checks
 are available during development. Full NekRS MPI/GPU compilation and short-run
 validation are required before judging stability or permissible timestep.
+
+## Mixture viscous correction switch
+
+`[CASEDATA] mixtureViscousCorrectionEnabled = 0.0` disables the explicit
+physical two-phase stress minus native base stress correction. Set it to `1.0`
+to recover that correction from commit `1179116`. The option defaults to zero
+even when omitted. Native implicit viscosity, outlet damping, gas stress,
+drag, filters, masks, diagnostics and the lagged gas pressure remain unchanged.
