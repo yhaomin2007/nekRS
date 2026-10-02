@@ -62,3 +62,45 @@
     }
   }
 }
+
+@kernel void buildPressureForcingWeak(
+    const dlong N,
+    const dlong offset,
+    const dfloat invDt,
+    const dfloat nu,
+    @ restrict const dfloat *LMM,
+    @ restrict const dfloat *uOld,
+    @ restrict const dfloat *curlCurlWeak,
+    @ restrict dfloat *forcingWeak)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    for (int i = 0; i < 3; ++i) {
+      const dlong id = n + i * offset;
+      forcingWeak[id] =
+          invDt * LMM[n] * uOld[id]
+          - nu * curlCurlWeak[id];
+    }
+  }
+}
+
+@kernel void buildViscousPressureForcing(
+    const dlong N,
+    const dlong offset,
+    const dfloat alphaGas,
+    const dfloat alphaLiquid,
+    const dfloat invDt,
+    @ restrict const dfloat *ug,
+    @ restrict const dfloat *ul,
+    @ restrict const dfloat *pressureForcingMixture,
+    @ restrict dfloat *viscousPressureForcingMixture)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    for (int i = 0; i < 3; ++i) {
+      const dlong id = n + i * offset;
+      const dfloat transientMixture =
+          invDt * (alphaGas * ug[id] + alphaLiquid * ul[id]);
+      viscousPressureForcingMixture[id] =
+          pressureForcingMixture[id] - transientMixture;
+    }
+  }
+}
