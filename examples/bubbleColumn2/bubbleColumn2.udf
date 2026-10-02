@@ -59,6 +59,7 @@ void UDF_Setup0(MPI_Comm, setupAide &)
       "casedata", "gasmomentumfullyactive", p.gasMomentumFullyActive);
   platform->par->extract("casedata", "gaspressureenabled", p.gasPressureEnabled);
   platform->par->extract("casedata", "dragenabled", p.dragEnabled);
+  platform->par->extract("casedata", "mixturedragenabled", p.mixtureDragEnabled);
   platform->par->extract("casedata", "mixtureimplicitdragenabled", p.mixtureImplicitDragEnabled);
   platform->par->extract("casedata", "dragalphacutoff", p.dragAlphaCutoff);
   nekrsCheck(!(p.dragAlphaCutoff >= 0.0 && p.dragAlphaCutoff <= 1.0),
@@ -99,7 +100,8 @@ void UDF_Setup()
   nrs->userSource = &bubbleColumn2::addExplicitSources;
   nrs->postScalar = &bubbleColumn2::clipAlpha;
   nrs->scalar->userImplicitLinearTerm = &bubbleColumn2::implicitGasDrag;
-  if (bubbleColumn2::p.mixtureImplicitDragEnabled != 0.0) {
+  if (bubbleColumn2::p.mixtureDragEnabled != 0.0
+      && bubbleColumn2::p.mixtureImplicitDragEnabled != 0.0) {
     nrs->fluid->userImplicitLinearTerm = &bubbleColumn2::implicitMixtureDrag;
   }
   nrs->userProperties = &bubbleColumn2::updateProperties;

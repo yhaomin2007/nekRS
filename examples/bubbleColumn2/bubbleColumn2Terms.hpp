@@ -40,6 +40,7 @@ struct Parameters {
   dfloat gasPressureEnabled;
   dfloat dragEnabled;
   dfloat mixtureImplicitDragEnabled = 1.0;
+  dfloat mixtureDragEnabled = 1.0;
   dfloat dragAlphaCutoff = 0.0;
   dfloat bubbleDiameter;
   dfloat driftStressEnabled;
@@ -392,6 +393,7 @@ inline void evaluatePointwiseTerms()
                            p.alphaFloor,
                            p.gasPressureEnabled,
                            p.dragEnabled,
+                           p.mixtureDragEnabled,
                            p.dragAlphaCutoff,
                            p.bubbleDiameter,
                            p.virtualMassEnabled,
@@ -723,7 +725,8 @@ inline void evaluateMixtureForce()
     opSEM::strongDivergence(mesh, offset, row, div);
   }
   addMixtureStressAndSplitDragKernel(mesh->Nlocal, offset, p.rhoLiquid, p.rhoGas,
-      p.mixtureViscousCorrectionEnabled, p.mixtureImplicitDragEnabled,
+      p.mixtureViscousCorrectionEnabled,
+      p.mixtureDragEnabled != 0.0 ? p.mixtureImplicitDragEnabled : 0.0,
       nrs->scalar->o_solution("alpha"), o_rhoPressure, o_dragLambda,
       nrs->fluid->o_U, o_divExactMixtureStress, o_divBaseNativeStress,
       o_mixtureDragRate, o_mixtureForce);
@@ -1196,7 +1199,7 @@ inline void printDragLocations(double time, int tstep)
     const double beta = std::max(1.0-ac, double(p.alphaFloor));
     double force2 = 0.0;
     for (int c = 0; c < 3; ++c) {
-      const double f = ac*(1.0-p.rhoGas/p.rhoLiquid)*rate[n]*beta
+      const double f = (p.mixtureDragEnabled != 0.0 ? 1.0 : 0.0)*ac*(1.0-p.rhoGas/p.rhoLiquid)*rate[n]*beta
                        *(ul[n+c*N]-ug[n+c*N]);
       force2 += f*f;
     }
@@ -1230,7 +1233,7 @@ inline void printDragLocations(double time, int tstep)
       data[21] = 0.75*cdRe*p.muLiquid/(p.bubbleDiameter*p.bubbleDiameter);
       const double ac = std::max(0.0, std::min(1.0, double(a[n])));
       const double beta = std::max(1.0-ac, double(p.alphaFloor));
-      data[22] = ac*(1.0-p.rhoGas/p.rhoLiquid)*rate[n];
+      data[22] = (p.mixtureDragEnabled != 0.0 ? 1.0 : 0.0)*ac*(1.0-p.rhoGas/p.rhoLiquid)*rate[n];
       data[23] = data[22]*beta*data[19];
     }
     MPI_Bcast(data, 24, MPI_DOUBLE, global.rank, comm);

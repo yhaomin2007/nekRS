@@ -186,6 +186,7 @@
                                 const dfloat alphaFloor,
                                 const dfloat gasPressureEnabled,
                                 const dfloat dragEnabled,
+                                const dfloat mixtureDragEnabled,
                                 const dfloat dragAlphaCutoff,
                                 const dfloat bubbleDiameter,
                                 const dfloat virtualMassEnabled,
@@ -337,17 +338,17 @@
     const dfloat volumeWeight = a * (1.0 - rhoGas / rhoLiquid);
     mixtureInterphaseAcceleration[n + 0 * offset] =
         volumeWeight
-        * (dragRate * (ul[n + 0 * offset] - ug[n + 0 * offset])
+        * ((mixtureDragEnabled != 0.0 ? dragRate : 0.0) * (ul[n + 0 * offset] - ug[n + 0 * offset])
            + gasVirtualMassScale
              * virtualMassRelativeAcceleration[n + 0 * offset]);
     mixtureInterphaseAcceleration[n + 1 * offset] =
         volumeWeight
-        * (dragRate * (ul[n + 1 * offset] - ug[n + 1 * offset])
+        * ((mixtureDragEnabled != 0.0 ? dragRate : 0.0) * (ul[n + 1 * offset] - ug[n + 1 * offset])
            + gasVirtualMassScale
              * virtualMassRelativeAcceleration[n + 1 * offset]);
     mixtureInterphaseAcceleration[n + 2 * offset] =
         volumeWeight
-        * (dragRate * (ul[n + 2 * offset] - ug[n + 2 * offset])
+        * ((mixtureDragEnabled != 0.0 ? dragRate : 0.0) * (ul[n + 2 * offset] - ug[n + 2 * offset])
            + gasVirtualMassScale
              * virtualMassRelativeAcceleration[n + 2 * offset]);
   }
