@@ -1,0 +1,18 @@
+@kernel void initializeVelocity(
+    const dlong N,
+    const dlong offset,
+    const dfloat amplitude,
+    const dfloat xOrigin,
+    const dfloat xLength,
+    @ restrict const dfloat *x,
+    @ restrict dfloat *U)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    const dfloat twoPi = 6.283185307179586476925286766559;
+    const dfloat kx = twoPi / xLength;
+
+    U[n + 0 * offset] = amplitude * sin(kx * (x[n] - xOrigin));
+    U[n + 1 * offset] = 0.0;
+    U[n + 2 * offset] = 0.0;
+  }
+}
