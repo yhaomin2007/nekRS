@@ -71,3 +71,7 @@ investigating startup failures.
 `mixtureDragEnabled = 0.0` disables only mixture drag, including its implicit
 diagonal and cancellation source in either treatment mode. QG drag and virtual
 mass retain their existing switches. The default `1.0` preserves prior behavior.
+
+Alpha clipping reads the documented `alphaClipEnabled` key, retaining the old
+misspelled key as an alias. Magnitude diagnostics use a case-local kernel to
+avoid offset shadowing in the native entrywiseMag implementation.

@@ -126,6 +126,7 @@ static dfloat qgMaskDeltaMagnitudeIntegral = 0.0;
 static dfloat cumulativeQgMaskDeltaIntegral[3] = {0.0, 0.0, 0.0};
 static dfloat cumulativeQgMaskDeltaMagnitudeIntegral = 0.0;
 static bool validationInitialized = false;
+static occa::kernel vectorMagnitudeKernel;
 static occa::kernel reconstructGasVelocityKernel;
 static occa::kernel postProcessGasFluxKernel;
 static occa::kernel clipAlphaKernel;
@@ -148,6 +149,7 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
   if (platform->options.compareArgs("REGISTER ONLY", "TRUE")) {
     platform->kernelRequests.add(request, fileName, kernelInfo);
   } else {
+    vectorMagnitudeKernel = platform->kernelRequests.load(request, "vectorMagnitude");
     correctAdvectionCancellationKernel = platform->kernelRequests.load(request, "correctAdvectionCancellation");
     buildMixtureStressCorrectionKernel = platform->kernelRequests.load(request, "buildMixtureStressCorrection");
     addMixtureStressAndSplitDragKernel = platform->kernelRequests.load(request, "addMixtureStressAndSplitDrag");
@@ -610,7 +612,7 @@ inline void postProcessGasFlux()
         Nlocal, nrs->meshV->o_LMM, delta, comm);
     cumulativeQgMaskDeltaIntegral[i] += qgMaskDeltaIntegral[i];
   }
-  platform->linAlg->entrywiseMag(
+  vectorMagnitudeKernel(
       Nlocal, 3, offset, o_qgMaskDelta, o_monitorMagnitude);
   qgMaskDeltaMagnitudeIntegral = platform->linAlg->innerProd(
       Nlocal, nrs->meshV->o_LMM, o_monitorMagnitude, comm);
@@ -1273,7 +1275,7 @@ inline void printStabilityMonitors(double time, int tstep)
   const dfloat maxDiv =
       platform->linAlg->amax(Nlocal, nrs->fluid->o_div, comm);
 
-  platform->linAlg->entrywiseMag(Nlocal, 3, offset, o_gradP, o_monitorMagnitude);
+  vectorMagnitudeKernel(Nlocal, 3, offset, o_gradP, o_monitorMagnitude);
   buildGasPressureAccelerationMonitorKernel(Nlocal,
                                             p.rhoGas,
                                             p.gasMomentumCutoff,
@@ -1292,7 +1294,7 @@ inline void printStabilityMonitors(double time, int tstep)
   const dfloat meanAlpha = platform->linAlg->innerProd(
       Nlocal, nrs->meshV->o_LMM, alpha, comm) / nrs->meshV->volume;
 
-  platform->linAlg->entrywiseMag(Nlocal, 3, offset, o_qg, o_monitorMagnitude);
+  vectorMagnitudeKernel(Nlocal, 3, offset, o_qg, o_monitorMagnitude);
   const dfloat maxQg = platform->linAlg->max(Nlocal, o_monitorMagnitude, comm);
 
   buildGasFluxConsistencyMonitorKernel(Nlocal,
@@ -1304,11 +1306,11 @@ inline void printStabilityMonitors(double time, int tstep)
   const dfloat maxQgConsistencyError =
       platform->linAlg->max(Nlocal, o_monitorMagnitude, comm);
 
-  platform->linAlg->entrywiseMag(Nlocal, 3, offset, o_ug, o_monitorMagnitude);
+  vectorMagnitudeKernel(Nlocal, 3, offset, o_ug, o_monitorMagnitude);
   const dfloat maxUg = platform->linAlg->max(Nlocal, o_monitorMagnitude, comm);
   const dfloat gasCfl = computeGasCfl();
 
-  platform->linAlg->entrywiseMag(
+  vectorMagnitudeKernel(
       Nlocal, 9, offset, o_driftStress, o_monitorMagnitude);
   const dfloat maxDriftStress =
       platform->linAlg->max(Nlocal, o_monitorMagnitude, comm);
