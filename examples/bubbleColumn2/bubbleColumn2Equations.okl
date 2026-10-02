@@ -14,6 +14,7 @@
 
 @kernel void initializePlume(const dlong N,
                              const dlong offset,
+                             const dfloat alphaInitial,
                              const dfloat alphaInlet,
                              const dfloat gasInletVelocity,
                              const dfloat plumeHeight,
@@ -28,7 +29,7 @@
   for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
     const dfloat profile =
         0.5 * (1.0 - tanh((z[n] - plumeHeight) / plumeThickness));
-    const dfloat a = alphaInlet * profile;
+    const dfloat a = alphaInitial + (alphaInlet - alphaInitial) * profile;
     const dfloat ugVertical = gasInletVelocity * profile;
 
     alpha[n] = a;
@@ -37,7 +38,9 @@
     ugz[n] = ugVertical;
     uv[n + 0 * offset] = 0.0;
     uv[n + 1 * offset] = 0.0;
-    uv[n + 2 * offset] = a * ugVertical;
+    // A localized axial plume cannot be divergence free with liquid at rest.
+    // Start uv at zero and reconstruct the compensating liquid velocity.
+    uv[n + 2 * offset] = 0.0;
   }
 }
 
@@ -50,8 +53,7 @@
                                  @ restrict dfloat *ul)
 {
   for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
-    const dfloat aRaw = alpha[n];
-    const dfloat a = (aRaw < 0.0) ? 0.0 : ((aRaw > 1.0) ? 1.0 : aRaw);
+    const dfloat a = alpha[n];
     const dfloat beta = 1.0 - a;
     const dfloat betaSafe = (beta > alphaFloor) ? beta : alphaFloor;
     for (int i = 0; i < 3; ++i) {
@@ -125,8 +127,7 @@
 {
   for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
     // Keep the physical volume fraction separate from denominator protection.
-    const dfloat aRaw = alpha[n];
-    const dfloat a = (aRaw < 0.0) ? 0.0 : ((aRaw > 1.0) ? 1.0 : aRaw);
+    const dfloat a = alpha[n];
     const dfloat beta = 1.0 - a;
     const dfloat betaSafe = (beta > alphaFloor) ? beta : alphaFloor;
     // NekRS uses 1/rho in its pressure operator. Store rhoEff so that
@@ -193,11 +194,12 @@
     driftStress[n + 7 * offset] = driftScale * dz * dy;
     driftStress[n + 8 * offset] = driftScale * dz * dz;
 
-    // Source needed because nekRS advects alpha with the volume velocity uv.
+    // Provisional source; conservativeAlphaSource replaces this with the exact
+    // native-advection cancellation and conservative gas-volume divergence.
     alphaSource[n] = -slipGradAlpha - a * divUg;
 
     // Eq. (29): gas-velocity source. Pressure is intentionally lagged one pass.
-    // The alpha-weighted gas viscous stress is not yet added in this scaffold.
+    // The alpha-weighted physical gas stress is added by addExplicitSources.
     const dfloat advX = dx * gradUg[n + 0 * offset]
                          + dy * gradUg[n + 1 * offset]
                          + dz * gradUg[n + 2 * offset];
@@ -280,5 +282,60 @@
                             + divExactKinematicStress[n + 2 * offset]
                             - divNativeDynamicStress[n + 2 * offset] / rhoEffective[n]
                             + interphaseAcceleration[n + 2 * offset];
+  }
+}
+
+// Conservative gas-volume flux, using the actual transported alpha.
+@kernel void buildGasFlux(const dlong N, const dlong offset,
+                         @ restrict const dfloat *alpha,
+                         @ restrict const dfloat *ug,
+                         @ restrict dfloat *flux)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    for (int i = 0; i < 3; ++i) flux[n + i * offset] = alpha[n] * ug[n + i * offset];
+  }
+}
+
+@kernel void addGasStress(const dlong N, const dlong offset,
+                         const dfloat rhoGas, const dfloat muGas,
+                         @ restrict const dfloat *alpha,
+                         @ restrict const dfloat *gradUg,
+                         @ restrict dfloat *stress)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    const dfloat divUg = gradUg[n] + gradUg[n + 4 * offset] + gradUg[n + 8 * offset];
+    for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) {
+      stress[n + (3 * i + j) * offset] = alpha[n] * muGas / rhoGas *
+          (gradUg[n + (3 * i + j) * offset] + gradUg[n + (3 * j + i) * offset]
+           - (i == j ? (2.0 / 3.0) * divUg : 0.0));
+    }
+  }
+}
+
+@kernel void addStressAcceleration(const dlong N, const dlong offset,
+                                   const dfloat alphaFloor,
+                                   @ restrict const dfloat *alpha,
+                                   @ restrict const dfloat *divStress,
+                                   @ restrict dfloat *source)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    if (alpha[n] > alphaFloor) for (int i = 0; i < 3; ++i)
+      source[n + i * offset] += divStress[n + i * offset] / alpha[n];
+  }
+}
+
+// Move the mixture drag's -c*lambda*uv term to its Helmholtz diagonal.
+@kernel void splitMixtureDrag(const dlong N, const dlong offset,
+                              const dfloat rhoGas, const dfloat rhoLiquid,
+                              @ restrict const dfloat *alpha,
+                              @ restrict const dfloat *lambda,
+                              @ restrict const dfloat *uv,
+                              @ restrict dfloat *force,
+                              @ restrict dfloat *diagonal)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    const dfloat rate = alpha[n] * (1.0 - rhoGas / rhoLiquid) * lambda[n];
+    diagonal[n] = rate; // Converted to a dynamic diagonal after property refresh.
+    for (int i = 0; i < 3; ++i) force[n + i * offset] += rate * uv[n + i * offset];
   }
 }

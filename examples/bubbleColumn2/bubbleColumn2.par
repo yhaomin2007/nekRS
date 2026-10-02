@@ -27,25 +27,25 @@ viscosity = 1.0e-3
 boundaryTypeMap = udfDirichlet, zeroNeumann, zeroNeumann
 residualTol = 1e-8
 transportCoeff = 1.0
-diffusionCoeff = 1e-12
+diffusionCoeff = 1e-5
 
 [SCALAR UGX]
 boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
 residualTol = 1e-8
 transportCoeff = 1.0
-diffusionCoeff = 1e-12
+diffusionCoeff = 1e-5
 
 [SCALAR UGY]
 boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
 residualTol = 1e-8
 transportCoeff = 1.0
-diffusionCoeff = 1e-12
+diffusionCoeff = 1e-5
 
 [SCALAR UGZ]
 boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
 residualTol = 1e-8
 transportCoeff = 1.0
-diffusionCoeff = 1e-12
+diffusionCoeff = 1e-5
 
 [CASEDATA]
 rhoLiquid = 998.2
@@ -65,7 +65,7 @@ dragEnabled = 1.0
 bubbleDiameter = 3.0e-3
 virtualMassEnabled = 0.0
 virtualMassCoefficient = 0.5
-subtractAlphaDiffusion = 1.0
-subtractUgxDiffusion = 1.0
-subtractUgyDiffusion = 1.0
-subtractUgzDiffusion = 1.0
+subtractAlphaDiffusion = 0.0
+subtractUgxDiffusion = 0.0
+subtractUgyDiffusion = 0.0
+subtractUgzDiffusion = 0.0

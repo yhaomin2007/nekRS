@@ -28,8 +28,11 @@ At a fresh start, `alpha` and `ugz` share the smooth plume profile
 
 `f(z)=0.5*(1-tanh((z-initialPlumeHeight)/initialPlumeThickness))`.
 
-The liquid is initially stationary and the volume velocity is initialized as
-`uvz=alpha*ugz`. Restart fields are not overwritten.
+The background fraction is `alphaInitial`, blended into the plume as
+`alpha=alphaInitial+(alphaInlet-alphaInitial)*f(z)`. The initial volume
+velocity is zero (divergence free in the interior); liquid counterflow follows
+from reconstruction. The inlet starts the prescribed volume flux on advancement.
+Restart fields are not overwritten.
 
 ## Reconstruction and alpha transport
 
@@ -39,14 +42,17 @@ Liquid velocity and slip are reconstructed from
 
 `ur=ug-ul=(ug-uv)/(1-alpha)`.
 
-nekRS transports passive scalars with `uv`. The alpha source adds the relative
-gas flux so that the intended equation remains
+The alpha source cancels the exact native scalar advection kernel (including
+its cubature choice) and replaces it by the assembled conservative divergence
+of `alpha*ug`. Scalar subcycling is rejected because this replacement uses the
+non-subcycled source ordering. No core solver changes are required.
 
-`d(alpha)/dt+div(alpha*ug)=0`.
-
-Because `div(uv)=0`, the pointwise correction is
-
-`Salpha=-(ug-uv).grad(alpha)-alpha*div(ug)`.
+After scalar advancement, an optional overshoot triggers a bounded global
+projection into `[0,1-alphaFloor]`. It preserves the transported SEM quadrature
+gas volume and leaves Dirichlet nodes unchanged. This is a nonlocal redistribution,
+not a local flux-corrected transport scheme. Infeasible gas volumes stop the run
+rather than silently discarding mass. The projection uses host transfers and
+collective reductions only when bounds are violated.
 
 The scalar `diffusionCoeff` and `transportCoeff` values are read directly from
 their four `.par` sections; `userProperties()` does not overwrite them. Each
@@ -117,13 +123,20 @@ effective diffusion remains implicit.
 Schiller--Naumann drag uses the reconstructed physical slip and constant
 `bubbleDiameter`. It is semi-implicit in the gas-velocity scalar equations:
 `lambdaD*uv` is explicit and `lambdaD*ug` is placed on the Helmholtz diagonal.
+The mixture drag is also split: `c*lambdaD*ug` is explicit and
+`rhoEffective*c*lambdaD*uv` is implicit, where `c=alpha*(1-rhoGas/rhoLiquid)`.
+The source-stage rate is frozen and multiplied by the refreshed effective density.
+This is segregated semi-implicit drag, not a block-coupled phase response;
+pressure mobility remains `Ap` and no new-pressure gas correction is added.
 
 `dragEnabled` and `virtualMassEnabled` are independent numeric switches in
 `[CASEDATA]`. Drag defaults on; the explicitly lagged virtual-mass
 approximation defaults off.
 
 The gas equation still uses the previous/extrapolated pressure because scalars
-are solved before mixture pressure in the one-pass NekRS ordering. Its own
-phase-stress operator is not yet included in the passive-scalar gas equation;
-the reconstructed gas stress above contributes to the volume-mixture equation.
+are solved before mixture pressure in the one-pass NekRS ordering. Its phase-stress acceleration is included explicitly as
+`div(alpha*tauGas)/(alpha*rhoGas)` where `alpha>alphaFloor`; below that threshold,
+the absent-phase stress acceleration is zero. Numerical scalar diffusion remains
+separate from this physical stress. The default retains `1e-5` numerical diffusion
+for alpha and all gas components, with subtraction switches off.
 Lift, turbulent dispersion, and wall lubrication remain disabled.

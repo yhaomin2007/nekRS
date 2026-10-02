@@ -1,6 +1,9 @@
 #pragma once
 
 #include "opSEM.hpp"
+#include <algorithm>
+#include <limits>
+#include <vector>
 
 namespace bubbleColumn2
 {
@@ -52,6 +55,10 @@ static deviceMemory<dfloat> o_alphaSource;
 static deviceMemory<dfloat> o_ugSource;
 static deviceMemory<dfloat> o_dragLambda;
 static deviceMemory<dfloat> o_mixtureForce;
+static deviceMemory<dfloat> o_gasFlux, o_divGasFlux, o_nativeAlphaAdvection;
+static deviceMemory<dfloat> o_gasStress, o_divGasStress, o_mixtureDragDiagonal, o_mixtureDragRate;
+static occa::kernel buildGasFluxKernel, addGasStressKernel;
+static occa::kernel addStressAccelerationKernel, splitMixtureDragKernel;
 static occa::kernel packGasVelocityKernel;
 static occa::kernel initializePlumeKernel;
 static occa::kernel buildLiquidVelocityKernel;
@@ -68,6 +75,10 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
   if (platform->options.compareArgs("REGISTER ONLY", "TRUE")) {
     platform->kernelRequests.add(request, fileName, kernelInfo);
   } else {
+    buildGasFluxKernel = platform->kernelRequests.load(request, "buildGasFlux");
+    addGasStressKernel = platform->kernelRequests.load(request, "addGasStress");
+    addStressAccelerationKernel = platform->kernelRequests.load(request, "addStressAcceleration");
+    splitMixtureDragKernel = platform->kernelRequests.load(request, "splitMixtureDrag");
     packGasVelocityKernel = platform->kernelRequests.load(request, "packGasVelocity");
     initializePlumeKernel = platform->kernelRequests.load(request, "initializePlume");
     buildLiquidVelocityKernel = platform->kernelRequests.load(request, "buildLiquidVelocity");
@@ -81,6 +92,15 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
 inline void allocate()
 {
   const dlong offset = nrs->fieldOffset;
+  o_gasFlux.resize(3 * offset);
+  o_divGasFlux.resize(offset);
+  o_nativeAlphaAdvection.resize(nrs->scalar->fieldOffsetSum);
+  o_gasStress.resize(9 * offset);
+  o_divGasStress.resize(3 * offset);
+  o_mixtureDragDiagonal.resize(offset);
+  o_mixtureDragRate.resize(offset);
+  platform->linAlg->fill(offset, 0.0, o_mixtureDragRate);
+  platform->linAlg->fill(offset, 0.0, o_mixtureDragDiagonal);
   o_ug.resize(3 * offset);
   o_ul.resize(3 * offset);
   o_ulPrevious.resize(3 * offset);
@@ -172,8 +192,9 @@ inline void evaluatePointwiseTerms()
 
 inline void initializeHistory()
 {
-  evaluatePointwiseTerms();
   const dlong offset = nrs->fieldOffset;
+  platform->linAlg->fill(3 * offset, 0.0, o_virtualMassRelativeAcceleration);
+  evaluatePointwiseTerms();
   o_ulPrevious.copyFrom(o_ul, 3 * offset);
   o_ugPrevious.copyFrom(o_ug, 3 * offset);
   platform->linAlg->fill(3 * offset, 0.0, o_virtualMassRelativeAcceleration);
@@ -283,11 +304,49 @@ inline void subtractScalarDiffusion()
   }
 }
 
+// Cancel the exact native scalar advection, including its cubature choice,
+// then replace it by the assembled conservative gas-volume flux divergence.
+inline void conservativeAlphaSource()
+{
+  auto scalar = nrs->scalar.get();
+  auto mesh = nrs->meshV;
+  const auto offset = nrs->fieldOffset;
+  buildGasFluxKernel(mesh->Nlocal, offset, scalar->o_solution("alpha"), o_ug, o_gasFlux);
+  opSEM::strongDivergence(mesh, offset, o_gasFlux, o_divGasFlux);
+  if (platform->options.compareArgs("ADVECTION TYPE", "CUBATURE")) {
+    launchKernel("core-strongAdvectionCubatureVolumeScalarHex3D", mesh->Nelements,
+                 1, 0, 0, mesh->o_vgeo, mesh->o_cubDiffInterpT, mesh->o_cubInterpT,
+                 mesh->o_cubProjectT, scalar->o_compute, scalar->o_fieldOffsetScan,
+                 scalar->vFieldOffset, scalar->vCubatureOffset, scalar->o_S,
+                 scalar->o_relUrst, scalar->o_rho, o_nativeAlphaAdvection);
+  } else {
+    launchKernel("core-strongAdvectionVolumeScalarHex3D", mesh->Nelements,
+                 1, 0, mesh->o_vgeo, mesh->o_D, scalar->o_compute,
+                 scalar->o_fieldOffsetScan, scalar->vFieldOffset, scalar->o_S,
+                 scalar->o_relUrst, scalar->o_rho, o_nativeAlphaAdvection);
+  }
+  platform->linAlg->axpbyz(mesh->Nlocal, 1.0, o_nativeAlphaAdvection,
+                          -1.0, o_divGasFlux, o_alphaSource);
+}
+
 inline void addExplicitSources(double)
 {
   evaluatePointwiseTerms();
+  conservativeAlphaSource();
+  addGasStressKernel(nrs->meshV->Nlocal, nrs->fieldOffset, p.rhoGas, p.muGas,
+                     nrs->scalar->o_solution("alpha"), o_gradUg, o_gasStress);
+  for (int i = 0; i < 3; ++i) {
+    auto row = o_gasStress.slice(3 * i * nrs->fieldOffset, 3 * nrs->fieldOffset);
+    auto divRow = o_divGasStress.slice(i * nrs->fieldOffset, nrs->fieldOffset);
+    opSEM::strongDivergence(nrs->meshV, nrs->fieldOffset, row, divRow);
+  }
+  addStressAccelerationKernel(nrs->meshV->Nlocal, nrs->fieldOffset, p.alphaFloor,
+                              nrs->scalar->o_solution("alpha"), o_divGasStress, o_ugSource);
   subtractScalarDiffusion();
   evaluateMixtureForce();
+  splitMixtureDragKernel(nrs->meshV->Nlocal, nrs->fieldOffset, p.rhoGas, p.rhoLiquid,
+                         nrs->scalar->o_solution("alpha"), o_dragLambda,
+                         nrs->fluid->o_U, o_mixtureForce, o_mixtureDragRate);
   const dlong Nlocal = nrs->meshV->Nlocal;
   const dlong offset = nrs->fieldOffset;
 
@@ -310,6 +369,10 @@ inline void updateProperties(double)
   evaluatePointwiseTerms();
   nrs->fluid->o_prop.slice(0 * nrs->fieldOffset, nrs->fieldOffset).copyFrom(o_muM);
   nrs->fluid->o_prop.slice(1 * nrs->fieldOffset, nrs->fieldOffset).copyFrom(o_rhoM);
+  // Keep the source-stage drag rate frozen, but convert it with the same
+  // new-time effective density used by the native velocity Helmholtz solve.
+  o_mixtureDragDiagonal.copyFrom(o_mixtureDragRate);
+  platform->linAlg->axmy(nrs->meshV->Nlocal, 1.0, o_rhoM, o_mixtureDragDiagonal);
 }
 
 inline occa::memory implicitGasDrag(double, int scalarIndex)
@@ -327,4 +390,62 @@ inline void enforceZeroDivergence(double)
   // callback. Leaving it unchanged enforces div(uv)=0 exactly.
 }
 
+} // namespace bubbleColumn2
+
+namespace bubbleColumn2 {
+inline occa::memory implicitMixtureDrag(double)
+{
+  return o_mixtureDragDiagonal;
+}
+
+// Bounded global projection preserving the SEM quadrature gas volume.
+// Dirichlet nodes remain fixed. Redistribution is nonlocal, not a local FCT limiter.
+inline void boundAlpha(double, int)
+{
+  auto mesh = nrs->meshV;
+  const auto N = mesh->Nlocal;
+  std::vector<dfloat> alpha(N), weights(N);
+  auto field = nrs->scalar->o_solution("alpha");
+  field.copyTo(alpha.data(), N);
+  mesh->o_Jw.copyTo(weights.data(), N);
+  auto solver = nrs->scalar->ellipticSolver[0];
+  std::vector<dlong> masks(solver->Nmasked());
+  if (!masks.empty()) solver->o_maskIds().copyTo(masks.data(), masks.size() * sizeof(dlong));
+  std::vector<bool> fixed(N, false);
+  for (auto id : masks) fixed[id] = true;
+  const double upper = 1.0 - p.alphaFloor;
+  double local[4] = {0, 0, 0, 0};
+  for (dlong n = 0; n < N; ++n) {
+    local[0] += weights[n] * alpha[n];
+    if (fixed[n]) local[1] += weights[n] * alpha[n];
+    else local[2] += weights[n];
+    if (!std::isfinite(alpha[n]) || alpha[n] < 0 || alpha[n] > upper) local[3] = 1;
+  }
+  double global[4];
+  MPI_Allreduce(local, global, 4, MPI_DOUBLE, MPI_SUM, platform->comm.mpiComm());
+  if (global[3] == 0) return;
+  const double target = global[0] - global[1];
+  nekrsCheck(!std::isfinite(target) || target < 0 || target > upper * global[2],
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "%s", "bubbleColumn2: bounded alpha cannot preserve the transported gas volume. Reduce dt.\n");
+  double localRange[2] = {0, 0}, range[2];
+  for (dlong n = 0; n < N; ++n) if (!fixed[n]) {
+    localRange[0] = std::max(localRange[0], double(alpha[n]));
+    localRange[1] = std::max(localRange[1], -double(alpha[n]));
+  }
+  MPI_Allreduce(localRange, range, 2, MPI_DOUBLE, MPI_MAX, platform->comm.mpiComm());
+  double lo = -range[0], hi = upper + range[1];
+  for (int it = 0; it < 60; ++it) {
+    const double mid = 0.5 * (lo + hi);
+    double massLocal = 0, mass;
+    for (dlong n = 0; n < N; ++n) if (!fixed[n])
+      massLocal += weights[n] * std::clamp(double(alpha[n]) + mid, 0.0, upper);
+    MPI_Allreduce(&massLocal, &mass, 1, MPI_DOUBLE, MPI_SUM, platform->comm.mpiComm());
+    if (mass < target) lo = mid; else hi = mid;
+  }
+  const double shift = 0.5 * (lo + hi);
+  for (dlong n = 0; n < N; ++n) if (!fixed[n])
+    alpha[n] = std::clamp(double(alpha[n]) + shift, 0.0, upper);
+  field.copyFrom(alpha.data(), N);
+}
 } // namespace bubbleColumn2

@@ -44,12 +44,20 @@ void UDF_Setup0(MPI_Comm, setupAide &)
 
 void UDF_Setup()
 {
+  nekrsCheck(nrs->scalar->Nsubsteps != 0, platform->comm.mpiComm(), EXIT_FAILURE,
+             "%s", "bubbleColumn2 conservative alpha requires no scalar subcycling.\n");
+  nekrsCheck(bubbleColumn2::p.alphaInitial < 0 || bubbleColumn2::p.alphaInitial > 1 - bubbleColumn2::p.alphaFloor ||
+             bubbleColumn2::p.alphaInlet < 0 || bubbleColumn2::p.alphaInlet > 1 - bubbleColumn2::p.alphaFloor ||
+             bubbleColumn2::p.rhoGas <= 0 || bubbleColumn2::p.rhoLiquid <= bubbleColumn2::p.rhoGas ||
+             bubbleColumn2::p.bubbleDiameter <= 0 || bubbleColumn2::p.alphaFloor <= 0 || bubbleColumn2::p.alphaFloor >= 1,
+             platform->comm.mpiComm(), EXIT_FAILURE, "%s", "Invalid bubbleColumn2 phase parameters.\n");
   bubbleColumn2::allocate();
   if (platform->options.getArgs("RESTART FILE NAME").empty()) {
     const auto &p = bubbleColumn2::p;
     bubbleColumn2::initializePlumeKernel(
         nrs->meshV->Nlocal,
         nrs->fieldOffset,
+        p.alphaInitial,
         p.alphaInlet,
         p.ugInlet,
         p.initialPlumeHeight,
@@ -64,6 +72,8 @@ void UDF_Setup()
   bubbleColumn2::initializeHistory();
   nrs->userSource = &bubbleColumn2::addExplicitSources;
   nrs->scalar->userImplicitLinearTerm = &bubbleColumn2::implicitGasDrag;
+  nrs->fluid->userImplicitLinearTerm = &bubbleColumn2::implicitMixtureDrag;
+  nrs->postScalar = &bubbleColumn2::boundAlpha;
   nrs->userProperties = &bubbleColumn2::updateProperties;
   nrs->userDivergence = &bubbleColumn2::enforceZeroDivergence;
 }
