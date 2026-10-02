@@ -304,3 +304,70 @@ The log reports:
 
 For the first test, use only a few timesteps and compare `divPostRMS` with the
 earlier post-correction prototype.
+
+
+### Native viscous pressure-RHS correction
+
+The periodic Stokes prototype now also mirrors the constant-property,
+zero-divergence-target viscous term used inside native
+`fluidSolver_t::solvePressure()`.
+
+For each phase,
+
+[
+F_{p,k}
+=
+rac{1}{Delta t}u_k^n
+-
+
+u_k,
+abla	imes
+abla	imes u_k^n,
+qquad
+
+u_k=rac{mu_k}{ho_k},
+]
+
+using the same discrete sequence as NekRS: weak/JW-weighted curl, gather-add,
+inverse lumped mass, second weak/JW-weighted curl, then gather-add and inverse
+lumped mass of the complete pressure forcing.
+
+The common pressure solve is now
+
+[
+-
+ablacdotleft[
+left(
+rac{alpha_g}{ho_g}
++
+rac{alpha_l}{ho_l}
+ight)
+abla p
+ight]
+=
+
+ablacdotleft[
+alpha_g F_{p,g}
++
+alpha_l F_{p,l}
+ight].
+]
+
+For this periodic constant-property test, the native boundary/surface pressure
+terms and target-divergence terms are zero and are therefore not included.
+
+The final phase momentum equations remain
+
+[
+left(
+rac{ho_kgamma_0}{Delta t}M+mu_k K
+ight)u_k^{n+1}
+=
+rac{ho_k}{Delta t}M u_k^n
++
+G_w p.
+]
+
+New diagnostics include `pressureForcingRMS` and
+`viscousPressureForcingRMS` so the magnitude of the native viscous correction
+can be compared directly with the total pressure forcing.
