@@ -48,6 +48,13 @@ struct Parameters {
 };
 
 static Parameters p;
+static deviceMemory<dfloat> o_nativeTransportAdvection;
+static deviceMemory<dfloat> o_gradUv;
+static deviceMemory<dfloat> o_exactMixtureStress, o_baseNativeStress;
+static deviceMemory<dfloat> o_divExactMixtureStress, o_divBaseNativeStress;
+static deviceMemory<dfloat> o_mixtureDragRate, o_mixtureDragDiagonal;
+static occa::kernel correctAdvectionCancellationKernel;
+static occa::kernel buildMixtureStressCorrectionKernel, addMixtureStressAndSplitDragKernel;
 static deviceMemory<dfloat> o_ug;
 static deviceMemory<dfloat> o_ul;
 static deviceMemory<dfloat> o_ulPrevious;
@@ -136,6 +143,9 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
   if (platform->options.compareArgs("REGISTER ONLY", "TRUE")) {
     platform->kernelRequests.add(request, fileName, kernelInfo);
   } else {
+    correctAdvectionCancellationKernel = platform->kernelRequests.load(request, "correctAdvectionCancellation");
+    buildMixtureStressCorrectionKernel = platform->kernelRequests.load(request, "buildMixtureStressCorrection");
+    addMixtureStressAndSplitDragKernel = platform->kernelRequests.load(request, "addMixtureStressAndSplitDrag");
     reconstructGasVelocityKernel =
         platform->kernelRequests.load(request, "reconstructGasVelocity");
     postProcessGasFluxKernel =
@@ -206,6 +216,18 @@ inline void allocate()
              EXIT_FAILURE,
              "validationOutputInterval must be positive, but is %d\n",
              p.validationOutputInterval);
+  nekrsCheck(nrs->scalar->Nsubsteps != 0, platform->comm.mpiComm(), EXIT_FAILURE,
+             "%s", "bubbleColumn2 conservative source replacement requires scalar subcycling off.\n");
+  o_nativeTransportAdvection.resize(nrs->scalar->fieldOffsetSum);
+  o_gradUv.resize(9 * offset);
+  o_exactMixtureStress.resize(9 * offset);
+  o_baseNativeStress.resize(9 * offset);
+  o_divExactMixtureStress.resize(3 * offset);
+  o_divBaseNativeStress.resize(3 * offset);
+  o_mixtureDragRate.resize(offset);
+  o_mixtureDragDiagonal.resize(offset);
+  platform->linAlg->fill(offset, 0.0, o_mixtureDragRate);
+  platform->linAlg->fill(offset, 0.0, o_mixtureDragDiagonal);
   o_ug.resize(3 * offset);
   o_ul.resize(3 * offset);
   o_ulPrevious.resize(3 * offset);
@@ -336,6 +358,7 @@ inline void evaluatePointwiseTerms()
   opSEM::strongDivergence(mesh, offset, o_qg, o_divQg);
   opSEM::strongGradVec(mesh, offset, o_ug, o_gradUg);
   opSEM::strongGradVec(mesh, offset, o_ul, o_gradUl);
+  opSEM::strongGradVec(mesh, offset, nrs->fluid->o_U, o_gradUv);
   opSEM::strongGrad(mesh, offset, nrs->fluid->o_P, o_gradP);
 
   // Form F_ij = q_g,i * u_g,j and take an assembled strong divergence of
@@ -426,11 +449,12 @@ inline void evaluatePointwiseTerms()
   }
 }
 
-inline void evaluateNativeAlphaAdvection(deviceMemory<dfloat> &o_advection,
-                                         bool averageSharedNodes)
+inline void evaluateNativeScalarAdvection(int scalarIndex,
+                                          deviceMemory<dfloat> &o_advection,
+                                          bool averageSharedNodes)
 {
   auto mesh = nrs->meshV;
-  const int alphaIndex = nrs->scalar->nameToIndex.at("alpha");
+  const int alphaIndex = scalarIndex;
 
   // Reuse the exact NekRS scalar-advection operator and the contravariant
   // predicted velocity already prepared for the current timestep.
@@ -483,6 +507,28 @@ inline void evaluateNativeAlphaAdvection(deviceMemory<dfloat> &o_advection,
   }
 }
 
+inline void evaluateNativeAlphaAdvection(deviceMemory<dfloat> &o_advection,
+                                         bool averageSharedNodes)
+{
+  evaluateNativeScalarAdvection(nrs->scalar->nameToIndex.at("alpha"),
+                                o_advection, averageSharedNodes);
+}
+
+inline void correctConservativeAdvection()
+{
+  const dlong offset = nrs->fieldOffset;
+  const char *names[4] = {"alpha", "qgx", "qgy", "qgz"};
+  for (int i = 0; i < 4; ++i) {
+    const int index = nrs->scalar->nameToIndex.at(names[i]);
+    evaluateNativeScalarAdvection(index, o_nativeTransportAdvection, false);
+    auto native = o_nativeTransportAdvection.slice(nrs->scalar->fieldOffsetScan[index], offset);
+    auto grad = i == 0 ? o_gradAlpha : o_gradQgAdvection.slice(3 * (i - 1) * offset, 3 * offset);
+    auto source = i == 0 ? o_alphaSource : o_qgSource.slice((i - 1) * offset, offset);
+    correctAdvectionCancellationKernel(nrs->meshV->Nlocal, offset,
+                                       nrs->fluid->o_U, grad, native, source);
+  }
+}
+
 inline void captureAlphaAdvectionDiagnostics()
 {
   if (nrs->scalar->Nsubsteps != 0
@@ -509,8 +555,9 @@ inline void captureAlphaAdvectionDiagnostics()
 
 inline void initializeHistory()
 {
-  evaluatePointwiseTerms();
   const dlong offset = nrs->fieldOffset;
+  platform->linAlg->fill(3 * offset, 0.0, o_virtualMassRelativeAcceleration);
+  evaluatePointwiseTerms();
   o_ulPrevious.copyFrom(o_ul, 3 * offset);
   o_ugPrevious.copyFrom(o_ug, 3 * offset);
   platform->linAlg->fill(3 * offset, 0.0, o_virtualMassRelativeAcceleration);
@@ -658,6 +705,22 @@ inline void evaluateMixtureForce()
                           o_divDriftStress,
                           o_mixtureInterphaseAcceleration,
                           o_mixtureForce);
+  buildMixtureStressCorrectionKernel(mesh->Nlocal, offset,
+      p.rhoLiquid, p.rhoGas, p.muLiquid, p.muGas,
+      nrs->scalar->o_solution("alpha"), o_rhoPressure, o_gradUl, o_gradUg,
+      o_gradUv, o_exactMixtureStress, o_baseNativeStress);
+  for (int i = 0; i < 3; ++i) {
+    auto row = o_exactMixtureStress.slice(3 * i * offset, 3 * offset);
+    auto div = o_divExactMixtureStress.slice(i * offset, offset);
+    opSEM::strongDivergence(mesh, offset, row, div);
+    row = o_baseNativeStress.slice(3 * i * offset, 3 * offset);
+    div = o_divBaseNativeStress.slice(i * offset, offset);
+    opSEM::strongDivergence(mesh, offset, row, div);
+  }
+  addMixtureStressAndSplitDragKernel(mesh->Nlocal, offset, p.rhoLiquid, p.rhoGas,
+      nrs->scalar->o_solution("alpha"), o_rhoPressure, o_dragLambda,
+      nrs->fluid->o_U, o_divExactMixtureStress, o_divBaseNativeStress,
+      o_mixtureDragRate, o_mixtureForce);
 }
 
 inline void subtractScalarDiffusion()
@@ -729,6 +792,7 @@ inline void subtractScalarDiffusion()
 inline void addExplicitSources(double)
 {
   evaluatePointwiseTerms();
+  correctConservativeAdvection();
   captureAlphaAdvectionDiagnostics();
   subtractScalarDiffusion();
   evaluateMixtureForce();
@@ -757,6 +821,15 @@ inline void updateProperties(double)
   nrs->fluid->o_prop.slice(0 * nrs->fieldOffset, nrs->fieldOffset).copyFrom(o_muM);
   nrs->fluid->o_prop.slice(1 * nrs->fieldOffset, nrs->fieldOffset)
       .copyFrom(o_rhoPressure);
+  // Keep source-stage drag coefficients frozen, using the current effective
+  // density to convert the mixture acceleration rate into a dynamic diagonal.
+  o_mixtureDragDiagonal.copyFrom(o_mixtureDragRate);
+  platform->linAlg->axmy(nrs->meshV->Nlocal, 1.0, o_rhoPressure, o_mixtureDragDiagonal);
+}
+
+inline occa::memory implicitMixtureDrag(double)
+{
+  return o_mixtureDragDiagonal;
 }
 
 inline occa::memory implicitGasDrag(double, int scalarIndex)

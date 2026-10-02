@@ -86,6 +86,7 @@
 
 @kernel void initializePlume(const dlong N,
                              const dlong offset,
+                             const dfloat alphaInitial,
                              const dfloat alphaInlet,
                              const dfloat gasInletVelocity,
                              const dfloat plumeHeight,
@@ -100,7 +101,7 @@
   for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
     const dfloat profile =
         0.5 * (1.0 - tanh((z[n] - plumeHeight) / plumeThickness));
-    const dfloat a = alphaInlet * profile;
+    const dfloat a = alphaInitial + (alphaInlet - alphaInitial) * profile;
     const dfloat ugVertical = gasInletVelocity * profile;
     alpha[n] = a;
     qgx[n] = 0.0;
@@ -301,24 +302,26 @@
     const dfloat Ki = 0.75 * CdRe * muLiquid
                       / (bubbleDiameter * bubbleDiameter);
     // M_D/rho_g = alpha*Ki/rho_g*(u_l-u_g). Since q_g=alpha*u_g,
-    // Ki/rho_g*q_g is the implicit part.
+    // The reconstructed liquid feedback is also placed on the implicit diagonal.
     const dfloat dragRate = dragEnabled * Ki / rhoGas;
-    dragLambda[n] = dragRate;
+    // u_l=(u_v-q_g)/beta: retain the q_g dependence implicitly as well.
+    // M_D/rho_g = (dragRate/beta)*(alpha*u_v-q_g).
+    dragLambda[n] = dragRate / betaSafe;
     const dfloat virtualMassScale = a * virtualMassEnabled
                                     * virtualMassCoefficient * rhoLiquid / rhoGas;
     qgSource[n + 0 * offset] = qgAdvectionX
                                - a * gasPressureEnabled * gradP[n + 0 * offset] / rhoGas
-                               + a * gravityX + a * dragRate * ul[n + 0 * offset]
+                               + a * gravityX + a * (dragRate / betaSafe) * uv[n + 0 * offset]
                                + virtualMassScale
                                  * virtualMassRelativeAcceleration[n + 0 * offset];
     qgSource[n + 1 * offset] = qgAdvectionY
                                - a * gasPressureEnabled * gradP[n + 1 * offset] / rhoGas
-                               + a * gravityY + a * dragRate * ul[n + 1 * offset]
+                               + a * gravityY + a * (dragRate / betaSafe) * uv[n + 1 * offset]
                                + virtualMassScale
                                  * virtualMassRelativeAcceleration[n + 1 * offset];
     qgSource[n + 2 * offset] = qgAdvectionZ
                                - a * gasPressureEnabled * gradP[n + 2 * offset] / rhoGas
-                               + a * gravityZ + a * dragRate * ul[n + 2 * offset]
+                               + a * gravityZ + a * (dragRate / betaSafe) * uv[n + 2 * offset]
                                + virtualMassScale
                                  * virtualMassRelativeAcceleration[n + 2 * offset];
 
@@ -415,5 +418,74 @@
                             + interphaseAcceleration[n + 1 * offset];
     force[n + 2 * offset] = driftAccelerationZ + gravityZ
                             + interphaseAcceleration[n + 2 * offset];
+  }
+}
+
+// Replace only the user approximation to native advection. Conservative flux,
+// pressure, gravity, physical gas stress and interphase sources are unchanged.
+@kernel void correctAdvectionCancellation(const dlong N, const dlong offset,
+                                          @ restrict const dfloat *uv,
+                                          @ restrict const dfloat *grad,
+                                          @ restrict const dfloat *nativeAdvection,
+                                          @ restrict dfloat *source)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    source[n] += nativeAdvection[n]
+        - uv[n] * grad[n] - uv[n + offset] * grad[n + offset]
+        - uv[n + 2 * offset] * grad[n + 2 * offset];
+  }
+}
+
+@kernel void buildMixtureStressCorrection(const dlong N, const dlong offset,
+                                          const dfloat rhoLiquid, const dfloat rhoGas,
+                                          const dfloat muLiquid, const dfloat muGas,
+                                          @ restrict const dfloat *alpha,
+                                          @ restrict const dfloat *rhoPressure,
+                                          @ restrict const dfloat *gradUl,
+                                          @ restrict const dfloat *gradUg,
+                                          @ restrict const dfloat *gradUv,
+                                          @ restrict dfloat *exactStress,
+                                          @ restrict dfloat *baseNativeStress)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    const dfloat a = alpha[n] < 0 ? 0 : (alpha[n] > 1 ? 1 : alpha[n]);
+    const dfloat beta = 1 - a;
+    const dfloat baseMu = rhoPressure[n] * (beta * muLiquid / rhoLiquid + a * muGas / rhoGas);
+    const dfloat divUl = gradUl[n] + gradUl[n + 4 * offset] + gradUl[n + 8 * offset];
+    const dfloat divUg = gradUg[n] + gradUg[n + 4 * offset] + gradUg[n + 8 * offset];
+    const dfloat divUv = gradUv[n] + gradUv[n + 4 * offset] + gradUv[n + 8 * offset];
+    for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j) {
+      const int ij = 3 * i + j, ji = 3 * j + i;
+      const dfloat diagonal = i == j ? (2.0 / 3.0) : 0.0;
+      exactStress[n + ij * offset] =
+          beta * muLiquid / rhoLiquid * (gradUl[n + ij * offset] + gradUl[n + ji * offset] - diagonal * divUl)
+          + a * muGas / rhoGas * (gradUg[n + ij * offset] + gradUg[n + ji * offset] - diagonal * divUg);
+      // Do not subtract the additional outlet viscosity: preserve that feature.
+      baseNativeStress[n + ij * offset] = baseMu *
+          (gradUv[n + ij * offset] + gradUv[n + ji * offset] - diagonal * divUv);
+    }
+  }
+}
+
+@kernel void addMixtureStressAndSplitDrag(const dlong N, const dlong offset,
+                                         const dfloat rhoLiquid, const dfloat rhoGas,
+                                         @ restrict const dfloat *alpha,
+                                         @ restrict const dfloat *rhoPressure,
+                                         @ restrict const dfloat *dragLambda,
+                                         @ restrict const dfloat *uv,
+                                         @ restrict const dfloat *divExactStress,
+                                         @ restrict const dfloat *divBaseStress,
+                                         @ restrict dfloat *dragRate,
+                                         @ restrict dfloat *force)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    const dfloat a = alpha[n] < 0 ? 0 : (alpha[n] > 1 ? 1 : alpha[n]);
+    const dfloat rate = a * (1.0 - rhoGas / rhoLiquid) * dragLambda[n];
+    dragRate[n] = rate;
+    for (int i = 0; i < 3; ++i) {
+      force[n + i * offset] += divExactStress[n + i * offset]
+          - divBaseStress[n + i * offset] / rhoPressure[n]
+          + rate * uv[n + i * offset];
+    }
   }
 }

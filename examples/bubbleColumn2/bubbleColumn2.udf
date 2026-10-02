@@ -77,6 +77,7 @@ void UDF_Setup()
     bubbleColumn2::initializePlumeKernel(
         nrs->meshV->Nlocal,
         nrs->fieldOffset,
+        p.alphaInitial,
         p.alphaInlet,
         p.ugInlet,
         p.initialPlumeHeight,
@@ -92,6 +93,7 @@ void UDF_Setup()
   nrs->userSource = &bubbleColumn2::addExplicitSources;
   nrs->postScalar = &bubbleColumn2::clipAlpha;
   nrs->scalar->userImplicitLinearTerm = &bubbleColumn2::implicitGasDrag;
+  nrs->fluid->userImplicitLinearTerm = &bubbleColumn2::implicitMixtureDrag;
   nrs->userProperties = &bubbleColumn2::updateProperties;
   nrs->userDivergence = &bubbleColumn2::enforceZeroDivergence;
 }
