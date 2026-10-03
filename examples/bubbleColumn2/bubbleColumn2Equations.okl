@@ -187,6 +187,7 @@
                                 const dfloat gasPressureEnabled,
                                 const dfloat dragEnabled,
                                 const dfloat mixtureDragEnabled,
+                                const dfloat frozenDragEnabled,
                                 const dfloat dragAlphaCutoff,
                                 const dfloat dragSlipLimitEnabled,
                                 const dfloat dragSlipMaximum,
@@ -215,7 +216,9 @@
                                 @ restrict dfloat *alphaSource,
                                 @ restrict dfloat *qgSource,
                                 @ restrict dfloat *dragLambda,
-                                @ restrict dfloat *mixtureInterphaseAcceleration)
+                                @ restrict dfloat *mixtureInterphaseAcceleration,
+                                @ restrict dfloat *gasDragSource,
+                                @ restrict dfloat *mixtureDragSource)
 {
   for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
     // Keep the physical volume fraction separate from denominator protection.
@@ -322,17 +325,26 @@
                                     * virtualMassCoefficient * rhoLiquid / rhoGas;
     qgSource[n + 0 * offset] = qgAdvectionX
                                - a * gasPressureEnabled * gradP[n + 0 * offset] / rhoGas
-                               + a * gravityX + a * (dragRate / betaSafe) * uv[n + 0 * offset]
+                               + a * gravityX
+                               + (frozenDragEnabled != 0.0
+                                  ? a * dragRate * (ul[n + 0 * offset] - ug[n + 0 * offset])
+                                  : a * (dragRate / betaSafe) * uv[n + 0 * offset])
                                + virtualMassScale
                                  * virtualMassRelativeAcceleration[n + 0 * offset];
     qgSource[n + 1 * offset] = qgAdvectionY
                                - a * gasPressureEnabled * gradP[n + 1 * offset] / rhoGas
-                               + a * gravityY + a * (dragRate / betaSafe) * uv[n + 1 * offset]
+                               + a * gravityY
+                               + (frozenDragEnabled != 0.0
+                                  ? a * dragRate * (ul[n + 1 * offset] - ug[n + 1 * offset])
+                                  : a * (dragRate / betaSafe) * uv[n + 1 * offset])
                                + virtualMassScale
                                  * virtualMassRelativeAcceleration[n + 1 * offset];
     qgSource[n + 2 * offset] = qgAdvectionZ
                                - a * gasPressureEnabled * gradP[n + 2 * offset] / rhoGas
-                               + a * gravityZ + a * (dragRate / betaSafe) * uv[n + 2 * offset]
+                               + a * gravityZ
+                               + (frozenDragEnabled != 0.0
+                                  ? a * dragRate * (ul[n + 2 * offset] - ug[n + 2 * offset])
+                                  : a * (dragRate / betaSafe) * uv[n + 2 * offset])
                                + virtualMassScale
                                  * virtualMassRelativeAcceleration[n + 2 * offset];
 
@@ -344,6 +356,13 @@
                                       * virtualMassCoefficient
                                       * rhoLiquid / rhoGas;
     const dfloat volumeWeight = a * (1.0 - rhoGas / rhoLiquid);
+    for (int i = 0; i < 3; ++i) {
+      const dlong id = n + i * offset;
+      const dfloat gasDrag = a * dragRate * (ul[id] - ug[id]);
+      gasDragSource[id] = gasDrag;
+      mixtureDragSource[id] = mixtureDragEnabled != 0.0
+          ? (1.0 - rhoGas / rhoLiquid) * gasDrag : 0.0;
+    }
     mixtureInterphaseAcceleration[n + 0 * offset] =
         volumeWeight
         * ((mixtureDragEnabled != 0.0 ? dragRate : 0.0) * (ul[n + 0 * offset] - ug[n + 0 * offset])

@@ -83,3 +83,25 @@ and the shared drag rate is f*Ki(f*|ug-ul|)/rhoG. QG and mixture explicit
 sources, implicit diagonals and split compensation use this same rate.
 No transported QG, alpha, convection, pressure, drift or stress is clipped.
 Drag-location diagnostics also report |ug-um|, dragSlipFactor and ReUsed.
+
+## Frozen complete drag experiment (one-through)
+
+Set `frozenDragEnabled = 1.0` to evaluate the complete drag force once from
+the previous completed state in `userSource`. QG receives
+`alpha*dragRate*(ul-ug)` and mixture receives the same acceleration times
+`1-rhoGas/rhoLiquid` as a native acceleration source.
+Both drag implicit diagonals and the mixture split compensation are disabled,
+regardless of `mixtureImplicitDragEnabled`. Other force switches, drag cutoff
+and drag-only slip limiter retain their meanings. Keep `dragEnabled = 1.0`
+and `mixtureDragEnabled = 1.0` to test physical drag in both equations.
+
+Drag contributions in all native EXT source-history slots are replaced by
+this step's frozen contribution; since EXT weights sum to one, the applied
+drag is the old-state force rather than an extrapolation of several forces.
+Non-drag history contributions, BDF order, pressure and advection are unchanged.
+The previous drag in these histories is tracked separately; first-step inactive
+history slots start from zero, including after restart. No external iteration
+or additional gas pressure correction is introduced. This mode gives drag
+first-order lagged temporal treatment and retains an explicit stability limit.
+The default `0.0` preserves the existing treatment. Completed-step drag
+monitors remain diagnostic recomputations, not the force used during the step.

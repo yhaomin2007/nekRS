@@ -98,6 +98,9 @@ gasMomentumCutoff = 1e-4
 gasMomentumFullyActive = 1e-3
 gasPressureEnabled = 1.0
 dragEnabled = 1.0
+# 1: freeze the ENTIRE drag force from the previous completed state in QG and mixture.
+# Overrides both drag implicit treatments; only drag is excluded from EXT extrapolation.
+frozenDragEnabled = 0.0
 # 0 disables only mixture drag; QG drag and virtual mass are retained.
 mixtureDragEnabled = 1.0
 # Mixture drag: 0 explicit, 1 implicit. QG drag remains implicit.
