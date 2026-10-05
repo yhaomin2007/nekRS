@@ -101,13 +101,10 @@ dragEnabled = 1.0
 # Complete drag is always explicit and frozen from the previous completed state.
 # 0 disables only mixture drag; QG drag and virtual mass are retained.
 mixtureDragEnabled = 1.0
-# Temporal smoothing: used = omega*raw + (1-omega)*previousUsed. Range (0,1].
-# Both QG and mixture drag are excluded from EXT extrapolation.
-mixtureDragRelaxation = 1.0
-# Optional linear ramp of mixture drag only; physical simulation time in seconds.
+# Optional linear ramp of mixture drag only, based on native timestep count.
 mixtureDragRampEnabled = 0.0
-mixtureDragRampStartTime = 0.0
-mixtureDragRampDuration = 0.01
+mixtureDragRampStartStep = 0
+mixtureDragRampSteps = 10000
 # Disable drag in BOTH phase/mixture equations when alpha < this threshold.
 # 0 preserves the previous drag behavior.
 dragAlphaCutoff = 0.0

@@ -9,7 +9,9 @@ terms = (root / 'bubbleColumn2Terms.hpp').read_text()
 udf = (root / 'bubbleColumn2.udf').read_text()
 for obsolete in ('frozenDragEnabled', 'mixtureImplicitDragEnabled',
                  'implicitGasDrag', 'implicitMixtureDrag', 'o_mixtureDragDiagonal',
-                 'o_mixtureDragRate', 'addMixtureStressAndSplitDrag'):
+                 'o_mixtureDragRate', 'addMixtureStressAndSplitDrag',
+                 'mixtureDragRelaxation', 'relaxMixtureDrag', 'o_relaxedMixtureDragSource',
+                 'mixtureDragRampStartTime', 'mixtureDragRampDuration'):
     assert obsolete not in terms + udf
 assert 'userImplicitLinearTerm' not in udf
 helper = terms.split('inline void freezeDragHistory()')[1].split('inline void addExplicitSources')[0]

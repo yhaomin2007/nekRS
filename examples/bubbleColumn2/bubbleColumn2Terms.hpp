@@ -39,10 +39,9 @@ struct Parameters {
   dfloat gasMomentumFullyActive;
   dfloat gasPressureEnabled;
   dfloat dragEnabled;
-  dfloat mixtureDragRelaxation = 1.0;
   dfloat mixtureDragRampEnabled = 0.0;
-  dfloat mixtureDragRampStartTime = 0.0;
-  dfloat mixtureDragRampDuration = 0.01;
+  int mixtureDragRampStartStep = 0;
+  int mixtureDragRampSteps = 10000;
   dfloat mixtureDragEnabled = 1.0;
   dfloat dragAlphaCutoff = 0.0;
   dfloat dragSlipLimitEnabled = 0.0;
@@ -94,8 +93,6 @@ static deviceMemory<dfloat> o_qgSource;
 static deviceMemory<dfloat> o_dragLambda;
 static deviceMemory<dfloat> o_gasDragSource, o_mixtureDragSource;
 static deviceMemory<dfloat> o_previousGasDragSource, o_previousMixtureDragSource;
-static deviceMemory<dfloat> o_relaxedMixtureDragSource;
-static int mixtureDragRelaxationStep = -1;
 static deviceMemory<dfloat> o_mixtureInterphaseAcceleration;
 static deviceMemory<dfloat> o_mixtureForce;
 static deviceMemory<dfloat> o_monitorMagnitude;
@@ -271,7 +268,6 @@ inline void allocate()
   o_mixtureDragSource.resize(3 * offset);
   o_previousGasDragSource.resize(3 * offset);
   o_previousMixtureDragSource.resize(3 * offset);
-  o_relaxedMixtureDragSource.resize(3 * offset);
   platform->linAlg->fill(3 * offset, 0.0, o_previousGasDragSource);
   platform->linAlg->fill(3 * offset, 0.0, o_previousMixtureDragSource);
   o_mixtureInterphaseAcceleration.resize(3 * offset);
@@ -811,18 +807,18 @@ inline void subtractScalarDiffusion()
   }
 }
 
-// Apply the physical-time ramp AFTER relaxation, without scaling filter history.
-inline dfloat mixtureDragRampFactor(double time)
+// Scale only mixture drag using the native timestep counter.
+inline dfloat mixtureDragRampFactor(int step)
 {
   if (p.mixtureDragRampEnabled == 0.0) return 1.0;
   return std::max(0.0, std::min(1.0,
-      (time - p.mixtureDragRampStartTime) / p.mixtureDragRampDuration));
+      (static_cast<dfloat>(step) - p.mixtureDragRampStartStep) / p.mixtureDragRampSteps));
 }
 
-inline void rampMixtureDrag(double time)
+inline void rampMixtureDrag(int step)
 {
   if (p.mixtureDragRampEnabled == 0.0) return;
-  const dfloat factor = mixtureDragRampFactor(time);
+  const dfloat factor = mixtureDragRampFactor(step);
   const dlong N = nrs->meshV->Nlocal;
   const dlong offset = nrs->fieldOffset;
   for (int i = 0; i < 3; ++i) {
@@ -831,28 +827,6 @@ inline void rampMixtureDrag(double time)
     platform->linAlg->axpby(N, factor - 1.0, drag, 1.0, force);
     platform->linAlg->axpby(N, 0.0, drag, factor, drag);
   }
-}
-
-// Smooth only the complete mixture drag acceleration, once per physical step.
-// Initialize from the first raw force, including after restart (no saved filter history).
-inline void relaxMixtureDrag()
-{
-  if (p.mixtureDragRelaxation == 1.0) return;
-  const dlong N = nrs->meshV->Nlocal;
-  const dlong offset = nrs->fieldOffset;
-  for (int i = 0; i < 3; ++i) {
-    auto raw = o_mixtureDragSource.slice(i * offset, offset);
-    auto used = o_relaxedMixtureDragSource.slice(i * offset, offset);
-    auto force = o_mixtureForce.slice(i * offset, offset);
-    if (mixtureDragRelaxationStep < 0) used.copyFrom(raw, N);
-    else if (mixtureDragRelaxationStep != nrs->tstep)
-      platform->linAlg->axpby(N, p.mixtureDragRelaxation, raw,
-                             1.0 - p.mixtureDragRelaxation, used);
-    platform->linAlg->axpby(N, -1.0, raw, 1.0, force);
-    platform->linAlg->axpby(N, 1.0, used, 1.0, force);
-    raw.copyFrom(used, N);
-  }
-  mixtureDragRelaxationStep = nrs->tstep;
 }
 
 // All EXT history slots must contain the SAME drag contribution for this step.
@@ -886,21 +860,20 @@ inline void freezeDragHistory()
   o_previousMixtureDragSource.copyFrom(o_mixtureDragSource);
 }
 
-inline void addExplicitSources(double time)
+inline void addExplicitSources(double)
 {
   evaluatePointwiseTerms();
   correctConservativeAdvection();
   captureAlphaAdvectionDiagnostics();
   subtractScalarDiffusion();
   evaluateMixtureForce();
-  relaxMixtureDrag();
-  rampMixtureDrag(time);
+  rampMixtureDrag(nrs->tstep);
   if (p.mixtureDragRampEnabled != 0.0 && p.stabilityMonitorEnabled != 0.0
       && p.stabilityMonitorInterval > 0
       && nrs->tstep % p.stabilityMonitorInterval == 0
       && platform->comm.mpiRank() == 0)
-    printf("bubbleColumn2 mixtureDragRamp step=%d sourceTime=%.8e factor=%.8e\n",
-           nrs->tstep, time, mixtureDragRampFactor(time));
+    printf("bubbleColumn2 mixtureDragRamp step=%d factor=%.8e\n",
+           nrs->tstep, mixtureDragRampFactor(nrs->tstep));
   freezeDragHistory();
   const dlong Nlocal = nrs->meshV->Nlocal;
   const dlong offset = nrs->fieldOffset;
