@@ -1,134 +1,65 @@
-# bubbleColumn2: uploaded QG working baseline
+# bubbleColumn2: explicit-drag one-through solver
 
-Primary fields are native volume velocity `uv`, pressure, `ALPHA`, and
-`QGX/QGY/QGZ`, with `qg=alpha*ug` and `ul=(uv-qg)/(1-alpha)`.
+Native velocity is the volume average `um=(1-alpha)*ul+alpha*ug`;
+scalars are `ALPHA,QGX,QGY,QGZ`, with `qg=alpha*ug`.
+The native pressure/velocity solver imposes zero mixture divergence.
+Gas pressure remains lagged. Conservative scalar fluxes, advection cancellation,
+HPFRT, outlet damping, diffusion switches, boundary conditions, gas masks,
+clipping, phase velocity exports and conservation diagnostics are retained.
+The experimental `bubbleColumn2_ext` case is separate and unchanged.
 
-The seven user-uploaded files are preserved verbatim in commit `4f79c46`.
-The following repair retains the uploaded `.par`, `.usr`, and both boundary
-files, all switches, HPFRT, outlet damping, gas masks, alpha/vector clipping,
-phase-velocity exports, stability monitors and conservation CSV columns.
-Gas pressure remains lagged; no new-pressure gas correction is added.
+## Drag treatment
 
-## Numerical repairs
+Complete drag is always explicit in both equations, evaluated once from the
+previous completed state. Gas receives `Sg=alpha*Ki/rhoGas*(ul-ug)` and
+mixture receives `(1-rhoGas/rhoLiquid)*Sg` before optional mixture controls.
+Only drag contributions in native EXT history slots are replaced by this
+step's force; other sources retain native extrapolation and BDF is unchanged.
+There are no drag implicit callbacks, diagonals or split compensation.
+The obsolete `frozenDragEnabled` and `mixtureImplicitDragEnabled` options are
+removed and no longer read. Explicit drag retains a timestep stability limit.
 
-- Cancel the exact native scalar-advection kernel for alpha and all QG
-  components, including cubature and predicted contravariant velocity, rather
-  than a pointwise approximation. Conservative flux divergences are unchanged.
-  Nonzero scalar subcycling is rejected because its forcing ordering differs.
-- Substitute `ul=(uv-qg)/beta` in gas drag: `lambda=Ki/(rhoGas*beta)`
-  is implicit, while `alpha*lambda*uv` is explicit. The mixture reaction rate
-  `alpha*(1-rhoGas/rhoLiquid)*lambda` is also put on its native Helmholtz
-  diagonal. This remains segregated drag and retains the native `Ap` pressure
-  mobility; it is not a block pressure/drag correction.
-- Add the volume-mixture physical two-phase stress minus the native base stress
-  as a lagged correction. Extra native viscosity from outlet damping remains.
-  Existing explicit physical gas stress and scalar numerical diffusion remain.
-- Initialize virtual-mass scratch before its first use, avoiding undefined
-  data even when virtual mass is disabled.
-- Use `alphaInitial` as the background plume fraction. With the supplied value
-  zero, initialization is identical to the uploaded case, including initially
-  stationary liquid and a localized, initially non-solenoidal volume velocity.
+`dragEnabled` controls drag globally. `mixtureDragEnabled=0` disables mixture
+drag only. `dragAlphaCutoff` suppresses drag below that alpha.
+`dragSlipLimitEnabled` and `dragSlipMaximum` limit slip used in drag coefficients
+only; transported fields and convection remain unchanged.
 
-Clipping and masks retain their original nonconservative changes and accounting
-in the CSV. No global redistribution limiter is introduced. Gas stress and
-mixture stress corrections remain explicit and may restrict the timestep.
+## Optional mixture drag relaxation
 
-## Validation status
+`mixtureDragRelaxation=1.0` disables smoothing (default). For `0<omega<1`,
+`D_filtered[n]=omega*D_raw[n]+(1-omega)*D_filtered[n-1]`.
+The filter advances once per timestep and initializes from raw force at startup
+or restart. It affects only mixture drag, not QG drag or other forces.
 
-CPU-translated pointwise-kernel syntax/algebra and baseline-preservation checks
-are available during development. Full NekRS MPI/GPU compilation and short-run
-validation are required before judging stability or permissible timestep.
+## Optional mixture-only drag ramp
 
-## Mixture viscous correction switch
+In `[CASEDATA]`:
 
-`[CASEDATA] mixtureViscousCorrectionEnabled = 0.0` disables the explicit
-physical two-phase stress minus native base stress correction. Set it to `1.0`
-to recover that correction from commit `1179116`. The option defaults to zero
-even when omitted. Native implicit viscosity, outlet damping, gas stress,
-drag, filters, masks, diagnostics and the lagged gas pressure remain unchanged.
+```ini
+mixtureDragRampEnabled = 1.0
+mixtureDragRampStartTime = 0.0
+mixtureDragRampDuration = 0.01
+```
 
-### Drag controls and local diagnostics
+Time and duration are in seconds. The multiplier is zero at/before start,
+rises linearly to one over duration, and stays one afterward. The default is
+disabled. It uses the native source callback's absolute physical simulation time,
+so restart continues the ramp rather than restarting it. The ramp applies after
+relaxation, without scaling filter history. The log reports its applied factor.
+QG drag is never ramped. Ramp and relaxation temporarily alter gas/mixture
+exchange consistency; verify stability at full drag and timestep sensitivity.
 
-`mixtureImplicitDragEnabled = 1.0` retains the previous mixture drag split;
-`0.0` uses the complete explicit mixture drag, removes its added cancellation
-source and does not register the mixture drag implicit callback. QG drag remains
-implicit in both modes. `dragEnabled` retains its existing global meaning.
+## Other controls and diagnostics
 
-`dragAlphaCutoff = 0.0` preserves the previous behavior. Set a positive value
-(e.g. `1e-4`) to set drag to zero wherever bounded alpha is strictly below this
-value, consistently in QG and mixture equations. It does not alter pressure,
-virtual mass, gas reconstruction or other force switches.
+`mixtureViscousCorrectionEnabled` toggles the explicit physical two-phase
+stress minus native base stress. Native implicit viscosity and damping remain.
+`driftStressEnabled` toggles the drift tensor divergence. Completed-step drag
+location diagnostics recompute physical raw drag, not the filtered/ramped force.
+Conservation CSV includes clipping and masking changes. Alpha clipping accepts
+`alphaClipEnabled`, with the older spelling retained as an alias.
 
-At `stabilityMonitorInterval`, two `dragLocation` records identify the global
-maximum completed-step QG drag diagonal and physical mixture drag magnitude
-(excluding virtual mass), with rank, local node, coordinates, raw alpha,
-lambdaD, lambdaD*dt, QG, gas/liquid/mixture velocities, slip magnitude, Reynolds number, raw Ki and
-physical mixture drag rate/magnitude.
-These use completed-step coefficients, not the frozen source-stage diagonal.
-Host copies occur only at monitor intervals; set the interval to 1 when
-investigating startup failures.
+## Validation
 
-`mixtureDragEnabled = 0.0` disables only mixture drag, including its implicit
-diagonal and cancellation source in either treatment mode. QG drag and virtual
-mass retain their existing switches. The default `1.0` preserves prior behavior.
-
-Alpha clipping reads the documented `alphaClipEnabled` key, retaining the old
-misspelled key as an alias. Magnitude diagnostics use a case-local kernel to
-avoid offset shadowing in the native entrywiseMag implementation.
-
-`dragSlipLimitEnabled = 1.0` limits the magnitude of ug-um used only for
-drag to `dragSlipMaximum` (positive, finite, m/s). The default is disabled.
-With f=min(1,dragSlipMaximum/|ug-um|), Schiller-Naumann uses f*|ug-ul|
-and the shared drag rate is f*Ki(f*|ug-ul|)/rhoG. QG and mixture explicit
-sources, implicit diagonals and split compensation use this same rate.
-No transported QG, alpha, convection, pressure, drift or stress is clipped.
-Drag-location diagnostics also report |ug-um|, dragSlipFactor and ReUsed.
-
-## Frozen complete drag experiment (one-through)
-
-Set `frozenDragEnabled = 1.0` to evaluate the complete drag force once from
-the previous completed state in `userSource`. QG receives
-`alpha*dragRate*(ul-ug)` and mixture receives the same acceleration times
-`1-rhoGas/rhoLiquid` as a native acceleration source.
-Both drag implicit diagonals and the mixture split compensation are disabled,
-regardless of `mixtureImplicitDragEnabled`. Other force switches, drag cutoff
-and drag-only slip limiter retain their meanings. Keep `dragEnabled = 1.0`
-and `mixtureDragEnabled = 1.0` to test physical drag in both equations.
-
-Drag contributions in all native EXT source-history slots are replaced by
-this step's frozen contribution; since EXT weights sum to one, the applied
-drag is the old-state force rather than an extrapolation of several forces.
-Non-drag history contributions, BDF order, pressure and advection are unchanged.
-The previous drag in these histories is tracked separately; first-step inactive
-history slots start from zero, including after restart. No external iteration
-or additional gas pressure correction is introduced. This mode gives drag
-first-order lagged temporal treatment and retains an explicit stability limit.
-The default `0.0` preserves the existing treatment. Completed-step drag
-monitors remain diagnostic recomputations, not the force used during the step.
-
-### Temporal mixture drag relaxation
-
-Set `mixtureDragRelaxation = 0.2` in `[CASEDATA]` to use
-`D_used[n] = omega D_raw[n] + (1-omega) D_used[n-1]` for mixture drag only.
-The default `1.0` preserves the existing behavior; valid values are `(0,1]`.
-The first source evaluation, including after restart, initializes from raw drag.
-The filter advances once per timestep. Relaxed mixture drag is explicit and is
-held constant across EXT history slots; mixture implicit drag and compensation
-are automatically disabled. Other mixture forces and gas drag are unchanged.
-This works with `frozenDragEnabled` on or off. It changes the temporal pairing
-of gas and mixture drag and adds a timestep-dependent lag, so it is experimental;
-compare at equal physical time and check timestep sensitivity before validation.
-
-### Physical-time mixture drag ramp
-
-Enable `mixtureDragRampEnabled = 1.0`, with `mixtureDragRampStartTime = 0.0`
-and `mixtureDragRampDuration = 0.01` (seconds). The multiplier is zero at/before
-start, rises linearly to one over duration, and remains one thereafter.
-Time is the native source callback's physical simulation time, not wall time,
-step count or elapsed time since restart. Restart continues the absolute-time ramp.
-The ramp scales only complete mixture drag, after optional temporal relaxation;
-the filter history remains unscaled. Gas drag and other mixture forces retain
-their treatment. Enabled ramping disables mixture implicit split and excludes
-mixture drag from EXT extrapolation, including after the ramp finishes.
-Default disabled preserves existing behavior. Startup ramping temporarily changes
-the gas/mixture drag pairing; stability at full force still needs verification.
+Run `python tests/frozen_drag.py` and `python tests/relaxed_drag.py` for serial
+checks of actual kernel algebra, EXT history treatment, relaxation and ramp.
+Full NekRS MPI/GPU compilation and stability testing remain required.

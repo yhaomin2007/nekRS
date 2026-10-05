@@ -187,7 +187,6 @@
                                 const dfloat gasPressureEnabled,
                                 const dfloat dragEnabled,
                                 const dfloat mixtureDragEnabled,
-                                const dfloat frozenDragEnabled,
                                 const dfloat dragAlphaCutoff,
                                 const dfloat dragSlipLimitEnabled,
                                 const dfloat dragSlipMaximum,
@@ -326,25 +325,19 @@
     qgSource[n + 0 * offset] = qgAdvectionX
                                - a * gasPressureEnabled * gradP[n + 0 * offset] / rhoGas
                                + a * gravityX
-                               + (frozenDragEnabled != 0.0
-                                  ? a * dragRate * (ul[n + 0 * offset] - ug[n + 0 * offset])
-                                  : a * (dragRate / betaSafe) * uv[n + 0 * offset])
+                               + a * dragRate * (ul[n + 0 * offset] - ug[n + 0 * offset])
                                + virtualMassScale
                                  * virtualMassRelativeAcceleration[n + 0 * offset];
     qgSource[n + 1 * offset] = qgAdvectionY
                                - a * gasPressureEnabled * gradP[n + 1 * offset] / rhoGas
                                + a * gravityY
-                               + (frozenDragEnabled != 0.0
-                                  ? a * dragRate * (ul[n + 1 * offset] - ug[n + 1 * offset])
-                                  : a * (dragRate / betaSafe) * uv[n + 1 * offset])
+                               + a * dragRate * (ul[n + 1 * offset] - ug[n + 1 * offset])
                                + virtualMassScale
                                  * virtualMassRelativeAcceleration[n + 1 * offset];
     qgSource[n + 2 * offset] = qgAdvectionZ
                                - a * gasPressureEnabled * gradP[n + 2 * offset] / rhoGas
                                + a * gravityZ
-                               + (frozenDragEnabled != 0.0
-                                  ? a * dragRate * (ul[n + 2 * offset] - ug[n + 2 * offset])
-                                  : a * (dragRate / betaSafe) * uv[n + 2 * offset])
+                               + a * dragRate * (ul[n + 2 * offset] - ug[n + 2 * offset])
                                + virtualMassScale
                                  * virtualMassRelativeAcceleration[n + 2 * offset];
 
@@ -497,32 +490,19 @@
   }
 }
 
-@kernel void addMixtureStressAndSplitDrag(const dlong N, const dlong offset,
-                                         const dfloat rhoLiquid, const dfloat rhoGas,
+@kernel void addMixtureStressCorrection(const dlong N, const dlong offset,
                                          const dfloat mixtureViscousCorrectionEnabled,
-                                         const dfloat mixtureImplicitDragEnabled,
-                                         @ restrict const dfloat *alpha,
                                          @ restrict const dfloat *rhoPressure,
-                                         @ restrict const dfloat *dragLambda,
-                                         @ restrict const dfloat *uv,
                                          @ restrict const dfloat *divExactStress,
                                          @ restrict const dfloat *divBaseStress,
-                                         @ restrict dfloat *dragRate,
                                          @ restrict dfloat *force)
 {
   for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
-    const dfloat a = alpha[n] < 0 ? 0 : (alpha[n] > 1 ? 1 : alpha[n]);
-    const dfloat rate = mixtureImplicitDragEnabled != 0.0
-        ? a * (1.0 - rhoGas / rhoLiquid) * dragLambda[n] : 0.0;
-    dragRate[n] = rate;
     for (int i = 0; i < 3; ++i) {
-      // The switch controls only the explicit physical-minus-base stress.
-      // Implicit native viscosity, outlet damping and drag are unaffected.
       if (mixtureViscousCorrectionEnabled != 0.0) {
         force[n + i * offset] += divExactStress[n + i * offset]
             - divBaseStress[n + i * offset] / rhoPressure[n];
       }
-      force[n + i * offset] += rate * uv[n + i * offset];
     }
   }
 }

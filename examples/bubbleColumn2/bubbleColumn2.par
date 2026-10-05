@@ -98,20 +98,16 @@ gasMomentumCutoff = 1e-4
 gasMomentumFullyActive = 1e-3
 gasPressureEnabled = 1.0
 dragEnabled = 1.0
-# 1: freeze the ENTIRE drag force from the previous completed state in QG and mixture.
-# Overrides both drag implicit treatments; only drag is excluded from EXT extrapolation.
-frozenDragEnabled = 0.0
+# Complete drag is always explicit and frozen from the previous completed state.
 # 0 disables only mixture drag; QG drag and virtual mass are retained.
 mixtureDragEnabled = 1.0
 # Temporal smoothing: used = omega*raw + (1-omega)*previousUsed. Range (0,1].
-# omega<1 disables mixture implicit drag and freezes mixture drag EXT history.
+# Both QG and mixture drag are excluded from EXT extrapolation.
 mixtureDragRelaxation = 1.0
 # Optional linear ramp of mixture drag only; physical simulation time in seconds.
 mixtureDragRampEnabled = 0.0
 mixtureDragRampStartTime = 0.0
 mixtureDragRampDuration = 0.01
-# Mixture drag: 0 explicit, 1 implicit. QG drag remains implicit.
-mixtureImplicitDragEnabled = 1.0
 # Disable drag in BOTH phase/mixture equations when alpha < this threshold.
 # 0 preserves the previous drag behavior.
 dragAlphaCutoff = 0.0

@@ -39,12 +39,10 @@ struct Parameters {
   dfloat gasMomentumFullyActive;
   dfloat gasPressureEnabled;
   dfloat dragEnabled;
-  dfloat frozenDragEnabled = 0.0;
   dfloat mixtureDragRelaxation = 1.0;
   dfloat mixtureDragRampEnabled = 0.0;
   dfloat mixtureDragRampStartTime = 0.0;
   dfloat mixtureDragRampDuration = 0.01;
-  dfloat mixtureImplicitDragEnabled = 1.0;
   dfloat mixtureDragEnabled = 1.0;
   dfloat dragAlphaCutoff = 0.0;
   dfloat dragSlipLimitEnabled = 0.0;
@@ -64,9 +62,8 @@ static deviceMemory<dfloat> o_nativeTransportAdvection;
 static deviceMemory<dfloat> o_gradUv;
 static deviceMemory<dfloat> o_exactMixtureStress, o_baseNativeStress;
 static deviceMemory<dfloat> o_divExactMixtureStress, o_divBaseNativeStress;
-static deviceMemory<dfloat> o_mixtureDragRate, o_mixtureDragDiagonal;
 static occa::kernel correctAdvectionCancellationKernel;
-static occa::kernel buildMixtureStressCorrectionKernel, addMixtureStressAndSplitDragKernel;
+static occa::kernel buildMixtureStressCorrectionKernel, addMixtureStressCorrectionKernel;
 static deviceMemory<dfloat> o_ug;
 static deviceMemory<dfloat> o_ul;
 static deviceMemory<dfloat> o_ulPrevious;
@@ -163,7 +160,7 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
     vectorMagnitudeKernel = platform->kernelRequests.load(request, "vectorMagnitude");
     correctAdvectionCancellationKernel = platform->kernelRequests.load(request, "correctAdvectionCancellation");
     buildMixtureStressCorrectionKernel = platform->kernelRequests.load(request, "buildMixtureStressCorrection");
-    addMixtureStressAndSplitDragKernel = platform->kernelRequests.load(request, "addMixtureStressAndSplitDrag");
+    addMixtureStressCorrectionKernel = platform->kernelRequests.load(request, "addMixtureStressCorrection");
     reconstructGasVelocityKernel =
         platform->kernelRequests.load(request, "reconstructGasVelocity");
     postProcessGasFluxKernel =
@@ -242,10 +239,6 @@ inline void allocate()
   o_baseNativeStress.resize(9 * offset);
   o_divExactMixtureStress.resize(3 * offset);
   o_divBaseNativeStress.resize(3 * offset);
-  o_mixtureDragRate.resize(offset);
-  o_mixtureDragDiagonal.resize(offset);
-  platform->linAlg->fill(offset, 0.0, o_mixtureDragRate);
-  platform->linAlg->fill(offset, 0.0, o_mixtureDragDiagonal);
   o_ug.resize(3 * offset);
   o_ul.resize(3 * offset);
   o_ulPrevious.resize(3 * offset);
@@ -414,7 +407,6 @@ inline void evaluatePointwiseTerms()
                            p.gasPressureEnabled,
                            p.dragEnabled,
                            p.mixtureDragEnabled,
-                           p.frozenDragEnabled,
                            p.dragAlphaCutoff,
                            p.dragSlipLimitEnabled,
                            p.dragSlipMaximum,
@@ -748,14 +740,9 @@ inline void evaluateMixtureForce()
     div = o_divBaseNativeStress.slice(i * offset, offset);
     opSEM::strongDivergence(mesh, offset, row, div);
   }
-  addMixtureStressAndSplitDragKernel(mesh->Nlocal, offset, p.rhoLiquid, p.rhoGas,
-      p.mixtureViscousCorrectionEnabled,
-      p.mixtureDragEnabled != 0.0 && p.frozenDragEnabled == 0.0
-          && p.mixtureDragRelaxation == 1.0 && p.mixtureDragRampEnabled == 0.0
-          ? p.mixtureImplicitDragEnabled : 0.0,
-      nrs->scalar->o_solution("alpha"), o_rhoPressure, o_dragLambda,
-      nrs->fluid->o_U, o_divExactMixtureStress, o_divBaseNativeStress,
-      o_mixtureDragRate, o_mixtureForce);
+  addMixtureStressCorrectionKernel(mesh->Nlocal, offset,
+      p.mixtureViscousCorrectionEnabled, o_rhoPressure,
+      o_divExactMixtureStress, o_divBaseNativeStress, o_mixtureForce);
 }
 
 inline void subtractScalarDiffusion()
@@ -873,12 +860,10 @@ inline void relaxMixtureDrag()
 // slot contains o_previous* at the next source call. Non-drag terms are untouched.
 inline void freezeDragHistory()
 {
-  if ((p.frozenDragEnabled == 0.0 && p.mixtureDragRelaxation == 1.0 && p.mixtureDragRampEnabled == 0.0)
-      || nrs->tstep == 0) return;
+  if (nrs->tstep == 0) return;
   const dlong N = nrs->meshV->Nlocal;
   const dlong offset = nrs->fieldOffset;
-  for (int stage = 1; p.frozenDragEnabled != 0.0
-       && stage < nrs->scalar->o_coeffEXT.size(); ++stage) {
+  for (int stage = 1; stage < nrs->scalar->o_coeffEXT.size(); ++stage) {
     for (int i = 0; i < 3; ++i) {
       const dlong dst = stage * nrs->scalar->fieldOffsetSum
           + nrs->scalar->fieldOffsetScan[i + 1];
@@ -942,25 +927,6 @@ inline void updateProperties(double)
   nrs->fluid->o_prop.slice(0 * nrs->fieldOffset, nrs->fieldOffset).copyFrom(o_muM);
   nrs->fluid->o_prop.slice(1 * nrs->fieldOffset, nrs->fieldOffset)
       .copyFrom(o_rhoPressure);
-  // Keep source-stage drag coefficients frozen, using the current effective
-  // density to convert the mixture acceleration rate into a dynamic diagonal.
-  o_mixtureDragDiagonal.copyFrom(o_mixtureDragRate);
-  platform->linAlg->axmy(nrs->meshV->Nlocal, 1.0, o_rhoPressure, o_mixtureDragDiagonal);
-}
-
-inline occa::memory implicitMixtureDrag(double)
-{
-  return o_mixtureDragDiagonal;
-}
-
-inline occa::memory implicitGasDrag(double, int scalarIndex)
-{
-  // Scalar ordering is ALPHA, QGX, QGY, QGZ.
-  if (p.frozenDragEnabled == 0.0 && p.dragEnabled != 0.0
-      && scalarIndex >= 1 && scalarIndex <= 3) {
-    return o_dragLambda;
-  }
-  return o_NULL;
 }
 
 inline void enforceZeroDivergence(double)
@@ -1289,7 +1255,7 @@ inline void writeValidationChecks(double time, int tstep)
 }
 
 // Host copies are made only at the requested monitor interval. Report both
-// the largest gas drag diagonal and the largest physical mixture drag force.
+// the largest gas drag relaxation rate and the largest physical mixture drag force.
 inline void printDragLocations(double time, int tstep)
 {
   const dlong N = nrs->meshV->Nlocal;

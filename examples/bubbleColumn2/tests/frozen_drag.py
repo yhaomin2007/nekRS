@@ -6,6 +6,12 @@ import tempfile
 
 root = Path(__file__).resolve().parents[1]
 terms = (root / 'bubbleColumn2Terms.hpp').read_text()
+udf = (root / 'bubbleColumn2.udf').read_text()
+for obsolete in ('frozenDragEnabled', 'mixtureImplicitDragEnabled',
+                 'implicitGasDrag', 'implicitMixtureDrag', 'o_mixtureDragDiagonal',
+                 'o_mixtureDragRate', 'addMixtureStressAndSplitDrag'):
+    assert obsolete not in terms + udf
+assert 'userImplicitLinearTerm' not in udf
 helper = terms.split('inline void freezeDragHistory()')[1].split('inline void addExplicitSources')[0]
 okl = (root / 'bubbleColumn2Equations.okl').read_text()
 kernel = okl.split('@kernel void buildEquationTerms')[1].split('@kernel')[0]
@@ -15,7 +21,7 @@ kernel = re.sub(r'; @tile\(p_blockSize, @outer, @inner\)', '', kernel)
 args = kernel.split(')\n{')[0].split('(', 1)[1].split(',')
 values = dict(N=1, offset=2, rhoLiquid=1000, rhoGas=1, muLiquid=.001,
               muGas=.00001, alphaFloor=1e-6, gasPressureEnabled=0,
-              dragEnabled=1, mixtureDragEnabled=1, frozenDragEnabled=1,
+              dragEnabled=1, mixtureDragEnabled=1,
               dragAlphaCutoff=0, dragSlipLimitEnabled=0, dragSlipMaximum=1,
               bubbleDiameter=.003, virtualMassEnabled=0, virtualMassCoefficient=0,
               gravityX=0, gravityY=0, gravityZ=0)
@@ -53,7 +59,6 @@ struct Mesh{long Nlocal=1;} mesh;
 struct Scalar{long fieldOffsetSum=8;std::vector<long> fieldOffsetScan{0,2,4,6};Memory o_coeffEXT{3},o_EXT{24};} scalar;
 struct Fluid{long fieldOffsetSum=6;Memory o_coeffEXT{3},o_EXT{18};} fluid;
 struct Nrs{int tstep=0;long fieldOffset=2;Mesh* meshV=&mesh;Scalar* scalar=&::scalar;Fluid* fluid=&::fluid;} nrsStore;auto nrs=&nrsStore;
-struct Params{double frozenDragEnabled=1, mixtureDragRelaxation=1, mixtureDragRampEnabled=0;}p;
 Memory o_gasDragSource{6},o_mixtureDragSource{6},o_previousGasDragSource{6},o_previousMixtureDragSource{6};
 '''
 cpp += 'inline void freezeDragHistory()' + helper + kernel
@@ -67,14 +72,6 @@ cpp += call + r'''
  assert(std::abs(mixtureInterphaseAcceleration[0]-.999*gas)<1e-12);
  assert(std::abs(mixtureDragSource[0]-.999*gas)<1e-12);
  assert(dragLambda[0]>0);
-'''
-# Switch by argument index, avoiding textual replacement of unrelated scalars.
-normal = call.removesuffix(';').removeprefix('buildEquationTerms(').removesuffix(')').split(',')
-idx = [arg.strip().split()[-1].lstrip('*') for arg in args].index('frozenDragEnabled')
-normal[idx] = '0'
-cpp += 'buildEquationTerms(' + ','.join(normal) + ');\n'
-cpp += r'''
- assert(std::abs(qgSource[0]-.05*dragLambda[0]*.2)<1e-12);
 '''
 for parameter, value, assertion in [
     ('mixtureDragEnabled', '0', 'assert(gasDragSource[0]<0 && mixtureDragSource[0]==0 && mixtureInterphaseAcceleration[0]==0);'),
@@ -109,8 +106,7 @@ cpp += r'''
   assert(scalar.o_EXT.v[0]==100+step);
   for(int j=2;j>=1;--j){for(int i=0;i<8;++i)scalar.o_EXT.v[8*j+i]=scalar.o_EXT.v[8*(j-1)+i];for(int i=0;i<6;++i)fluid.o_EXT.v[6*j+i]=fluid.o_EXT.v[6*(j-1)+i];}
  }
- p.frozenDragEnabled=0;auto saved=scalar.o_EXT.v;freezeDragHistory();assert(saved==scalar.o_EXT.v);
- puts("Frozen paired force, baseline gas source, startup probe, EXT1/2/3 histories and other-source preservation passed.");
+ puts("Explicit paired drag, switches/cutoff, startup, EXT1/2/3 and other-source preservation passed.");
 }
 '''
 with tempfile.TemporaryDirectory() as folder:
