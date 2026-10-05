@@ -67,7 +67,9 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   nekrsCheck(p.mixtureDragRampEnabled != 0.0
                  && (p.mixtureDragRampStartStep < 0 || p.mixtureDragRampSteps <= 0),
              platform->comm.mpiComm(), EXIT_FAILURE,
-             "Mixture drag ramp requires startStep >= 0 and rampSteps > 0\n");
+             "Mixture drag ramp requires startStep >= 0 and rampSteps > 0 "
+             "(startStep=%d, rampSteps=%d)\n",
+             p.mixtureDragRampStartStep, p.mixtureDragRampSteps);
   platform->par->extract("casedata", "mixturedragenabled", p.mixtureDragEnabled);
   platform->par->extract("casedata", "dragalphacutoff", p.dragAlphaCutoff);
   platform->par->extract("casedata", "dragsliplimitenabled", p.dragSlipLimitEnabled);
