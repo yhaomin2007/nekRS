@@ -84,14 +84,10 @@
   }
 }
 
-@kernel void initializePlume(const dlong N,
+@kernel void initializeUniform(const dlong N,
                              const dlong offset,
                              const dfloat alphaInitial,
-                             const dfloat alphaInlet,
-                             const dfloat gasInletVelocity,
-                             const dfloat plumeHeight,
-                             const dfloat plumeThickness,
-                             @ restrict const dfloat *z,
+                             const dfloat gasInitialVelocity,
                              @ restrict dfloat *alpha,
                              @ restrict dfloat *qgx,
                              @ restrict dfloat *qgy,
@@ -99,10 +95,9 @@
                              @ restrict dfloat *uv)
 {
   for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
-    const dfloat profile =
-        0.5 * (1.0 - tanh((z[n] - plumeHeight) / plumeThickness));
-    const dfloat a = alphaInitial + (alphaInlet - alphaInitial) * profile;
-    const dfloat ugVertical = gasInletVelocity * profile;
+    // Uniform initial gas state with initially stationary liquid.
+    const dfloat a = alphaInitial;
+    const dfloat ugVertical = gasInitialVelocity;
     alpha[n] = a;
     qgx[n] = 0.0;
     qgy[n] = 0.0;

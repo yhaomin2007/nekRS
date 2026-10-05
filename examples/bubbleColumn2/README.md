@@ -8,6 +8,18 @@ HPFRT, outlet damping, diffusion switches, boundary conditions, gas masks,
 clipping, phase velocity exports and conservation diagnostics are retained.
 The experimental `bubbleColumn2_ext` case is separate and unchanged.
 
+## Uniform initialization
+
+Fresh starts initialize `alpha=alphaInitial`, `qgx=qgy=0`,
+`qgz=alphaInitial*gasInitialVelocity`, and `um=(0,0,qgz)` everywhere.
+This corresponds to initially stationary liquid and gas velocity along z.
+`gasInitialVelocity` defaults to zero; `ugInitial` is an alias, with the documented
+key taking precedence. Plume initialization and its height/thickness controls
+are removed. Restart fields are retained. Inlet values still use `alphaInlet`
+and `gasInletVelocity`; wall/inlet conditions may create startup adjustments
+when a uniform initial velocity differs from prescribed boundary values.
+Gas reconstruction/masks still apply at low alpha.
+
 ## Drag treatment
 
 Complete drag is always explicit in both equations, evaluated once from the
