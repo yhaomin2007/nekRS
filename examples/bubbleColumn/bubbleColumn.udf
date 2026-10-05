@@ -28,8 +28,15 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   platform->par->extract("casedata", "alphainitial", p.alphaInitial);
   platform->par->extract("casedata", "alphainlet", p.alphaInlet);
   platform->par->extract("casedata", "gasinletvelocity", p.ugInlet);
-  platform->par->extract("casedata", "initialplumeheight", p.initialPlumeHeight);
-  platform->par->extract("casedata", "initialplumethickness", p.initialPlumeThickness);
+  platform->par->extract("casedata", "uginitial", p.ugInitial);
+  platform->par->extract("casedata", "gasinitialvelocity", p.ugInitial);
+  nekrsCheck(!(std::isfinite(p.alphaInitial) && p.alphaInitial >= 0.0
+               && p.alphaInitial <= 1.0 && std::isfinite(p.ugInitial)
+               && std::isfinite(p.rhoLiquid) && p.rhoLiquid > 0.0
+               && std::isfinite(p.rhoGas) && p.rhoGas > 0.0),
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "%s", "Uniform initialization requires alphaInitial in [0,1], finite "
+             "gasInitialVelocity and finite positive phase densities.\n");
   platform->par->extract("casedata", "gravityx", p.gravity[0]);
   platform->par->extract("casedata", "gravityy", p.gravity[1]);
   platform->par->extract("casedata", "gravityz", p.gravity[2]);
@@ -91,16 +98,13 @@ void UDF_Setup()
   bubbleColumn::allocate();
   if (platform->options.getArgs("RESTART FILE NAME").empty()) {
     const auto &p = bubbleColumn::p;
-    bubbleColumn::initializePlumeKernel(
+    bubbleColumn::initializeUniformKernel(
         nrs->meshV->Nlocal,
         nrs->fieldOffset,
         p.rhoLiquid,
         p.rhoGas,
-        p.alphaInlet,
-        p.ugInlet,
-        p.initialPlumeHeight,
-        p.initialPlumeThickness,
-        nrs->meshV->o_z,
+        p.alphaInitial,
+        p.ugInitial,
         nrs->scalar->o_solution("alpha"),
         nrs->scalar->o_solution("qgx"),
         nrs->scalar->o_solution("qgy"),

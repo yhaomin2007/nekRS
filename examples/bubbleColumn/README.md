@@ -273,3 +273,18 @@ official OpenFOAM Foundation `multiphaseEuler/bubbleColumn` tutorial. The
 alpha-weighted Newtonian gas stress is included explicitly; the tiny `QG*`
 scalar diffusivity is an additional numerical regularization, not a physical
 model.
+
+## Uniform initialization for the density-averaged formulation
+
+Fresh starts use `alpha=alphaInitial`, `qgx=qgy=0`, and
+`qgz=alphaInitial*gasInitialVelocity` uniformly. Initial mixture velocity is
+`um_z=rhoGas*qgz/((1-alphaInitial)*rhoLiquid+alphaInitial*rhoGas)`,
+with zero transverse components. This is the density-averaged velocity for
+initially stationary liquid; it differs from the volume-averaged initialization
+in bubbleColumn2. `gasInitialVelocity` defaults to zero; `ugInitial` is an alias.
+Plume height/thickness controls are removed. Restart fields are preserved.
+Inlet controls remain independent, and prescribed boundaries may adjust the
+uniform initial field. Gas reconstruction and low-alpha masking remain active.
+Existing divergence method, extrapolation, ramp, force terms and time integration
+are unchanged; this change does not establish stability with nonzero divergence.
+Run `python tests/uniform_initialization.py` for a serial kernel check.

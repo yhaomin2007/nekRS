@@ -18,8 +18,7 @@ struct Parameters {
   dfloat alphaInitial;
   dfloat alphaInlet;
   dfloat ugInlet;
-  dfloat initialPlumeHeight;
-  dfloat initialPlumeThickness;
+  dfloat ugInitial = 0.0;
   dfloat gravity[3];
   dfloat alphaFloor;
   dfloat alphaClippingEnabled;
@@ -143,7 +142,7 @@ static occa::kernel reconstructGasVelocityKernel;
 static occa::kernel postProcessGasFluxKernel;
 static occa::kernel clipAlphaKernel;
 static occa::kernel clipVectorMagnitudeKernel;
-static occa::kernel initializePlumeKernel;
+static occa::kernel initializeUniformKernel;
 static occa::kernel buildLiquidVelocityKernel;
 static occa::kernel updateVirtualMassHistoryKernel;
 static occa::kernel buildDivergenceFromAlphaRhsKernel;
@@ -170,7 +169,7 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
     clipAlphaKernel = platform->kernelRequests.load(request, "clipAlpha");
     clipVectorMagnitudeKernel =
         platform->kernelRequests.load(request, "clipVectorMagnitude");
-    initializePlumeKernel = platform->kernelRequests.load(request, "initializePlume");
+    initializeUniformKernel = platform->kernelRequests.load(request, "initializeUniform");
     buildLiquidVelocityKernel = platform->kernelRequests.load(request, "buildLiquidVelocity");
     updateVirtualMassHistoryKernel =
         platform->kernelRequests.load(request, "updateVirtualMassHistory");
