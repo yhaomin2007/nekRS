@@ -40,6 +40,7 @@ struct Parameters {
   dfloat gasPressureEnabled;
   dfloat dragEnabled;
   dfloat frozenDragEnabled = 0.0;
+  dfloat mixtureDragRelaxation = 1.0;
   dfloat mixtureImplicitDragEnabled = 1.0;
   dfloat mixtureDragEnabled = 1.0;
   dfloat dragAlphaCutoff = 0.0;
@@ -93,6 +94,8 @@ static deviceMemory<dfloat> o_qgSource;
 static deviceMemory<dfloat> o_dragLambda;
 static deviceMemory<dfloat> o_gasDragSource, o_mixtureDragSource;
 static deviceMemory<dfloat> o_previousGasDragSource, o_previousMixtureDragSource;
+static deviceMemory<dfloat> o_relaxedMixtureDragSource;
+static int mixtureDragRelaxationStep = -1;
 static deviceMemory<dfloat> o_mixtureInterphaseAcceleration;
 static deviceMemory<dfloat> o_mixtureForce;
 static deviceMemory<dfloat> o_monitorMagnitude;
@@ -272,6 +275,7 @@ inline void allocate()
   o_mixtureDragSource.resize(3 * offset);
   o_previousGasDragSource.resize(3 * offset);
   o_previousMixtureDragSource.resize(3 * offset);
+  o_relaxedMixtureDragSource.resize(3 * offset);
   platform->linAlg->fill(3 * offset, 0.0, o_previousGasDragSource);
   platform->linAlg->fill(3 * offset, 0.0, o_previousMixtureDragSource);
   o_mixtureInterphaseAcceleration.resize(3 * offset);
@@ -744,6 +748,7 @@ inline void evaluateMixtureForce()
   addMixtureStressAndSplitDragKernel(mesh->Nlocal, offset, p.rhoLiquid, p.rhoGas,
       p.mixtureViscousCorrectionEnabled,
       p.mixtureDragEnabled != 0.0 && p.frozenDragEnabled == 0.0
+          && p.mixtureDragRelaxation == 1.0
           ? p.mixtureImplicitDragEnabled : 0.0,
       nrs->scalar->o_solution("alpha"), o_rhoPressure, o_dragLambda,
       nrs->fluid->o_U, o_divExactMixtureStress, o_divBaseNativeStress,
@@ -816,15 +821,39 @@ inline void subtractScalarDiffusion()
   }
 }
 
+// Smooth only the complete mixture drag acceleration, once per physical step.
+// Initialize from the first raw force, including after restart (no saved filter history).
+inline void relaxMixtureDrag()
+{
+  if (p.mixtureDragRelaxation == 1.0) return;
+  const dlong N = nrs->meshV->Nlocal;
+  const dlong offset = nrs->fieldOffset;
+  for (int i = 0; i < 3; ++i) {
+    auto raw = o_mixtureDragSource.slice(i * offset, offset);
+    auto used = o_relaxedMixtureDragSource.slice(i * offset, offset);
+    auto force = o_mixtureForce.slice(i * offset, offset);
+    if (mixtureDragRelaxationStep < 0) used.copyFrom(raw, N);
+    else if (mixtureDragRelaxationStep != nrs->tstep)
+      platform->linAlg->axpby(N, p.mixtureDragRelaxation, raw,
+                             1.0 - p.mixtureDragRelaxation, used);
+    platform->linAlg->axpby(N, -1.0, raw, 1.0, force);
+    platform->linAlg->axpby(N, 1.0, used, 1.0, force);
+    raw.copyFrom(used, N);
+  }
+  mixtureDragRelaxationStep = nrs->tstep;
+}
+
 // All EXT history slots must contain the SAME drag contribution for this step.
 // Native makeForcing shifts the modified histories afterward, so every old
 // slot contains o_previous* at the next source call. Non-drag terms are untouched.
 inline void freezeDragHistory()
 {
-  if (p.frozenDragEnabled == 0.0 || nrs->tstep == 0) return;
+  if ((p.frozenDragEnabled == 0.0 && p.mixtureDragRelaxation == 1.0)
+      || nrs->tstep == 0) return;
   const dlong N = nrs->meshV->Nlocal;
   const dlong offset = nrs->fieldOffset;
-  for (int stage = 1; stage < nrs->scalar->o_coeffEXT.size(); ++stage) {
+  for (int stage = 1; p.frozenDragEnabled != 0.0
+       && stage < nrs->scalar->o_coeffEXT.size(); ++stage) {
     for (int i = 0; i < 3; ++i) {
       const dlong dst = stage * nrs->scalar->fieldOffsetSum
           + nrs->scalar->fieldOffsetScan[i + 1];
@@ -854,6 +883,7 @@ inline void addExplicitSources(double)
   captureAlphaAdvectionDiagnostics();
   subtractScalarDiffusion();
   evaluateMixtureForce();
+  relaxMixtureDrag();
   freezeDragHistory();
   const dlong Nlocal = nrs->meshV->Nlocal;
   const dlong offset = nrs->fieldOffset;

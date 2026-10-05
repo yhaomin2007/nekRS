@@ -53,7 +53,7 @@ struct Mesh{long Nlocal=1;} mesh;
 struct Scalar{long fieldOffsetSum=8;std::vector<long> fieldOffsetScan{0,2,4,6};Memory o_coeffEXT{3},o_EXT{24};} scalar;
 struct Fluid{long fieldOffsetSum=6;Memory o_coeffEXT{3},o_EXT{18};} fluid;
 struct Nrs{int tstep=0;long fieldOffset=2;Mesh* meshV=&mesh;Scalar* scalar=&::scalar;Fluid* fluid=&::fluid;} nrsStore;auto nrs=&nrsStore;
-struct Params{double frozenDragEnabled=1;}p;
+struct Params{double frozenDragEnabled=1, mixtureDragRelaxation=1;}p;
 Memory o_gasDragSource{6},o_mixtureDragSource{6},o_previousGasDragSource{6},o_previousMixtureDragSource{6};
 '''
 cpp += 'inline void freezeDragHistory()' + helper + kernel

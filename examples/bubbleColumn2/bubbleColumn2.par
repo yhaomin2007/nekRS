@@ -103,6 +103,9 @@ dragEnabled = 1.0
 frozenDragEnabled = 0.0
 # 0 disables only mixture drag; QG drag and virtual mass are retained.
 mixtureDragEnabled = 1.0
+# Temporal smoothing: used = omega*raw + (1-omega)*previousUsed. Range (0,1].
+# omega<1 disables mixture implicit drag and freezes mixture drag EXT history.
+mixtureDragRelaxation = 1.0
 # Mixture drag: 0 explicit, 1 implicit. QG drag remains implicit.
 mixtureImplicitDragEnabled = 1.0
 # Disable drag in BOTH phase/mixture equations when alpha < this threshold.

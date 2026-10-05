@@ -105,3 +105,16 @@ or additional gas pressure correction is introduced. This mode gives drag
 first-order lagged temporal treatment and retains an explicit stability limit.
 The default `0.0` preserves the existing treatment. Completed-step drag
 monitors remain diagnostic recomputations, not the force used during the step.
+
+### Temporal mixture drag relaxation
+
+Set `mixtureDragRelaxation = 0.2` in `[CASEDATA]` to use
+`D_used[n] = omega D_raw[n] + (1-omega) D_used[n-1]` for mixture drag only.
+The default `1.0` preserves the existing behavior; valid values are `(0,1]`.
+The first source evaluation, including after restart, initializes from raw drag.
+The filter advances once per timestep. Relaxed mixture drag is explicit and is
+held constant across EXT history slots; mixture implicit drag and compensation
+are automatically disabled. Other mixture forces and gas drag are unchanged.
+This works with `frozenDragEnabled` on or off. It changes the temporal pairing
+of gas and mixture drag and adds a timestep-dependent lag, so it is experimental;
+compare at equal physical time and check timestep sensitivity before validation.

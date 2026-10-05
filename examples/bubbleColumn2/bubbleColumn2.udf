@@ -62,6 +62,11 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   platform->par->extract("casedata", "gaspressureenabled", p.gasPressureEnabled);
   platform->par->extract("casedata", "dragenabled", p.dragEnabled);
   platform->par->extract("casedata", "frozendragenabled", p.frozenDragEnabled);
+  platform->par->extract("casedata", "mixturedragrelaxation", p.mixtureDragRelaxation);
+  nekrsCheck(!(std::isfinite(p.mixtureDragRelaxation)
+               && p.mixtureDragRelaxation > 0.0 && p.mixtureDragRelaxation <= 1.0),
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "mixtureDragRelaxation must be in (0,1], got %g\n", p.mixtureDragRelaxation);
   platform->par->extract("casedata", "mixturedragenabled", p.mixtureDragEnabled);
   platform->par->extract("casedata", "mixtureimplicitdragenabled", p.mixtureImplicitDragEnabled);
   platform->par->extract("casedata", "dragalphacutoff", p.dragAlphaCutoff);
@@ -112,9 +117,15 @@ void UDF_Setup()
     printf("bubbleColumn2 frozenDragEnabled=1: old-state complete drag in QG/mixture; "
            "drag implicit diagonals and drag EXT extrapolation disabled\n");
   }
+  if (bubbleColumn2::p.mixtureDragRelaxation < 1.0 && platform->comm.mpiRank() == 0)
+    printf("bubbleColumn2 mixtureDragRelaxation=%g: temporal mixture-only drag filter; "
+           "mixture drag implicit split and EXT extrapolation disabled; "
+           "filter initialized from raw drag at startup/restart\n",
+           bubbleColumn2::p.mixtureDragRelaxation);
   nrs->postScalar = &bubbleColumn2::clipAlpha;
   nrs->scalar->userImplicitLinearTerm = &bubbleColumn2::implicitGasDrag;
   if (bubbleColumn2::p.frozenDragEnabled == 0.0
+      && bubbleColumn2::p.mixtureDragRelaxation == 1.0
       && bubbleColumn2::p.mixtureDragEnabled != 0.0
       && bubbleColumn2::p.mixtureImplicitDragEnabled != 0.0) {
     nrs->fluid->userImplicitLinearTerm = &bubbleColumn2::implicitMixtureDrag;
