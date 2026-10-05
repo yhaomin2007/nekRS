@@ -25,6 +25,9 @@ public:
 
 class scalar_t : public solver_t
 {
+private:
+  void solveFields(double time, int stage, bool deferred);
+
 public:
   static constexpr double targetTimeBenchmark{0.2};
 
@@ -34,6 +37,11 @@ public:
   void makeForcing();
 
   void solve(double time, int stage) override;
+  // Deferred fields are advanced explicitly by the caller, within the same timestep.
+  void solveDeferred(double time, int stage);
+  std::function<bool(int)> deferSolve = nullptr;
+  // Add an element-local, already mass-weighted load before elliptic assembly.
+  std::function<void(double, int, occa::memory)> userRhs = nullptr;
 
   void saveSolutionState() override;
   void restoreSolutionState() override;

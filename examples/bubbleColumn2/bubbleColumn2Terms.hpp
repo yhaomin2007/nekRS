@@ -37,6 +37,7 @@ struct Parameters {
   dfloat gasMomentumCutoff;
   dfloat gasMomentumFullyActive;
   dfloat gasPressureEnabled;
+  dfloat qgNewPressureEnabled = 0.0;
   dfloat dragEnabled;
   dfloat mixtureDragRampEnabled = 0.0;
   int mixtureDragRampStartStep = 0;
@@ -91,6 +92,10 @@ static deviceMemory<dfloat> o_alphaSource;
 static deviceMemory<dfloat> o_qgSource;
 static deviceMemory<dfloat> o_dragLambda;
 static deviceMemory<dfloat> o_gasDragSource, o_mixtureDragSource;
+static deviceMemory<dfloat> o_gasPressureB, o_gasPressureBP;
+static deviceMemory<dfloat> o_gasWeakPressure, o_gasPressureGradB;
+static occa::kernel prepareGasPressureKernel, finishGasPressureVolumeKernel;
+static occa::kernel gasPressureBoundaryKernel;
 static deviceMemory<dfloat> o_previousGasDragSource, o_previousMixtureDragSource;
 static deviceMemory<dfloat> o_mixtureInterphaseAcceleration;
 static deviceMemory<dfloat> o_mixtureForce;
@@ -153,6 +158,9 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
   if (platform->options.compareArgs("REGISTER ONLY", "TRUE")) {
     platform->kernelRequests.add(request, fileName, kernelInfo);
   } else {
+    prepareGasPressureKernel = platform->kernelRequests.load(request, "prepareGasPressure");
+    finishGasPressureVolumeKernel = platform->kernelRequests.load(request, "finishGasPressureVolume");
+    gasPressureBoundaryKernel = platform->kernelRequests.load(request, "gasPressureBoundary");
     vectorMagnitudeKernel = platform->kernelRequests.load(request, "vectorMagnitude");
     correctAdvectionCancellationKernel = platform->kernelRequests.load(request, "correctAdvectionCancellation");
     buildMixtureStressCorrectionKernel = platform->kernelRequests.load(request, "buildMixtureStressCorrection");
@@ -263,6 +271,10 @@ inline void allocate()
   o_alphaSource.resize(offset);
   o_qgSource.resize(3 * offset);
   o_dragLambda.resize(offset);
+  o_gasPressureB.resize(offset);
+  o_gasPressureBP.resize(offset);
+  o_gasWeakPressure.resize(3 * offset);
+  o_gasPressureGradB.resize(3 * offset);
   o_gasDragSource.resize(3 * offset);
   o_mixtureDragSource.resize(3 * offset);
   o_previousGasDragSource.resize(3 * offset);
@@ -399,7 +411,7 @@ inline void evaluatePointwiseTerms()
                            p.muLiquid,
                            p.muGas,
                            p.alphaFloor,
-                           p.gasPressureEnabled,
+                           p.qgNewPressureEnabled != 0.0 ? 0.0 : p.gasPressureEnabled,
                            p.dragEnabled,
                            p.mixtureDragEnabled,
                            p.dragAlphaCutoff,
@@ -892,13 +904,57 @@ inline void addExplicitSources(double)
 
 inline void updateProperties(double)
 {
-  // Called after all four scalars advance. Refresh the effective viscosity and
-  // pressure mobility; the projected volume velocity remains divergence free.
-  postProcessGasFlux();
+  // Called after the early scalar stage (alpha only in the new-pressure path).
+  // Refresh viscosity and pressure mobility before the pressure/velocity solve.
+  if (p.qgNewPressureEnabled == 0.0) postProcessGasFlux();
   evaluatePointwiseTerms();
   nrs->fluid->o_prop.slice(0 * nrs->fieldOffset, nrs->fieldOffset).copyFrom(o_muM);
   nrs->fluid->o_prop.slice(1 * nrs->fieldOffset, nrs->fieldOffset)
       .copyFrom(o_rhoPressure);
+}
+
+// Build an element load for -B grad(p): D^T M(Bp) + M p grad(B)
+// minus the exterior pressure trace. No inverse mass or user-source EXT here.
+inline void prepareNewGasPressure(double)
+{
+  auto mesh = nrs->meshV;
+  const dlong offset = nrs->fieldOffset;
+  prepareGasPressureKernel(mesh->Nlocal, p.rhoGas, p.gasPressureEnabled,
+      nrs->scalar->o_solution("alpha"), nrs->fluid->o_P,
+      o_gasPressureB, o_gasPressureBP);
+  launchKernel("core-wGradientVolumeHex3D", mesh->Nelements, mesh->o_vgeo,
+      mesh->o_D, offset, o_gasPressureBP, o_gasWeakPressure);
+  launchKernel("core-gradientVolumeHex3D", mesh->Nelements, mesh->o_vgeo,
+      mesh->o_D, offset, o_gasPressureB, o_gasPressureGradB);
+  finishGasPressureVolumeKernel(mesh->Nlocal, offset, nrs->fluid->o_P,
+      o_gasPressureGradB, o_gasWeakPressure);
+}
+
+inline void addNewGasPressureRhs(double, int scalarIndex, occa::memory rhs)
+{
+  if (scalarIndex < 1 || scalarIndex > 3) return;
+  auto mesh = nrs->meshV;
+  const dlong offset = nrs->fieldOffset;
+  platform->linAlg->axpby(mesh->Nlocal, 1.0,
+      o_gasWeakPressure.slice((scalarIndex - 1) * offset, offset), 1.0, rhs);
+  // All physical exterior faces contribute the pressure integration-by-parts
+  // term. Scalar Dirichlet DOFs are constrained by the elliptic solver; scalar
+  // Neumann/Robin diffusion terms are assembled independently in the native path.
+  gasPressureBoundaryKernel(mesh->Nelements, scalarIndex - 1,
+      mesh->o_sgeo, mesh->o_vmapM, mesh->o_EToB,
+      o_gasPressureBP, rhs);
+}
+
+inline void solveGasAfterPressure(double time, int stage)
+{
+  if (p.stabilityMonitorEnabled != 0.0 && p.stabilityMonitorInterval > 0
+      && nrs->tstep % p.stabilityMonitorInterval == 0 && platform->comm.mpiRank() == 0)
+    printf("bubbleColumn2 QG after pressure step=%d stage=%d time=%.8e\n", nrs->tstep, stage, time);
+  prepareNewGasPressure(time);
+  nrs->scalar->solveDeferred(time, stage);
+  postProcessGasFlux();
+  reconstructGasVelocity();
+  // Keep mixture RHS, viscosity and pressure mobility fixed after pressure solve.
 }
 
 inline void enforceZeroDivergence(double)

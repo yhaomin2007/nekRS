@@ -97,6 +97,8 @@ volumeVelocityMaximum = 1.0
 gasMomentumCutoff = 1e-4
 gasMomentumFullyActive = 1e-3
 gasPressureEnabled = 1.0
+# Requires rebuilt NekRS core: alpha -> pressure -> QG -> mixture velocity.
+qgNewPressureEnabled = 1.0
 dragEnabled = 1.0
 # Complete drag is always explicit and frozen from the previous completed state.
 # 0 disables only mixture drag; QG drag and virtual mass are retained.

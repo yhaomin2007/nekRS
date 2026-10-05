@@ -65,6 +65,7 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   platform->par->extract(
       "casedata", "gasmomentumfullyactive", p.gasMomentumFullyActive);
   platform->par->extract("casedata", "gaspressureenabled", p.gasPressureEnabled);
+  platform->par->extract("casedata", "qgnewpressureenabled", p.qgNewPressureEnabled);
   platform->par->extract("casedata", "dragenabled", p.dragEnabled);
   platform->par->extract("casedata", "mixturedragrampenabled", p.mixtureDragRampEnabled);
   platform->par->extract("casedata", "mixturedragrampstartstep", p.mixtureDragRampStartStep);
@@ -122,6 +123,28 @@ void UDF_Setup()
     printf("bubbleColumn2 mixture drag ramp: startStep=%d rampSteps=%d; "
            "linear step ramp; explicit mixture drag excluded from EXT extrapolation\n",
            bubbleColumn2::p.mixtureDragRampStartStep, bubbleColumn2::p.mixtureDragRampSteps);
+  if (bubbleColumn2::p.qgNewPressureEnabled != 0.0) {
+    nekrsCheck(nrs->scalar->NSfields != 4 || nrs->scalar->anyCvodeSolver,
+               platform->comm.mpiComm(), EXIT_FAILURE,
+               "%s", "New-pressure QG path requires exactly ALPHA,QGX,QGY,QGZ with native elliptic solvers.\n");
+    const char *names[4] = {"alpha", "qgx", "qgy", "qgz"};
+    for (int is = 0; is < 4; ++is) {
+      auto it = nrs->scalar->nameToIndex.find(names[is]);
+      nekrsCheck(it == nrs->scalar->nameToIndex.end() || it->second != is
+                   || !nrs->scalar->compute[is] || nrs->scalar->mesh(is) != nrs->meshV,
+                 platform->comm.mpiComm(), EXIT_FAILURE,
+                 "New-pressure QG path requires active field %s at index %d on fluid mesh\n", names[is], is);
+    }
+    nekrsCheck(!nrs->fluid->ellipticSolverP
+                 || platform->options.compareArgs("FLUID PRESSURE RHO SPLITTING", "TRUE"),
+               platform->comm.mpiComm(), EXIT_FAILURE,
+               "%s", "New-pressure QG path requires an active pressure solver without rho splitting.\n");
+    nrs->scalar->deferSolve = [](int is) { return is >= 1 && is <= 3; };
+    nrs->scalar->userRhs = &bubbleColumn2::addNewGasPressureRhs;
+    nrs->fluid->postPressure = &bubbleColumn2::solveGasAfterPressure;
+    if (platform->comm.mpiRank() == 0)
+      printf("bubbleColumn2 QG order: alpha -> pressure -> QG (weak pressure volume/surface) -> velocity\n");
+  }
   nrs->postScalar = &bubbleColumn2::clipAlpha;
   nrs->userProperties = &bubbleColumn2::updateProperties;
   nrs->userDivergence = &bubbleColumn2::enforceZeroDivergence;
