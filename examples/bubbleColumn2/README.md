@@ -118,3 +118,17 @@ are automatically disabled. Other mixture forces and gas drag are unchanged.
 This works with `frozenDragEnabled` on or off. It changes the temporal pairing
 of gas and mixture drag and adds a timestep-dependent lag, so it is experimental;
 compare at equal physical time and check timestep sensitivity before validation.
+
+### Physical-time mixture drag ramp
+
+Enable `mixtureDragRampEnabled = 1.0`, with `mixtureDragRampStartTime = 0.0`
+and `mixtureDragRampDuration = 0.01` (seconds). The multiplier is zero at/before
+start, rises linearly to one over duration, and remains one thereafter.
+Time is the native source callback's physical simulation time, not wall time,
+step count or elapsed time since restart. Restart continues the absolute-time ramp.
+The ramp scales only complete mixture drag, after optional temporal relaxation;
+the filter history remains unscaled. Gas drag and other mixture forces retain
+their treatment. Enabled ramping disables mixture implicit split and excludes
+mixture drag from EXT extrapolation, including after the ramp finishes.
+Default disabled preserves existing behavior. Startup ramping temporarily changes
+the gas/mixture drag pairing; stability at full force still needs verification.

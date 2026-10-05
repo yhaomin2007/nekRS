@@ -62,6 +62,16 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   platform->par->extract("casedata", "gaspressureenabled", p.gasPressureEnabled);
   platform->par->extract("casedata", "dragenabled", p.dragEnabled);
   platform->par->extract("casedata", "frozendragenabled", p.frozenDragEnabled);
+  platform->par->extract("casedata", "mixturedragrampenabled", p.mixtureDragRampEnabled);
+  platform->par->extract("casedata", "mixturedragrampstarttime", p.mixtureDragRampStartTime);
+  platform->par->extract("casedata", "mixturedragrampduration", p.mixtureDragRampDuration);
+  nekrsCheck(p.mixtureDragRampEnabled != 0.0
+                 && !(std::isfinite(p.mixtureDragRampStartTime)
+                      && p.mixtureDragRampStartTime >= 0.0
+                      && std::isfinite(p.mixtureDragRampDuration)
+                      && p.mixtureDragRampDuration > 0.0),
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "Mixture drag ramp requires finite startTime >= 0 and duration > 0\n");
   platform->par->extract("casedata", "mixturedragrelaxation", p.mixtureDragRelaxation);
   nekrsCheck(!(std::isfinite(p.mixtureDragRelaxation)
                && p.mixtureDragRelaxation > 0.0 && p.mixtureDragRelaxation <= 1.0),
@@ -122,9 +132,14 @@ void UDF_Setup()
            "mixture drag implicit split and EXT extrapolation disabled; "
            "filter initialized from raw drag at startup/restart\n",
            bubbleColumn2::p.mixtureDragRelaxation);
+  if (bubbleColumn2::p.mixtureDragRampEnabled != 0.0 && platform->comm.mpiRank() == 0)
+    printf("bubbleColumn2 mixture drag ramp: start=%g duration=%g seconds; "
+           "linear ramp applied after relaxation; mixture implicit split and EXT disabled\n",
+           bubbleColumn2::p.mixtureDragRampStartTime, bubbleColumn2::p.mixtureDragRampDuration);
   nrs->postScalar = &bubbleColumn2::clipAlpha;
   nrs->scalar->userImplicitLinearTerm = &bubbleColumn2::implicitGasDrag;
   if (bubbleColumn2::p.frozenDragEnabled == 0.0
+      && bubbleColumn2::p.mixtureDragRampEnabled == 0.0
       && bubbleColumn2::p.mixtureDragRelaxation == 1.0
       && bubbleColumn2::p.mixtureDragEnabled != 0.0
       && bubbleColumn2::p.mixtureImplicitDragEnabled != 0.0) {

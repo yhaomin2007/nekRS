@@ -41,6 +41,9 @@ struct Parameters {
   dfloat dragEnabled;
   dfloat frozenDragEnabled = 0.0;
   dfloat mixtureDragRelaxation = 1.0;
+  dfloat mixtureDragRampEnabled = 0.0;
+  dfloat mixtureDragRampStartTime = 0.0;
+  dfloat mixtureDragRampDuration = 0.01;
   dfloat mixtureImplicitDragEnabled = 1.0;
   dfloat mixtureDragEnabled = 1.0;
   dfloat dragAlphaCutoff = 0.0;
@@ -748,7 +751,7 @@ inline void evaluateMixtureForce()
   addMixtureStressAndSplitDragKernel(mesh->Nlocal, offset, p.rhoLiquid, p.rhoGas,
       p.mixtureViscousCorrectionEnabled,
       p.mixtureDragEnabled != 0.0 && p.frozenDragEnabled == 0.0
-          && p.mixtureDragRelaxation == 1.0
+          && p.mixtureDragRelaxation == 1.0 && p.mixtureDragRampEnabled == 0.0
           ? p.mixtureImplicitDragEnabled : 0.0,
       nrs->scalar->o_solution("alpha"), o_rhoPressure, o_dragLambda,
       nrs->fluid->o_U, o_divExactMixtureStress, o_divBaseNativeStress,
@@ -821,6 +824,28 @@ inline void subtractScalarDiffusion()
   }
 }
 
+// Apply the physical-time ramp AFTER relaxation, without scaling filter history.
+inline dfloat mixtureDragRampFactor(double time)
+{
+  if (p.mixtureDragRampEnabled == 0.0) return 1.0;
+  return std::max(0.0, std::min(1.0,
+      (time - p.mixtureDragRampStartTime) / p.mixtureDragRampDuration));
+}
+
+inline void rampMixtureDrag(double time)
+{
+  if (p.mixtureDragRampEnabled == 0.0) return;
+  const dfloat factor = mixtureDragRampFactor(time);
+  const dlong N = nrs->meshV->Nlocal;
+  const dlong offset = nrs->fieldOffset;
+  for (int i = 0; i < 3; ++i) {
+    auto drag = o_mixtureDragSource.slice(i * offset, offset);
+    auto force = o_mixtureForce.slice(i * offset, offset);
+    platform->linAlg->axpby(N, factor - 1.0, drag, 1.0, force);
+    platform->linAlg->axpby(N, 0.0, drag, factor, drag);
+  }
+}
+
 // Smooth only the complete mixture drag acceleration, once per physical step.
 // Initialize from the first raw force, including after restart (no saved filter history).
 inline void relaxMixtureDrag()
@@ -848,7 +873,7 @@ inline void relaxMixtureDrag()
 // slot contains o_previous* at the next source call. Non-drag terms are untouched.
 inline void freezeDragHistory()
 {
-  if ((p.frozenDragEnabled == 0.0 && p.mixtureDragRelaxation == 1.0)
+  if ((p.frozenDragEnabled == 0.0 && p.mixtureDragRelaxation == 1.0 && p.mixtureDragRampEnabled == 0.0)
       || nrs->tstep == 0) return;
   const dlong N = nrs->meshV->Nlocal;
   const dlong offset = nrs->fieldOffset;
@@ -876,7 +901,7 @@ inline void freezeDragHistory()
   o_previousMixtureDragSource.copyFrom(o_mixtureDragSource);
 }
 
-inline void addExplicitSources(double)
+inline void addExplicitSources(double time)
 {
   evaluatePointwiseTerms();
   correctConservativeAdvection();
@@ -884,6 +909,13 @@ inline void addExplicitSources(double)
   subtractScalarDiffusion();
   evaluateMixtureForce();
   relaxMixtureDrag();
+  rampMixtureDrag(time);
+  if (p.mixtureDragRampEnabled != 0.0 && p.stabilityMonitorEnabled != 0.0
+      && p.stabilityMonitorInterval > 0
+      && nrs->tstep % p.stabilityMonitorInterval == 0
+      && platform->comm.mpiRank() == 0)
+    printf("bubbleColumn2 mixtureDragRamp step=%d sourceTime=%.8e factor=%.8e\n",
+           nrs->tstep, time, mixtureDragRampFactor(time));
   freezeDragHistory();
   const dlong Nlocal = nrs->meshV->Nlocal;
   const dlong offset = nrs->fieldOffset;
