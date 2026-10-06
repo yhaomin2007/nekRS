@@ -126,6 +126,8 @@ virtualMassCoefficient = 0.5
 virtualMassTimeDerivativeOrder = 2
 # No virtual mass source at steps <= this number; active starting at number+1.
 virtualMassStartStep = 0
+# Linear ramp duration after start; 0 preserves immediate activation.
+virtualMassRampStep = 0
 stabilityMonitorEnabled = 1.0
 stabilityMonitorInterval = 10
 validationOutputInterval = 10

@@ -5,6 +5,7 @@ root=Path(__file__).resolve().parents[1]
 terms=(root/'bubbleColumn2Terms.hpp').read_text()
 eq=(root/'bubbleColumn2Equations.okl').read_text()
 helper=terms[terms.index('inline void virtualMassTimeCoefficients'):terms.index('inline void updateVirtualMassHistory()')]
+ramp=terms[terms.index('inline dfloat virtualMassRampFactor'):terms.index('inline void evaluatePointwiseTerms()')]
 kernel='void updateVirtualMassHistory'+eq.split('@kernel void updateVirtualMassHistory')[1].split('@kernel')[0]
 kernel=kernel.replace('@ restrict ', '')
 kernel=re.sub(r'; @tile\(p_blockSize, @outer, @inner\)', '',kernel)
@@ -12,8 +13,10 @@ cpp=r'''
 #include <cassert>
 #include <cmath>
 #include <initializer_list>
+#include <algorithm>
 using dfloat=double;using dlong=long;
-'''+helper+kernel+r'''
+struct {int virtualMassStartStep=100;int virtualMassRampStep=1000;} p;
+'''+ramp+helper+kernel+r'''
 void check(double h,double k,bool second){
  double c0,c1,c2;virtualMassTimeCoefficients(h,k,second,c0,c1,c2);
  assert(std::abs(c0+c1+c2)<1e-12);
@@ -38,6 +41,14 @@ void check(double h,double k,bool second){
  for(int i=0;i<3;i++)assert(a[i*off+2]==99);
 }
 int main(){
+ assert(virtualMassRampFactor(0)==0 && virtualMassRampFactor(100)==0);
+ assert(std::abs(virtualMassRampFactor(101)-.001)<1e-15);
+ assert(virtualMassRampFactor(600)==.5);
+ assert(virtualMassRampFactor(1100)==1 && virtualMassRampFactor(2000)==1);
+ p.virtualMassRampStep=0;
+ assert(virtualMassRampFactor(100)==0 && virtualMassRampFactor(101)==1);
+ p.virtualMassStartStep=0;p.virtualMassRampStep=10;
+ assert(virtualMassRampFactor(0)==0 && virtualMassRampFactor(1)==.1);
  for(double h:{.01,.1,.2})for(double k:{.02,.1,.3}){
   check(h,k,true);check(h,k,false);
  }
@@ -52,7 +63,7 @@ with tempfile.TemporaryDirectory() as t:
  f=Path(t)/'vm.cpp';f.write_text(cpp)
  subprocess.run(['g++','-std=c++17','-Wall','-Wextra','-Werror',str(f),'-o',str(Path(t)/'vm')],check=True)
  subprocess.run([str(Path(t)/'vm')],check=True)
-assert 'nrs->tstep > p.virtualMassStartStep ? p.virtualMassEnabled : 0.0,' in terms
+assert 'p.virtualMassEnabled * virtualMassRampFactor(nrs->tstep),' in terms
 assert 'p.virtualMassTimeDerivativeOrder == 2 && virtualMassHistorySamples >= 1' in terms
 udf=(root/'bubbleColumn2.udf').read_text()
 execute=udf[udf.index('void UDF_ExecuteStep'):]
@@ -60,4 +71,4 @@ assert 'virtualMassStartStep' not in execute  # delayed sources must still colle
 assert 'updateVirtualMassHistory();' in execute
 # Both VM sources use the single enabled argument from the gated call.
 assert 'a * virtualMassEnabled' in eq and 'gasVirtualMassScale = virtualMassEnabled' in eq
-print('Actual VM helper/kernel: first/second order, unequal timesteps, quadratic acceleration, convection, history shifts, padding and delayed-source wiring passed.')
+print('Actual VM helper/kernel: linear step ramp, first/second order, unequal timesteps, quadratic acceleration, convection, history shifts, padding and paired-source wiring passed.')

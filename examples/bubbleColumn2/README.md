@@ -109,6 +109,7 @@ virtualMassEnabled = 1.0
 virtualMassCoefficient = 0.5
 virtualMassTimeDerivativeOrder = 2
 virtualMassStartStep = 100
+virtualMassRampStep = 1000
 ```
 
 `virtualMassTimeDerivativeOrder=1` retains first-order backward differences.
@@ -122,6 +123,11 @@ because the additional velocity history is not present in checkpoint fields.
 
 VM sources in BOTH QG and volume-mixture momentum are disabled for native
 steps `<=virtualMassStartStep`, and enter at `virtualMassStartStep+1`.
+For positive `virtualMassRampStep=R`, both VM sources use the linear factor
+`min(1,(step-virtualMassStartStep)/R)` after start. They reach full input
+strength at `virtualMassStartStep+R`. `virtualMassRampStep=0` (default)
+preserves immediate activation; negative durations are rejected. Only VM is
+ramped; drag and pressure are unaffected. Native explicit EXT handling remains.
 Velocity history is updated during the delay if VM is enabled, so second order
 is available when activation is delayed by at least two steps. Default start is
 0 and default derivative order is 2; `virtualMassEnabled` still defaults off.

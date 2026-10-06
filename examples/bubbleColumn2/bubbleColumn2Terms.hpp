@@ -55,6 +55,7 @@ struct Parameters {
   dfloat virtualMassCoefficient;
   int virtualMassTimeDerivativeOrder = 2;
   int virtualMassStartStep = 0;
+  int virtualMassRampStep = 0;
   dfloat stabilityMonitorEnabled;
   int stabilityMonitorInterval;
   int validationOutputInterval;
@@ -372,6 +373,14 @@ inline void reconstructLiquidVelocity()
                             o_ul);
 }
 
+inline dfloat virtualMassRampFactor(int step)
+{
+  if (step <= p.virtualMassStartStep) return 0.0;
+  if (p.virtualMassRampStep == 0) return 1.0;
+  return std::min<dfloat>(1.0,
+      (static_cast<dfloat>(step) - p.virtualMassStartStep) / p.virtualMassRampStep);
+}
+
 inline void evaluatePointwiseTerms()
 {
   auto mesh = nrs->meshV;
@@ -435,7 +444,7 @@ inline void evaluatePointwiseTerms()
                            p.dragSlipLimitEnabled,
                            p.dragSlipMaximum,
                            p.bubbleDiameter,
-                           nrs->tstep > p.virtualMassStartStep ? p.virtualMassEnabled : 0.0,
+                           p.virtualMassEnabled * virtualMassRampFactor(nrs->tstep),
                            p.virtualMassCoefficient,
                            p.gravity[0],
                            p.gravity[1],
