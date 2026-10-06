@@ -92,7 +92,6 @@ public:
   void solve(double time, int stage) override
   {
     solvePressure(time, stage);
-    if (postPressure) postPressure(time, stage);
     solveVelocity(time, stage);
   };
 
@@ -119,9 +118,6 @@ public:
 
   std::string pressureName;
   occa::memory o_pressureName;
-
-  // Optional work between pressure and velocity; default ordering is unchanged.
-  std::function<void(double, int)> postPressure = nullptr;
 
   std::function<occa::memory(double)> userImplicitLinearTerm = nullptr;
   std::function<occa::memory(double, int)> userAdvectionTerm = nullptr;

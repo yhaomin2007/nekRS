@@ -732,24 +732,12 @@ void scalar_t::makeForcing()
 
 void scalar_t::solve(double time, int stage)
 {
-  solveFields(time, stage, false);
-}
-
-void scalar_t::solveDeferred(double time, int stage)
-{
-  solveFields(time, stage, true);
-}
-
-void scalar_t::solveFields(double time, int stage, bool deferred)
-{
   platform->timer.tic("scalarSolve");
 
   for (int is = 0; is < NSfields; is++) {
     if (!compute[is] || cvodeSolve[is]) {
       continue;
     }
-
-    if ((deferSolve && deferSolve(is)) != deferred) continue;
 
     const std::string sid = scalarDigitStr(is);
     auto mesh = this->_mesh[is];
@@ -785,8 +773,6 @@ void scalar_t::solveFields(double time, int stage, bool deferred)
                  platform->app->bc->o_usrwrk,
                  o_lhs,
                  o_rhs);
-
-    if (userRhs) userRhs(time, is, o_rhs);
 
     platform->timer.toc("scalar rhs");
 

@@ -70,6 +70,10 @@ rhoGas = 1.2
 muLiquid = 1.0e-3
 muGas = 1.8e-5
 alphaInitial = 0.0
+# 1: uniform alphaInitial/gasInitialVelocity; 0: original smooth bubble plume.
+uniformInitialCondition = 1
+initialPlumeHeight = 0.05
+initialPlumeThickness = 0.01
 alphaInlet = 0.05
 gasInletVelocity = 0.1
 # Uniform initial gas velocity along z (m/s); qgz=alphaInitial*gasInitialVelocity.
@@ -97,8 +101,6 @@ volumeVelocityMaximum = 1.0
 gasMomentumCutoff = 1e-4
 gasMomentumFullyActive = 1e-3
 gasPressureEnabled = 1.0
-# Requires rebuilt NekRS core: alpha -> pressure -> QG -> mixture velocity.
-qgNewPressureEnabled = 1.0
 dragEnabled = 1.0
 # Complete drag is always explicit and frozen from the previous completed state.
 # 0 disables only mixture drag; QG drag and virtual mass are retained.

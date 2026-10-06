@@ -34,5 +34,36 @@ with tempfile.TemporaryDirectory() as t:
  subprocess.run([str(Path(t)/'check')],check=True)
 udf=(root/'bubbleColumn2.udf').read_text()
 assert 'if (platform->options.getArgs("RESTART FILE NAME").empty())' in udf
-assert 'initializePlume' not in udf+s
+assert 'if (p.uniformInitialCondition == 1)' in udf
 print('Uniform alpha/QG/mixture initialization, stationary liquid, signed velocity and padding checks passed.')
+
+k='void initializePlume'+s.split('@kernel void initializePlume')[1].split('@kernel')[0]
+k=k.replace('@ restrict ', '')
+k=re.sub(r'; @tile\(p_blockSize, @outer, @inner\)', '', k)
+cpp='''#include <cassert>
+#include <cmath>
+using dfloat=double;using dlong=long;
+'''+k+'''
+int main(){
+ double height[6]={-.1,0,.05,.1,.2,99};
+ double alpha[6],qx[6],qy[6],qz[6],u[18];
+ for(int i=0;i<6;i++)alpha[i]=qx[i]=qy[i]=qz[i]=99;
+ for(double &v:u)v=99;
+ initializePlume(5,6,.05,.3,.05,.01,height,alpha,qx,qy,qz,u);
+ for(int i=0;i<5;i++){
+  double profile=.5*(1-std::tanh((height[i]-.05)/.01));
+  assert(alpha[i]==.05*profile && qx[i]==0 && qy[i]==0);
+  assert(std::abs(qz[i]-alpha[i]*.3*profile)<1e-16);
+  assert(u[i]==0 && u[6+i]==0 && u[12+i]==qz[i]);
+  assert((u[12+i]-qz[i])/(1-alpha[i])==0);
+  if(i)assert(alpha[i]<=alpha[i-1]);
+ }
+ assert(alpha[5]==99 && qz[5]==99 && u[17]==99);
+ assert(std::abs(alpha[2]-.025)<1e-15);
+}
+'''
+with tempfile.TemporaryDirectory() as t:
+ f=Path(t)/'plume.cpp';f.write_text(cpp)
+ subprocess.run(['g++','-std=c++17','-Wall','-Wextra','-Werror',str(f),'-o',str(Path(t)/'plume')],check=True)
+ subprocess.run([str(Path(t)/'plume')],check=True)
+print('Plume profile, consistent QG/mixture, stationary liquid and padding checks passed.')

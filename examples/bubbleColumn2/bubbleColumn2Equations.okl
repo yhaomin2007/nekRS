@@ -108,6 +108,34 @@
   }
 }
 
+// Original smooth bottom plume; initially stationary liquid, qg=alpha*ug.
+@kernel void initializePlume(const dlong N,
+                            const dlong offset,
+                            const dfloat alphaInlet,
+                            const dfloat gasInletVelocity,
+                            const dfloat plumeHeight,
+                            const dfloat plumeThickness,
+                            @ restrict const dfloat *z,
+                            @ restrict dfloat *alpha,
+                            @ restrict dfloat *qgx,
+                            @ restrict dfloat *qgy,
+                            @ restrict dfloat *qgz,
+                            @ restrict dfloat *uv)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    const dfloat profile = 0.5 * (1.0 - tanh((z[n] - plumeHeight) / plumeThickness));
+    const dfloat a = alphaInlet * profile;
+    const dfloat ugVertical = gasInletVelocity * profile;
+    alpha[n] = a;
+    qgx[n] = 0.0;
+    qgy[n] = 0.0;
+    qgz[n] = a * ugVertical;
+    uv[n + 0 * offset] = 0.0;
+    uv[n + 1 * offset] = 0.0;
+    uv[n + 2 * offset] = qgz[n];
+  }
+}
+
 @kernel void buildLiquidVelocity(const dlong N,
                                  const dlong offset,
                                  const dfloat alphaFloor,
@@ -309,9 +337,10 @@
     const dfloat Ki = 0.75 * CdRe * muLiquid
                       / (bubbleDiameter * bubbleDiameter);
     // M_D/rho_g = alpha*Ki/rho_g*(u_l-u_g). Since q_g=alpha*u_g,
+    // The reconstructed liquid feedback is also placed on the implicit diagonal.
     const dfloat dragRate = (a >= dragAlphaCutoff && dragEnabled != 0.0)
         ? dragEnabled * Ki * dragSlipFactor / rhoGas : 0.0;
-    // u_l=(u_v-q_g)/beta; lambda is retained for drag-rate diagnostics only.
+    // u_l=(u_v-q_g)/beta: retain the q_g dependence implicitly as well.
     // M_D/rho_g = (dragRate/beta)*(alpha*u_v-q_g).
     dragLambda[n] = dragRate / betaSafe;
     const dfloat virtualMassScale = a * virtualMassEnabled
@@ -515,30 +544,3 @@
     b[n] = sqrt(sum);
   }
 }
-
-@kernel void prepareGasPressure(const dlong N, const dfloat rhoGas,
-                               const dfloat enabled,
-                               @ restrict const dfloat *alpha,
-                               @ restrict const dfloat *pressure,
-                               @ restrict dfloat *B,
-                               @ restrict dfloat *BP)
-{
-  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
-    const dfloat a = alpha[n] < 0.0 ? 0.0 : (alpha[n] > 1.0 ? 1.0 : alpha[n]);
-    B[n] = enabled * a / rhoGas;
-    BP[n] = B[n] * pressure[n];
-  }
-}
-
-@kernel void finishGasPressureVolume(const dlong N, const dlong offset,
-                                    @ restrict const dfloat *pressure,
-                                    @ restrict const dfloat *massGradB,
-                                    @ restrict dfloat *load)
-{
-  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
-    for (int i = 0; i < 3; ++i)
-      load[n + i * offset] += pressure[n] * massGradB[n + i * offset];
-  }
-}
-
-#include "bubbleColumn2PressureBoundary.okl"

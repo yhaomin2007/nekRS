@@ -30,6 +30,20 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   platform->par->extract("casedata", "gasinletvelocity", p.ugInlet);
   platform->par->extract("casedata", "uginitial", p.ugInitial);
   platform->par->extract("casedata", "gasinitialvelocity", p.ugInitial);
+  platform->par->extract("casedata", "uniforminitialcondition", p.uniformInitialCondition);
+  platform->par->extract("casedata", "initialplumeheight", p.initialPlumeHeight);
+  platform->par->extract("casedata", "initialplumethickness", p.initialPlumeThickness);
+  nekrsCheck(p.uniformInitialCondition != 0 && p.uniformInitialCondition != 1,
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "uniformInitialCondition must be 0 (plume) or 1 (uniform), got %d\n",
+             p.uniformInitialCondition);
+  nekrsCheck(p.uniformInitialCondition == 0
+               && !(std::isfinite(p.initialPlumeHeight)
+                    && std::isfinite(p.initialPlumeThickness) && p.initialPlumeThickness > 0.0
+                    && std::isfinite(p.alphaInlet) && p.alphaInlet >= 0.0 && p.alphaInlet <= 1.0
+                    && std::isfinite(p.ugInlet)),
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "%s", "Plume requires finite height, positive thickness, alphaInlet in [0,1] and finite gasInletVelocity.\n");
   nekrsCheck(!(std::isfinite(p.alphaInitial) && p.alphaInitial >= 0.0
                && p.alphaInitial <= 1.0 && std::isfinite(p.ugInitial)),
              platform->comm.mpiComm(), EXIT_FAILURE,
@@ -65,7 +79,6 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   platform->par->extract(
       "casedata", "gasmomentumfullyactive", p.gasMomentumFullyActive);
   platform->par->extract("casedata", "gaspressureenabled", p.gasPressureEnabled);
-  platform->par->extract("casedata", "qgnewpressureenabled", p.qgNewPressureEnabled);
   platform->par->extract("casedata", "dragenabled", p.dragEnabled);
   platform->par->extract("casedata", "mixturedragrampenabled", p.mixtureDragRampEnabled);
   platform->par->extract("casedata", "mixturedragrampstartstep", p.mixtureDragRampStartStep);
@@ -103,19 +116,34 @@ void UDF_Setup()
   bubbleColumn2::allocate();
   if (platform->options.getArgs("RESTART FILE NAME").empty()) {
     const auto &p = bubbleColumn2::p;
-    bubbleColumn2::initializeUniformKernel(
-        nrs->meshV->Nlocal,
-        nrs->fieldOffset,
-        p.alphaInitial,
-        p.ugInitial,
-        nrs->scalar->o_solution("alpha"),
-        nrs->scalar->o_solution("qgx"),
-        nrs->scalar->o_solution("qgy"),
-        nrs->scalar->o_solution("qgz"),
-        nrs->fluid->o_U);
+    if (p.uniformInitialCondition == 1) {
+      bubbleColumn2::initializeUniformKernel(
+          nrs->meshV->Nlocal,
+          nrs->fieldOffset,
+          p.alphaInitial,
+          p.ugInitial,
+          nrs->scalar->o_solution("alpha"),
+          nrs->scalar->o_solution("qgx"),
+          nrs->scalar->o_solution("qgy"),
+          nrs->scalar->o_solution("qgz"),
+          nrs->fluid->o_U);
+    } else {
+      bubbleColumn2::initializePlumeKernel(
+          nrs->meshV->Nlocal, nrs->fieldOffset,
+          p.alphaInlet, p.ugInlet, p.initialPlumeHeight, p.initialPlumeThickness,
+          nrs->meshV->o_z,
+          nrs->scalar->o_solution("alpha"), nrs->scalar->o_solution("qgx"),
+          nrs->scalar->o_solution("qgy"), nrs->scalar->o_solution("qgz"),
+          nrs->fluid->o_U);
+    }
+    if (platform->comm.mpiRank() == 0)
+      printf("bubbleColumn2 initial condition: %s\n",
+             p.uniformInitialCondition == 1 ? "uniform" : "bubble plume");
   }
   bubbleColumn2::initializeHistory();
   nrs->userSource = &bubbleColumn2::addExplicitSources;
+  if (platform->comm.mpiRank() == 0)
+    printf("bubbleColumn2 QG: original scalars-first order; pressure source zero on inlet/outlet surface nodes (IDs 1/2)\n");
   if (platform->comm.mpiRank() == 0)
     printf("bubbleColumn2 drag: complete old-state force explicit in QG and mixture; "
            "drag excluded from EXT extrapolation\n");
@@ -123,30 +151,6 @@ void UDF_Setup()
     printf("bubbleColumn2 mixture drag ramp: startStep=%d rampSteps=%d; "
            "linear step ramp; explicit mixture drag excluded from EXT extrapolation\n",
            bubbleColumn2::p.mixtureDragRampStartStep, bubbleColumn2::p.mixtureDragRampSteps);
-  if (bubbleColumn2::p.qgNewPressureEnabled != 0.0) {
-    nekrsCheck(nrs->scalar->NSfields != 4 || nrs->scalar->anyCvodeSolver,
-               platform->comm.mpiComm(), EXIT_FAILURE,
-               "%s", "New-pressure QG path requires exactly ALPHA,QGX,QGY,QGZ with native elliptic solvers.\n");
-    const char *names[4] = {"alpha", "qgx", "qgy", "qgz"};
-    for (int is = 0; is < 4; ++is) {
-      auto it = nrs->scalar->nameToIndex.find(names[is]);
-      nekrsCheck(it == nrs->scalar->nameToIndex.end() || it->second != is
-                   || !nrs->scalar->compute[is] || nrs->scalar->mesh(is) != nrs->meshV,
-                 platform->comm.mpiComm(), EXIT_FAILURE,
-                 "New-pressure QG path requires active field %s at index %d on fluid mesh\n", names[is], is);
-    }
-    // UDF_Setup runs from setIC(), before setupEllipticSolver creates pressure.
-    // Check configuration here rather than the not-yet-created solver pointer.
-    nekrsCheck(platform->options.compareArgs("FLUID VELOCITY SOLVER", "NONE")
-                 || platform->options.compareArgs("FLUID PRESSURE RHO SPLITTING", "TRUE"),
-               platform->comm.mpiComm(), EXIT_FAILURE,
-               "%s", "New-pressure QG path requires an active pressure solver without rho splitting.\n");
-    nrs->scalar->deferSolve = [](int is) { return is >= 1 && is <= 3; };
-    nrs->scalar->userRhs = &bubbleColumn2::addNewGasPressureRhs;
-    nrs->fluid->postPressure = &bubbleColumn2::solveGasAfterPressure;
-    if (platform->comm.mpiRank() == 0)
-      printf("bubbleColumn2 QG order: alpha -> pressure -> QG (weak pressure volume/surface) -> velocity\n");
-  }
   nrs->postScalar = &bubbleColumn2::clipAlpha;
   nrs->userProperties = &bubbleColumn2::updateProperties;
   nrs->userDivergence = &bubbleColumn2::enforceZeroDivergence;
