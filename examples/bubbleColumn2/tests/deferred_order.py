@@ -72,4 +72,13 @@ with tempfile.TemporaryDirectory() as t:
  subprocess.run(['g++','-std=c++17','-Wall','-Wextra','-Werror',str(f),'-o',str(Path(t)/'check')],check=True)
  subprocess.run([str(Path(t)/'check')],check=True)
 for bad in ['lagSolution(', 'makeForcing(', 'setTimeIntegrationCoeffs(']:assert bad not in bodies
+# Startup invokes UDF_Setup through setIC before creating elliptic solvers.
+# The case must validate configuration, not a solver pointer at this stage.
+nrs=(repo/'src/app/nrs/nrs.cpp').read_text()
+assert nrs.index('setIC();') < nrs.index('fluid->setupEllipticSolver();')
+udf=(repo/'examples/bubbleColumn2/bubbleColumn2.udf').read_text()
+setup=udf[udf.index('void UDF_Setup()'):udf.index('void UDF_ExecuteStep')]
+assert 'ellipticSolverP' not in setup
+assert 'compareArgs("FLUID VELOCITY SOLVER", "NONE")' in setup
+assert 'compareArgs("FLUID PRESSURE RHO SPLITTING", "TRUE")' in setup
 print('Actual scalar solve bodies and fluid hook: default order, alpha-pressure-QG-velocity order, RHS hook and fixed histories passed.')

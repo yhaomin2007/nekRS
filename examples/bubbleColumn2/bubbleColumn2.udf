@@ -135,7 +135,9 @@ void UDF_Setup()
                  platform->comm.mpiComm(), EXIT_FAILURE,
                  "New-pressure QG path requires active field %s at index %d on fluid mesh\n", names[is], is);
     }
-    nekrsCheck(!nrs->fluid->ellipticSolverP
+    // UDF_Setup runs from setIC(), before setupEllipticSolver creates pressure.
+    // Check configuration here rather than the not-yet-created solver pointer.
+    nekrsCheck(platform->options.compareArgs("FLUID VELOCITY SOLVER", "NONE")
                  || platform->options.compareArgs("FLUID PRESSURE RHO SPLITTING", "TRUE"),
                platform->comm.mpiComm(), EXIT_FAILURE,
                "%s", "New-pressure QG path requires an active pressure solver without rho splitting.\n");
