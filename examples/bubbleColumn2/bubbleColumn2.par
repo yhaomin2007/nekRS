@@ -122,6 +122,10 @@ driftStressEnabled = 1.0
 mixtureViscousCorrectionEnabled = 0.0
 virtualMassEnabled = 0.0
 virtualMassCoefficient = 0.5
+# Time derivative: 1=backward first order; 2=variable-step backward second order.
+virtualMassTimeDerivativeOrder = 2
+# No virtual mass source at steps <= this number; active starting at number+1.
+virtualMassStartStep = 0
 stabilityMonitorEnabled = 1.0
 stabilityMonitorInterval = 10
 validationOutputInterval = 10

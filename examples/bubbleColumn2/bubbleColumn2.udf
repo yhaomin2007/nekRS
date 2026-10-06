@@ -105,6 +105,13 @@ void UDF_Setup0(MPI_Comm, setupAide &)
                          p.mixtureViscousCorrectionEnabled);
   platform->par->extract("casedata", "virtualmassenabled", p.virtualMassEnabled);
   platform->par->extract("casedata", "virtualmasscoefficient", p.virtualMassCoefficient);
+  platform->par->extract("casedata", "virtualmasstimederivativeorder", p.virtualMassTimeDerivativeOrder);
+  platform->par->extract("casedata", "virtualmassstartstep", p.virtualMassStartStep);
+  nekrsCheck((p.virtualMassTimeDerivativeOrder != 1 && p.virtualMassTimeDerivativeOrder != 2)
+               || p.virtualMassStartStep < 0,
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "virtualMassTimeDerivativeOrder must be 1 or 2 and virtualMassStartStep >= 0 (order=%d start=%d)\n",
+             p.virtualMassTimeDerivativeOrder, p.virtualMassStartStep);
   platform->par->extract("casedata", "stabilitymonitorenabled", p.stabilityMonitorEnabled);
   platform->par->extract("casedata", "stabilitymonitorinterval", p.stabilityMonitorInterval);
   platform->par->extract(
@@ -143,7 +150,10 @@ void UDF_Setup()
   bubbleColumn2::initializeHistory();
   nrs->userSource = &bubbleColumn2::addExplicitSources;
   if (platform->comm.mpiRank() == 0)
-    printf("bubbleColumn2 QG: original scalars-first order; pressure source zero on inlet/outlet surface nodes (IDs 1/2)\n");
+    printf("bubbleColumn2 QG: original scalars-first order; pressure source zero on inlet surface nodes (ID 1), retained at outlet\n");
+  if (platform->comm.mpiRank() == 0 && bubbleColumn2::p.virtualMassEnabled != 0.0)
+    printf("bubbleColumn2 virtual mass: explicit, time derivative order=%d, active for step > %d; history collected during delay\n",
+           bubbleColumn2::p.virtualMassTimeDerivativeOrder, bubbleColumn2::p.virtualMassStartStep);
   if (platform->comm.mpiRank() == 0)
     printf("bubbleColumn2 drag: complete old-state force explicit in QG and mixture; "
            "drag excluded from EXT extrapolation\n");

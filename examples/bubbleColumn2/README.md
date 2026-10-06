@@ -74,9 +74,9 @@ these case changes. Native core source and scalar-first solve order are restored
 previous core modifications were installed.
 
 QG uses the original lagged strong-pressure source. Its three pressure-gradient
-components are zeroed on inlet/outlet surface nodes (boundary IDs 1 and 2),
+components are zeroed only on inlet surface nodes (boundary ID 1),
 including all shared copies of those nodes. Interior nodes and wall-only nodes
-retain pressure forcing. Mixture pressure/velocity and all boundary conditions
+retain pressure forcing, including outlet nodes (ID 2). Mixture pressure/velocity and all boundary conditions
 are unchanged. Pressure diagnostics use the unmasked gradient.
 
 Initialization (ignored on restart):
@@ -101,3 +101,32 @@ conditions are subsequently applied normally. Default is uniform.
 Run `python tests/frozen_drag.py` and `python tests/drag_ramp.py` for serial
 checks of actual kernel algebra, EXT history treatment, step-based ramp.
 Full NekRS MPI/GPU compilation and stability testing remain required.
+
+## Virtual mass time derivative and delayed activation
+
+```ini
+virtualMassEnabled = 1.0
+virtualMassCoefficient = 0.5
+virtualMassTimeDerivativeOrder = 2
+virtualMassStartStep = 100
+```
+
+`virtualMassTimeDerivativeOrder=1` retains first-order backward differences.
+`2` uses a three-level second-order backward derivative with variable step sizes:
+for current interval `h` and preceding interval `k`, coefficients on completed
+velocities `(u_n,u_(n-1),u_(n-2))` are
+`((2h+k)/(h(h+k)), -(h+k)/(hk), h/(k(h+k)))`.
+For constant dt these reduce to `(3/2,-2,1/2)/dt`.
+The first completed step after fresh start or restart falls back to first order
+because the additional velocity history is not present in checkpoint fields.
+
+VM sources in BOTH QG and volume-mixture momentum are disabled for native
+steps `<=virtualMassStartStep`, and enter at `virtualMassStartStep+1`.
+Velocity history is updated during the delay if VM is enabled, so second order
+is available when activation is delayed by at least two steps. Default start is
+0 and default derivative order is 2; `virtualMassEnabled` still defaults off.
+Step numbering follows the native counter for that run, including restart.
+The force remains lagged and explicit with native EXT extrapolation; this
+changes only the backward time derivative and activation, not implicit inertia.
+Convection acceleration and the physical VM coefficient/model are unchanged.
+Run `python tests/virtual_mass_history.py` for serial actual-kernel checks.

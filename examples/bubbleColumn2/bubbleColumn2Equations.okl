@@ -158,11 +158,13 @@
 
 @kernel void updateVirtualMassHistory(const dlong N,
                                       const dlong offset,
-                                      const dfloat inverseDt,
+                                      const dfloat c0, const dfloat c1, const dfloat c2,
                                       @ restrict const dfloat *ug,
                                       @ restrict const dfloat *ul,
                                       @ restrict dfloat *ulPrevious,
                                       @ restrict dfloat *ugPrevious,
+                                      @ restrict dfloat *ulPrevious2,
+                                      @ restrict dfloat *ugPrevious2,
                                       @ restrict const dfloat *gradUl,
                                       @ restrict const dfloat *gradUg,
                                       @ restrict dfloat *relativeAcceleration)
@@ -170,14 +172,18 @@
   for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
     for (int i = 0; i < 3; ++i) {
       dfloat liquidAcceleration =
-          (ul[n + i * offset] - ulPrevious[n + i * offset]) * inverseDt;
+          c0 * ul[n + i * offset] + c1 * ulPrevious[n + i * offset]
+          + c2 * ulPrevious2[n + i * offset];
       dfloat gasAcceleration =
-          (ug[n + i * offset] - ugPrevious[n + i * offset]) * inverseDt;
+          c0 * ug[n + i * offset] + c1 * ugPrevious[n + i * offset]
+          + c2 * ugPrevious2[n + i * offset];
       for (int j = 0; j < 3; ++j) {
         liquidAcceleration += ul[n + j * offset] * gradUl[n + (3 * i + j) * offset];
         gasAcceleration += ug[n + j * offset] * gradUg[n + (3 * i + j) * offset];
       }
       relativeAcceleration[n + i * offset] = liquidAcceleration - gasAcceleration;
+      ulPrevious2[n + i * offset] = ulPrevious[n + i * offset];
+      ugPrevious2[n + i * offset] = ugPrevious[n + i * offset];
       ulPrevious[n + i * offset] = ul[n + i * offset];
       ugPrevious[n + i * offset] = ug[n + i * offset];
     }

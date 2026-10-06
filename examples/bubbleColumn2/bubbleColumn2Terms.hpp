@@ -53,6 +53,8 @@ struct Parameters {
   dfloat mixtureViscousCorrectionEnabled = 0.0;
   dfloat virtualMassEnabled;
   dfloat virtualMassCoefficient;
+  int virtualMassTimeDerivativeOrder = 2;
+  int virtualMassStartStep = 0;
   dfloat stabilityMonitorEnabled;
   int stabilityMonitorInterval;
   int validationOutputInterval;
@@ -69,6 +71,9 @@ static deviceMemory<dfloat> o_ug;
 static deviceMemory<dfloat> o_ul;
 static deviceMemory<dfloat> o_ulPrevious;
 static deviceMemory<dfloat> o_ugPrevious;
+static deviceMemory<dfloat> o_ulPrevious2, o_ugPrevious2;
+static int virtualMassHistorySamples = 0;
+static dfloat virtualMassPreviousDt = 0.0;
 static deviceMemory<dfloat> o_gradUl;
 static deviceMemory<dfloat> o_virtualMassRelativeAcceleration;
 static deviceMemory<dfloat> o_gradAlpha;
@@ -245,6 +250,8 @@ inline void allocate()
   o_ul.resize(3 * offset);
   o_ulPrevious.resize(3 * offset);
   o_ugPrevious.resize(3 * offset);
+  o_ulPrevious2.resize(3 * offset);
+  o_ugPrevious2.resize(3 * offset);
   o_gradUl.resize(9 * offset);
   o_virtualMassRelativeAcceleration.resize(3 * offset);
   o_gradAlpha.resize(3 * offset);
@@ -257,14 +264,13 @@ inline void allocate()
   o_gradP.resize(3 * offset);
   o_gradPForQG.resize(3 * offset);
   o_qgPressureWeight.resize(offset);
-  // Suppress QG pressure forcing on inlet/outlet surface nodes (IDs 1/2).
+  // Suppress QG pressure forcing only on inlet surface nodes (ID 1).
   // Gather minimum so every local/rank copy of a shared boundary node agrees.
   auto mesh = nrs->meshV;
   std::vector<dfloat> pressureWeight(offset, 1.0);
   for (dlong e = 0; e < mesh->Nelements; ++e)
     for (int f = 0; f < mesh->Nfaces; ++f)
-      if (mesh->EToB[e * mesh->Nfaces + f] == 1
-          || mesh->EToB[e * mesh->Nfaces + f] == 2)
+      if (mesh->EToB[e * mesh->Nfaces + f] == 1)
         for (int n = 0; n < mesh->Nfp; ++n)
           pressureWeight[mesh->vmapM[(e * mesh->Nfaces + f) * mesh->Nfp + n]] = 0.0;
   o_qgPressureWeight.copyFrom(pressureWeight);
@@ -429,7 +435,7 @@ inline void evaluatePointwiseTerms()
                            p.dragSlipLimitEnabled,
                            p.dragSlipMaximum,
                            p.bubbleDiameter,
-                           p.virtualMassEnabled,
+                           nrs->tstep > p.virtualMassStartStep ? p.virtualMassEnabled : 0.0,
                            p.virtualMassCoefficient,
                            p.gravity[0],
                            p.gravity[1],
@@ -601,6 +607,10 @@ inline void initializeHistory()
   evaluatePointwiseTerms();
   o_ulPrevious.copyFrom(o_ul, 3 * offset);
   o_ugPrevious.copyFrom(o_ug, 3 * offset);
+  o_ulPrevious2.copyFrom(o_ul, 3 * offset);
+  o_ugPrevious2.copyFrom(o_ug, 3 * offset);
+  virtualMassHistorySamples = 0;
+  virtualMassPreviousDt = 0.0;
   platform->linAlg->fill(3 * offset, 0.0, o_virtualMassRelativeAcceleration);
 }
 
@@ -686,6 +696,19 @@ inline void clipVolumeVelocity()
                             nrs->fluid->o_U);
 }
 
+inline void virtualMassTimeCoefficients(dfloat dt, dfloat previousDt,
+                                       bool secondOrder, dfloat &c0, dfloat &c1, dfloat &c2)
+{
+  c0 = 1.0 / dt;
+  c1 = -c0;
+  c2 = 0.0;
+  if (secondOrder) {
+    c0 = (2.0 * dt + previousDt) / (dt * (dt + previousDt));
+    c1 = -(dt + previousDt) / (dt * previousDt);
+    c2 = dt / (previousDt * (dt + previousDt));
+  }
+}
+
 inline void updateVirtualMassHistory()
 {
   auto mesh = nrs->meshV;
@@ -712,16 +735,24 @@ inline void updateVirtualMassHistory()
                             o_ul);
   opSEM::strongGradVec(mesh, offset, o_ug, o_gradUg);
   opSEM::strongGradVec(mesh, offset, o_ul, o_gradUl);
+  dfloat c0, c1, c2;
+  virtualMassTimeCoefficients(nrs->dt[0], virtualMassPreviousDt,
+      p.virtualMassTimeDerivativeOrder == 2 && virtualMassHistorySamples >= 1,
+      c0, c1, c2);
   updateVirtualMassHistoryKernel(mesh->Nlocal,
                                  offset,
-                                 1.0 / nrs->dt[0],
+                                 c0, c1, c2,
                                  o_ug,
                                  o_ul,
                                  o_ulPrevious,
                                  o_ugPrevious,
+                                 o_ulPrevious2,
+                                 o_ugPrevious2,
                                  o_gradUl,
                                  o_gradUg,
                                  o_virtualMassRelativeAcceleration);
+  virtualMassPreviousDt = nrs->dt[0];
+  ++virtualMassHistorySamples;
 }
 
 inline void evaluateMixtureForce()

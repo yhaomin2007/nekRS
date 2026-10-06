@@ -36,7 +36,7 @@ int main(){Mesh mesh;Nrs app{&mesh};nrs=&app;makeMask();
  double raw[36],masked[36];for(int i=0;i<36;i++)raw[i]=masked[i]=i+1;
  axmyVector(10,12,0,1.,o_qgPressureWeight.v.data(),masked);
  for(int c=0;c<3;c++)for(int n=0;n<12;n++){
-  bool blocked=n==0||n==1||n==2||n==6||n==8||n==9;
+  bool blocked=n==0||n==1||n==6;
   assert(masked[c*12+n]==(blocked?0:raw[c*12+n]));
   assert(raw[c*12+n]==c*12+n+1);
  }
@@ -52,4 +52,4 @@ for path in ['src/solver/fluid/fluidSolver.hpp','src/solver/scalar/scalarSolver.
  text=(repo/path).read_text()
  for removed in ['postPressure','solveDeferred','deferSolve','userRhs']:
   assert removed not in text
-print('Actual boundary mask and native vector kernel: inlet/outlet, shared copies, wall/interior, components, padding and original core API passed.')
+print('Actual boundary mask and native vector kernel: inlet suppressed, outlet retained, shared copies, wall/interior, components, padding and original core API passed.')
