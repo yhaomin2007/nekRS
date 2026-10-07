@@ -48,6 +48,7 @@ struct Parameters {
   dfloat virtualMassEnabled;
   dfloat virtualMassCoefficient;
   int alphaConvectionMethod = 0;
+  int gasConvectionMethod = 0;
   int mixtureDivergenceMethod;
   dfloat divergenceFilterEnabled;
   int divergenceFilterModes;
@@ -205,6 +206,9 @@ inline void allocate()
              EXIT_FAILURE,
              "divergenceFilterStrength must be in [0,1], but is %g\n",
              p.divergenceFilterStrength);
+  nekrsCheck(p.gasConvectionMethod < 0 || p.gasConvectionMethod > 1,
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "%s", "gasConvectionMethod must be 0 (native) or 1 (strong gradient).\n");
   nekrsCheck(p.alphaConvectionMethod < 0 || p.alphaConvectionMethod > 1,
              platform->comm.mpiComm(), EXIT_FAILURE,
              "%s", "alphaConvectionMethod must be 0 (native) or 1 (strong gradient).\n");
@@ -890,8 +894,9 @@ inline void addExplicitSources(double)
   const char *names[4] = {"alpha", "ugx", "ugy", "ugz"};
   for (int k = 0; k < 4; ++k) {
     // The pointwise alpha source already contains um.strongGrad(alpha).
-    // Leave it intact in method 1; UG always retains native cancellation.
-    if (k == 0 && p.alphaConvectionMethod == 1) continue;
+    // Leave the pointwise mixture contribution intact for strong-gradient mode.
+    if ((k == 0 && p.alphaConvectionMethod == 1)
+        || (k > 0 && p.gasConvectionMethod == 1)) continue;
     evaluateNativeAlphaAdvection(o_alphaNativeAdvectionDiagnostic, false, names[k]);
     const auto native = o_alphaNativeAdvectionDiagnostic.slice(
         nrs->scalar->fieldOffsetScan[nrs->scalar->nameToIndex.at(names[k])], nrs->fieldOffset);

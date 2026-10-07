@@ -17,7 +17,9 @@ The native BDF time derivative and linear drag are implicit. The effective inert
 
 Native mixture scalar advection is canceled using the same native scalar operator, including cubature, before adding gas material advection. Scalar subcycling must be disabled. Pressure, gravity, drag, VM and stress sources are masked below `alphaFloor`; division by alpha is protected. Optional smooth masking and velocity clipping apply to UG; their gas-flux changes are reported after multiplication by alpha.
 
-`alphaConvectionMethod=0` (default) uses native scalar advection in the alpha source. Set it to `1` to use `um dot opSEM::strongGrad(alpha)` instead. This affects only the alpha explicit source; UG cancellation and the native advection in mixture divergence method 1 remain unchanged. With method 1, the net alpha RHS includes the discretization difference `A_m,strong(alpha)-A_m,native(alpha)`.
+`alphaConvectionMethod=0` (default) uses native scalar advection in the alpha source. Set it to `1` to use `um dot opSEM::strongGrad(alpha)` instead. This affects only the alpha explicit source; the native advection in mixture divergence method 1 remains unchanged. UG uses its independent `gasConvectionMethod` selector. With method 1, the net alpha RHS includes the discretization difference `A_m,strong(alpha)-A_m,native(alpha)`.
+
+`gasConvectionMethod=0` (default) cancels native mixture advection in all three UG sources. Set it to `1` to retain `(um-ug) dot opSEM::strongGrad(ug_i)` as the convection correction instead. Gas self-advection always uses the strong gradient; only the mixture-advection cancellation changes. This can leave the difference `A_m,strong(ug_i)-A_m,native(ug_i)` in the net equation. The alpha and UG selectors are independent.
 
 Both original mixture divergence choices remain available: `mixtureDivergenceMethod=0` reconstructs the alpha RHS, and `1` uses the BDF alpha derivative plus native mixture advection. Density averaging, variable mixture density, drift stress, filters and outlet damping remain configurable.
 
