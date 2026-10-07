@@ -49,6 +49,7 @@ struct Parameters {
   dfloat virtualMassCoefficient;
   int alphaConvectionMethod = 0;
   int gasConvectionMethod = 0;
+  int gasTransportMethod = 1;
   int mixtureDivergenceMethod;
   dfloat divergenceFilterEnabled;
   int divergenceFilterModes;
@@ -62,6 +63,12 @@ struct Parameters {
 };
 
 static Parameters p;
+static deviceMemory<dfloat> o_gasTransportFields;
+static deviceMemory<dfloat> o_gasCubatureFields;
+static deviceMemory<dfloat> o_gasCubatureProducts;
+static deviceMemory<dfloat> o_gasTransport;
+static occa::kernel gasInterpolateKernel, gasCubatureProductsKernel;
+static occa::kernel gasProjectKernel, replaceGasAdvectionKernel;
 static deviceMemory<dfloat> o_ug;
 static deviceMemory<dfloat> o_ul;
 static deviceMemory<dfloat> o_ulPrevious;
@@ -155,6 +162,22 @@ static occa::kernel buildOutletRampFactorKernel;
 
 inline void registerKernels(deviceKernelProperties &kernelInfo)
 {
+  if (p.gasTransportMethod == 1) {
+    auto cubInfo = kernelInfo;
+    int cubN = 0;
+    platform->options.getArgs("CUBATURE POLYNOMIAL DEGREE", cubN);
+    cubInfo.define("p_cubNq") = cubN + 1;
+    cubInfo.define("p_cubNp") = (cubN + 1) * (cubN + 1) * (cubN + 1);
+    const std::string req = "bubbleColumn::transport";
+    if (platform->options.compareArgs("REGISTER ONLY", "TRUE")) {
+      platform->kernelRequests.add(req, "bubbleColumnTransport.okl", cubInfo);
+    } else {
+      gasInterpolateKernel = platform->kernelRequests.load(req, "gasInterpolate");
+      gasCubatureProductsKernel = platform->kernelRequests.load(req, "gasCubatureProducts");
+      gasProjectKernel = platform->kernelRequests.load(req, "gasProject");
+      replaceGasAdvectionKernel = platform->kernelRequests.load(req, "replaceGasAdvection");
+    }
+  }
   const std::string request = "bubbleColumn::equations";
   // This is standalone OKL source.  The .okl suffix is required so OCCA
   // translates @kernel/@globalPtr before invoking the HIP compiler.
@@ -206,6 +229,24 @@ inline void allocate()
              EXIT_FAILURE,
              "divergenceFilterStrength must be in [0,1], but is %g\n",
              p.divergenceFilterStrength);
+  nekrsCheck(p.gasTransportMethod < 0 || p.gasTransportMethod > 1,
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "%s", "gasTransportMethod must be 0 (GLL) or 1 (cubature).\n");
+  nekrsCheck(p.gasTransportMethod == 1 && (!platform->options.compareArgs("ADVECTION TYPE", "CUBATURE")
+             || nrs->meshV->cubNq < nrs->meshV->Nq),
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "%s", "Cubature gas transport requires native cubature with cubNq >= Nq.\n");
+  nekrsCheck(p.gasTransportMethod == 1
+             && 2 * nrs->meshV->cubNq - 1 < 3 * (nrs->meshV->Nq - 1) - 1,
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "%s", "Gas cubature quadrature is insufficient for quadratic transport loads.\n");
+  if (p.gasTransportMethod == 1) {
+    const dlong cubOffset = nrs->meshV->Nelements * nrs->meshV->cubNp;
+    o_gasTransportFields.resize(4 * offset);
+    o_gasTransport.resize(4 * offset);
+    o_gasCubatureFields.resize(4 * cubOffset);
+    o_gasCubatureProducts.resize(4 * cubOffset);
+  }
   nekrsCheck(p.gasConvectionMethod < 0 || p.gasConvectionMethod > 1,
              platform->comm.mpiComm(), EXIT_FAILURE,
              "%s", "gasConvectionMethod must be 0 (native) or 1 (strong gradient).\n");
@@ -449,6 +490,28 @@ inline void reconstructLiquidVelocity()
                             o_ul);
 }
 
+inline void evaluateGasCubatureTransport()
+{
+  auto mesh = nrs->meshV;
+  const dlong offset = nrs->fieldOffset;
+  const dlong cubOffset = mesh->Nelements * mesh->cubNp;
+  o_gasTransportFields.copyFrom(nrs->scalar->o_solution("alpha"), mesh->Nlocal);
+  for (int i = 0; i < 3; ++i) {
+    o_gasTransportFields.copyFrom(o_ug, mesh->Nlocal, (i + 1) * offset, i * offset);
+  }
+  gasInterpolateKernel(mesh->Nelements, offset, cubOffset,
+                       mesh->o_cubInterpT, o_gasTransportFields, o_gasCubatureFields);
+  gasCubatureProductsKernel(mesh->Nelements, cubOffset, mesh->o_cubD,
+                            mesh->o_cubvgeo, o_gasCubatureFields, o_gasCubatureProducts);
+  gasProjectKernel(mesh->Nelements, offset, cubOffset, mesh->o_cubInterpT,
+                   mesh->o_vgeo, o_gasCubatureProducts, o_gasTransport);
+  // Mass-weighted CG assembly of normalized nodal loads.
+  platform->linAlg->axmyMany(mesh->Nlocal, 4, offset, 0, 1.0, mesh->o_LMM, o_gasTransport);
+  oogs::startFinish(o_gasTransport, 4, offset, ogsDfloat, ogsAdd, mesh->oogs);
+  platform->linAlg->axmyMany(mesh->Nlocal, 4, offset, 0, 1.0, mesh->o_invLMM, o_gasTransport);
+  o_divQg.copyFrom(o_gasTransport, mesh->Nlocal);
+}
+
 inline void evaluatePointwiseTerms()
 {
   auto mesh = nrs->meshV;
@@ -527,6 +590,8 @@ inline void evaluatePointwiseTerms()
     }
   }
 
+  if (p.gasTransportMethod == 1) evaluateGasCubatureTransport();
+
   buildEquationTermsKernel(mesh->Nlocal,
                            offset,
                            p.rhoLiquid,
@@ -558,6 +623,10 @@ inline void evaluatePointwiseTerms()
                            o_alphaSource,
                            o_ugSource,
                            o_dragLambda);
+  if (p.gasTransportMethod == 1) {
+    replaceGasAdvectionKernel(mesh->Nlocal, offset, o_ug, o_gradUg,
+                              o_gasTransport, o_ugSource);
+  }
 
   // Smoothly increase the implicit mixture viscosity and all implicit scalar
   // diffusion coefficients near the outlet. Do not scale the explicit gas
@@ -1142,7 +1211,11 @@ inline ValidationState computeValidationState(int tstep)
   // in the alpha source: integral_Omega D_avg(q_g) dV = integral_boundary q_g.n dA.
   // This extra SEM operation is needed only on rows written to the CSV.
   if (tstep % p.validationOutputInterval == 0) {
-    opSEM::strongDivergence(nrs->meshV, offset, o_qg, o_validationDivQg);
+    if (p.gasTransportMethod == 1) {
+      o_validationDivQg.copyFrom(o_gasTransport, Nlocal);
+    } else {
+      opSEM::strongDivergence(nrs->meshV, offset, o_qg, o_validationDivQg);
+    }
     state.alphaDivQgVolumeIntegral = platform->linAlg->innerProd(
         Nlocal, nrs->meshV->o_LMM, o_validationDivQg, comm);
     state.alphaDivergenceTheoremDefect =

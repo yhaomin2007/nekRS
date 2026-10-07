@@ -1,3 +1,9 @@
+## Cubature gas transport
+
+`gasTransportMethod=1` (default) interpolates alpha and gas velocity to native Gauss cubature points, computes `ug.grad(ug_i)` and `ug.grad(alpha)+alpha*div(ug)` there, multiplies by cubature Jacobian/quadrature weights and projects the complete products to GLL with mass-weighted CG assembly. The alpha `alpha*div(ug)` product is formed before projection; no GLL flux differentiation is used in this mode. Native mixture cancellation remains controlled by the independent convection selectors; set both to zero for the intended cubature equations. `gasTransportMethod=0` restores the prior GLL transport for comparison.
+
+This is a continuous Galerkin quadrature discretization of conservative alpha transport, not a positivity-preserving or DG flux scheme. On curved meshes conservation depends on geometry/quadrature consistency; clipping, masking and regularization still affect inventories. VM, drag, stress, pressure treatment and mixture equations are unchanged. Cubature transport requires native cubature enabled with cubNq >= Nq and scalar subcycling disabled. It uses two four-field cubature workspaces and two four-field GLL workspaces; MPI/GPU runtime validation is still needed.
+
 # Direct gas-velocity transport (UG)
 
 This case now transports `ALPHA, UGX, UGY, UGZ`. The three gas scalars are velocities in m/s. `qg = alpha*ug` is reconstructed only for conservative alpha transport, liquid reconstruction and gas-volume diagnostics. No QG momentum equation is solved.

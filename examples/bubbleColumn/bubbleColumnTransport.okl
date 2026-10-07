@@ -1,0 +1,270 @@
+// Case-local sum-factorized cubature transport. Products are formed at GL
+// points before integration against GLL test functions, not at GLL nodes.
+@kernel void gasInterpolate(const dlong Nelements, const dlong offset,
+                            const dlong cubOffset,
+                            @ restrict const dfloat *I,
+                            @ restrict const dfloat *fields,
+                            @ restrict dfloat *cube)
+{
+  for (dlong e=0;e<Nelements;++e;@outer(0)) {
+    @shared dfloat s_tmp[p_cubNq][p_cubNq][p_cubNq];
+    @exclusive dfloat r_S[p_cubNq];
+    for (int field=0;field<4;++field) {
+      @barrier();
+      for (int b=0;b<p_cubNq;++b;@inner(1)) {
+        for (int a=0;a<p_cubNq;++a;@inner(0)) {
+          if (a<p_Nq && b<p_Nq) {
+            for (int c=0;c<p_Nq;++c) {
+              s_tmp[c][b][a]=fields[e*p_Np+c*p_Nq*p_Nq+b*p_Nq+a+field*offset];
+            }
+          }
+        }
+      }
+      @barrier();
+        // interpolate in 'r'
+        for (int c = 0; c < p_cubNq; ++c; @inner(1)) {
+          for (int b = 0; b < p_cubNq; ++b; @inner(0)) {
+            if (b < p_Nq && c < p_Nq) {
+#pragma unroll p_cubNq
+              for (int c = 0; c < p_cubNq; ++c) {
+                r_S[c] = 0;
+              }
+              for (int a = 0; a < p_Nq; ++a) {
+                dfloat ucba = s_tmp[c][b][a];
+#pragma unroll p_cubNq
+                for (int i = 0; i < p_cubNq; ++i) {
+                  r_S[i] += I[i + a * p_cubNq] * ucba;
+                }
+              }
+#pragma unroll p_cubNq
+              for (int i = 0; i < p_cubNq; ++i) {
+                s_tmp[c][b][i] = r_S[i];
+              }
+            }
+          }
+        }
+        @barrier();
+
+        // interpolate in 's'
+        for (int c = 0; c < p_cubNq; ++c; @inner(1)) {
+          for (int i = 0; i < p_cubNq; ++i; @inner(0)) {
+            if (c < p_Nq) {
+#pragma unroll p_cubNq
+              for (int j = 0; j < p_cubNq; ++j) {
+                r_S[j] = 0;
+              }
+              for (int b = 0; b < p_Nq; ++b) {
+                dfloat ucbi = s_tmp[c][b][i];
+#pragma unroll p_cubNq
+                for (int j = 0; j < p_cubNq; ++j) {
+                  r_S[j] += I[j + b * p_cubNq] * ucbi;
+                }
+              }
+#pragma unroll p_cubNq
+              for (int j = 0; j < p_cubNq; ++j) {
+                s_tmp[c][j][i] = r_S[j];
+              }
+            }
+          }
+        }
+        @barrier();
+
+        // interpolate in 't'
+        for (int j = 0; j < p_cubNq; ++j; @inner(1)) {
+          for (int i = 0; i < p_cubNq; ++i; @inner(0)) {
+#pragma unroll p_cubNq
+            for (int k = 0; k < p_cubNq; ++k) {
+              r_S[k] = 0;
+            }
+            for (int c = 0; c < p_Nq; ++c) {
+              dfloat ucji = s_tmp[c][j][i];
+#pragma unroll p_cubNq
+              for (int k = 0; k < p_cubNq; ++k) {
+                r_S[k] += I[k + c * p_cubNq] * ucji;
+              }
+            }
+#pragma unroll p_cubNq
+            for (int k = 0; k < p_cubNq; ++k) {
+              s_tmp[k][j][i] = r_S[k];
+            }
+          }
+        }
+        @barrier();
+
+
+      for (int j=0;j<p_cubNq;++j;@inner(1)) {
+        for (int i=0;i<p_cubNq;++i;@inner(0)) {
+          for (int k=0;k<p_cubNq;++k) {
+            cube[e*p_cubNp+k*p_cubNq*p_cubNq+j*p_cubNq+i+field*cubOffset]=s_tmp[k][j][i];
+          }
+        }
+      }
+    }
+  }
+}
+
+@kernel void gasCubatureProducts(const dlong Nelements, const dlong cubOffset,
+                                 @ restrict const dfloat *D,
+                                 @ restrict const dfloat *vgeo,
+                                 @ restrict const dfloat *cube,
+                                 @ restrict dfloat *products)
+{
+  for (dlong e=0;e<Nelements;++e;@outer(0)) {
+    for (int j=0;j<p_cubNq;++j;@inner(1)) {
+      for (int i=0;i<p_cubNq;++i;@inner(0)) {
+        for (int k=0;k<p_cubNq;++k) {
+          const dlong id=e*p_cubNp+k*p_cubNq*p_cubNq+j*p_cubNq+i;
+          const dlong g=e*p_cubNp*p_Nvgeo+k*p_cubNq*p_cubNq+j*p_cubNq+i;
+          const dfloat ux=cube[id+cubOffset];
+          const dfloat uy=cube[id+2*cubOffset];
+          const dfloat uz=cube[id+3*cubOffset];
+          const dfloat JW=vgeo[g+p_JWID*p_cubNp];
+          dfloat div=0;
+          for (int field=0;field<4;++field) {
+            dfloat dr=0,ds=0,dt=0;
+            for (int n=0;n<p_cubNq;++n) {
+              dr+=D[i*p_cubNq+n]*cube[e*p_cubNp+k*p_cubNq*p_cubNq+j*p_cubNq+n+field*cubOffset];
+              ds+=D[j*p_cubNq+n]*cube[e*p_cubNp+k*p_cubNq*p_cubNq+n*p_cubNq+i+field*cubOffset];
+              dt+=D[k*p_cubNq+n]*cube[e*p_cubNp+n*p_cubNq*p_cubNq+j*p_cubNq+i+field*cubOffset];
+            }
+            const dfloat dx=vgeo[g+p_RXID*p_cubNp]*dr+vgeo[g+p_SXID*p_cubNp]*ds+vgeo[g+p_TXID*p_cubNp]*dt;
+            const dfloat dy=vgeo[g+p_RYID*p_cubNp]*dr+vgeo[g+p_SYID*p_cubNp]*ds+vgeo[g+p_TYID*p_cubNp]*dt;
+            const dfloat dz=vgeo[g+p_RZID*p_cubNp]*dr+vgeo[g+p_SZID*p_cubNp]*ds+vgeo[g+p_TZID*p_cubNp]*dt;
+            products[id+field*cubOffset]=JW*(ux*dx+uy*dy+uz*dz);
+            if(field==1) div+=dx;
+            if(field==2) div+=dy;
+            if(field==3) div+=dz;
+          }
+          // div(alpha*ug) evaluated by the product rule at quadrature points.
+          // alpha*div(ug) is included BEFORE projection to GLL.
+          products[id]+=JW*cube[id]*div;
+        }
+      }
+    }
+  }
+}
+
+@kernel void gasProject(const dlong Nelements, const dlong offset,
+                        const dlong cubOffset,
+                        @ restrict const dfloat *I,
+                        @ restrict const dfloat *vgeo,
+                        @ restrict const dfloat *products,
+                        @ restrict dfloat *out)
+{
+  for(dlong e=0;e<Nelements;++e;@outer(0)) {
+    @shared dfloat s_tmp[p_cubNq][p_cubNq][p_cubNq];
+    @exclusive dfloat r_S[p_cubNq],r_Sd[p_cubNq];
+    for(int field=0;field<4;++field) {
+      @barrier();
+      for(int j=0;j<p_cubNq;++j;@inner(1)) {
+        for(int i=0;i<p_cubNq;++i;@inner(0)) {
+          for(int k=0;k<p_cubNq;++k) {
+            s_tmp[k][j][i]=products[e*p_cubNp+k*p_cubNq*p_cubNq+j*p_cubNq+i+field*cubOffset];
+          }
+        }
+      }
+        // now project back in 'c'
+        @barrier();
+        for (int j = 0; j < p_cubNq; ++j; @inner(1)) {
+          for (int i = 0; i < p_cubNq; ++i; @inner(0)) {
+#pragma unroll p_Nq
+            for (int c = 0; c < p_Nq; ++c) {
+              r_Sd[c] = 0;
+            }
+            for (int k = 0; k < p_cubNq; ++k) {
+              dfloat sk = s_tmp[k][j][i];
+#pragma unroll p_Nq
+              for (int c = 0; c < p_Nq; ++c) {
+                r_Sd[c] += I[k + c * p_cubNq] * sk;
+              }
+            }
+#pragma unroll p_Nq
+            for (int c = 0; c < p_Nq; ++c) {
+              s_tmp[c][j][i] = r_Sd[c];
+            }
+          }
+        }
+        @barrier();
+
+        // project back in 'b'
+        for (int c = 0; c < p_cubNq; ++c; @inner(1)) {
+          for (int i = 0; i < p_cubNq; ++i; @inner(0)) {
+            if (c < p_Nq) {
+#pragma unroll p_Nq
+              for (int b = 0; b < p_Nq; ++b) {
+                r_S[b] = 0;
+              }
+              for (int j = 0; j < p_cubNq; ++j) {
+                dfloat scji = s_tmp[c][j][i];
+#pragma unroll p_Nq
+                for (int b = 0; b < p_Nq; ++b) {
+                  r_S[b] += I[j + b * p_cubNq] * scji;
+                }
+              }
+#pragma unroll p_Nq
+              for (int b = 0; b < p_Nq; ++b) {
+                s_tmp[c][b][i] = r_S[b];
+              }
+            }
+          }
+        }
+        @barrier();
+
+        // project back in 'a'
+        for (int c = 0; c < p_cubNq; ++c; @inner(1)) {
+          for (int b = 0; b < p_cubNq; ++b; @inner(0)) {
+            if (c < p_Nq && b < p_Nq) {
+#pragma unroll p_Nq
+              for (int a = 0; a < p_Nq; ++a) {
+                r_S[a] = 0;
+              }
+              for (int i = 0; i < p_cubNq; ++i) {
+                dfloat scbi = s_tmp[c][b][i];
+#pragma unroll p_Nq
+                for (int a = 0; a < p_Nq; ++a) {
+                  r_S[a] += I[i + a * p_cubNq] * scbi;
+                }
+              }
+#pragma unroll p_Nq
+              for (int a = 0; a < p_Nq; ++a) {
+                s_tmp[c][b][a] = r_S[a];
+              }
+            }
+          }
+        }
+        @barrier();
+
+        for (int b = 0; b < p_cubNq; ++b; @inner(1)) {
+          for (int a = 0; a < p_cubNq; ++a; @inner(0)) {
+            if (a < p_Nq && b < p_Nq) {
+#pragma unroll p_Nq
+              for (int c = 0; c < p_Nq; ++c) {
+                const dlong id = e * p_Np + c * p_Nq * p_Nq + b * p_Nq + a;
+                out[id + field * offset] = s_tmp[c][b][a]
+                    * vgeo[e*p_Np*p_Nvgeo + c*p_Nq*p_Nq+b*p_Nq+a + p_IJWID*p_Np];
+              }
+            }
+          }
+        }
+
+      @barrier();
+    }
+  }
+}
+
+@kernel void replaceGasAdvection(const dlong N,const dlong offset,
+                                 @ restrict const dfloat *ug,
+                                 @ restrict const dfloat *gradUg,
+                                 @ restrict const dfloat *cubAdv,
+                                 @ restrict dfloat *source)
+{
+  for(dlong n=0;n<N;++n;@tile(p_blockSize,@outer,@inner)) {
+    for(int i=0;i<3;++i) {
+      dfloat strong=0;
+      for(int j=0;j<3;++j) {
+        strong+=ug[n+j*offset]*gradUg[n+(3*i+j)*offset];
+      }
+      source[n+i*offset]+=strong-cubAdv[n+(i+1)*offset];
+    }
+  }
+}

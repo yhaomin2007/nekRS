@@ -106,6 +106,9 @@ alphaConvectionMethod = 0
 # UG source mixture convection: 0=native cancellation (default),
 # 1=um dot opSEM::strongGrad(ug_i), for all three components.
 gasConvectionMethod = 0
+# Actual gas transport: 0=previous GLL strong operators, 1=cubature.
+# For consistent mixture cancellation use both convectionMethod options = 0.
+gasTransportMethod = 1
 # Mixture-divergence construction: 0=reconstructed alpha RHS,
 # 1=discrete BDF alpha history plus native NekRS scalar advection.
 mixtureDivergenceMethod = 0
