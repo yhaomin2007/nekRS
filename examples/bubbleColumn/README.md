@@ -319,3 +319,5 @@ uniform initial field. Gas reconstruction and low-alpha masking remain active.
 Existing divergence method, extrapolation, ramp, force terms and time integration
 are unchanged; this change does not establish stability with nonzero divergence.
 Run `python tests/uniform_initialization.py` for a serial kernel check.
+
+Divergence consistency correction: method 0 now follows `alphaConvectionMethod` when reconstructing its mixture-advection term. Native advection used by method 1 is assembled as `M^-1 Q^T M_e A_native`, because the native unweighted kernel already returns normalized nodal values. HPF, clipping, and differences between strong and implicit diffusion still prevent method 0 from reproducing the complete discrete alpha update.

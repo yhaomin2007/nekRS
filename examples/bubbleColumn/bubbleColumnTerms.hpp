@@ -635,6 +635,9 @@ inline void evaluateNativeAlphaAdvection(deviceMemory<dfloat> &o_advection,
     const dlong alphaOffset = nrs->scalar->fieldOffsetScan[alphaIndex];
     auto o_alphaAdvection =
         o_advection.slice(alphaOffset, nrs->fieldOffset);
+    // Native weighted=0 advection is already normalized. Assemble its
+    // nodal values with the mass matrix, unlike JW-weighted opSEM gradients.
+    platform->linAlg->axmy(mesh->Nlocal, 1.0, mesh->o_LMM, o_alphaAdvection);
     oogs::startFinish(o_alphaAdvection,
                       1,
                       0,
@@ -642,7 +645,7 @@ inline void evaluateNativeAlphaAdvection(deviceMemory<dfloat> &o_advection,
                       ogsAdd,
                       mesh->oogs);
     platform->linAlg->axmy(
-        mesh->Nlocal, 1.0, mesh->o_invAJw, o_alphaAdvection);
+        mesh->Nlocal, 1.0, mesh->o_invLMM, o_alphaAdvection);
   }
 }
 
@@ -1007,6 +1010,15 @@ inline void updateProperties(double)
   assembleDivergence(o_divSource);
   o_validationMassFlux.copyFrom(o_divSource, Nlocal, 1 * offset, 0);
 
+  // Method 0 must use the same mixture advection choice as alpha sources.
+  if (p.alphaConvectionMethod == 0) {
+    evaluateNativeAlphaAdvection(o_alphaNativeAdvectionDiagnostic, false);
+    const int index = nrs->scalar->nameToIndex.at("alpha");
+    auto native = o_alphaNativeAdvectionDiagnostic.slice(
+        nrs->scalar->fieldOffsetScan[index], offset);
+    cancelMixtureAdvectionKernel(Nlocal, offset, nrs->fluid->o_U,
+                                o_gradAlpha, native, o_alphaSource);
+  }
   // Component 0 stores the unfiltered two-term method 0 result.
   buildDivergenceFromAlphaRhs(o_divSource);
   assembleDivergence(o_divSource);
