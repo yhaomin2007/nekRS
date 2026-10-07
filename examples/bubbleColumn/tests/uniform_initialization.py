@@ -20,9 +20,9 @@ for(double a: {0.,.02,.05}) for(double ug: {0.,.1,-.1}) {
  const double rl=998.2,rg=1.2,rho=(1-a)*rl+a*rg;
  initializeUniform(4,6,rl,rg,a,ug,alpha,x,y,z,u);
  for(int i=0;i<4;i++) {
- assert(alpha[i]==a && x[i]==0 && y[i]==0 && z[i]==a*ug);
- assert(u[i]==0 && u[6+i]==0 && u[12+i]==rg*z[i]/rho);
- assert(std::abs((rho*u[12+i]-rg*z[i])/((1-a)*rl))<1e-14);
+ assert(alpha[i]==a && x[i]==0 && y[i]==0 && z[i]==ug);
+ assert(u[i]==0 && u[6+i]==0 && u[12+i]==rg*a*z[i]/rho);
+ assert(std::abs((rho*u[12+i]-rg*a*z[i])/((1-a)*rl))<1e-14);
  }
  assert(alpha[4]==99 && z[5]==99 && u[16]==99);
 }
@@ -37,4 +37,4 @@ udf=(root/'bubbleColumn.udf').read_text()
 assert 'if (platform->options.getArgs("RESTART FILE NAME").empty())' in udf
 assert 'initializePlume' not in udf+s
 assert "nrs->userDivergence = &bubbleColumn::updateDivergence;" in udf
-print('Uniform alpha/QG/mixture initialization, stationary liquid, signed velocity and padding checks passed.')
+print('Uniform alpha/UG/mixture initialization, stationary liquid, signed velocity and padding checks passed.')

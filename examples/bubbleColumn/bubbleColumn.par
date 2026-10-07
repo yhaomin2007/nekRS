@@ -2,14 +2,15 @@ userSections = CASEDATA
 
 [GENERAL]
 polynomialOrder = 7
-startFrom = bubblecolumn0.f00036
+# UG scalars require a new run or a converted UG restart.
+# startFrom = bubblecolumn0.f00036
 stopAt = numSteps
 numSteps = 100000
 dt = initial=1.0e-5+targetCFL=0.01+max=1e-2
 #dt = 1e-5
 timeStepper = tombo2
 checkpointInterval = 1000
-scalars = ALPHA, QGX, QGY, QGZ
+scalars = ALPHA, UGX, UGY, UGZ
 
 [FLUID PRESSURE]
 residualTol = 1e-6
@@ -40,21 +41,21 @@ diffusionCoeff = 1e-6
 # NekRS native high-pass-filter relaxation. Use regularization = none to disable.
 regularization = hpfrt + nModes=1 + scalingCoeff=10.0
 
-[SCALAR QGX]
+[SCALAR UGX]
 boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
 residualTol = 1e-6
 transportCoeff = 1.0
 diffusionCoeff = 1e-5
 regularization = hpfrt + nModes=1 + scalingCoeff=10.0
 
-[SCALAR QGY]
+[SCALAR UGY]
 boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
 residualTol = 1e-6
 transportCoeff = 1.0
 diffusionCoeff =1e-5
 regularization = hpfrt + nModes=1 + scalingCoeff=10.0
 
-[SCALAR QGZ]
+[SCALAR UGZ]
 boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
 residualTol = 1e-6
 transportCoeff = 1.0
@@ -69,7 +70,7 @@ muGas = 1.8e-5
 alphaInitial = 0.0
 alphaInlet = 0.016667
 gasInletVelocity = 0.3
-# Uniform initial gas velocity along z (m/s); qgz=alphaInitial*gasInitialVelocity.
+# Uniform initial gas velocity along z (m/s); ugz=alphaInitial*gasInitialVelocity.
 gasInitialVelocity = 0.0
 gravityX = 0.0
 gravityY = 0.0
@@ -79,9 +80,9 @@ alphaClipEnabled = 1.0
 alphaMinimum = 0.0
 alphaMaximum = 1.0
 subtractAlphaDiffusion = 0.0
-subtractQgxDiffusion = 0.0
-subtractQgyDiffusion = 0.0
-subtractQgzDiffusion = 0.0
+subtractUgxDiffusion = 0.0
+subtractUgyDiffusion = 0.0
+subtractUgzDiffusion = 0.0
 zRampBottom = 0.9
 zRampTop = 0.95
 outletDampingFactor = 20.0
@@ -93,12 +94,12 @@ mixtureVelocityMaximum = 1.0
 gasMomentumCutoff = 1e-4
 gasMomentumFullyActive = 1e-3
 gasPressureEnabled = 1.0
-# Pressure gradient used in the QG source:
+# Pressure gradient used in the UG source:
 # 0 = assembled strong gradient, 1 = mass-normalized weak gradient matching
 # the volume pressure operator used by the native NekRS velocity RHS.
 # Both raw forms are always computed, compared, and exported at checkpoints.
 gasPressureGradientMethod = 0
-# Exponential relaxation of the selected lagged pressure gradient used by QG:
+# Exponential relaxation of the selected lagged pressure gradient used by UG:
 # gradP_used^n = (1-weight)*gradP_used^(n-1) + weight*gradP_lagged^n.
 # Set enabled=0 or weight=1 to recover the unfiltered lagged gradient.
 gasPressureGradientFilterEnabled = 1.0
@@ -107,7 +108,7 @@ dragEnabled = 1.0
 bubbleDiameter = 3.0e-3
 # Set to 0.0 to omit -div(tau_d)/rho_m from mixture momentum.
 driftStressEnabled = 1.0
-virtualMassEnabled = 0.0
+virtualMassEnabled = 1.0
 virtualMassCoefficient = 0.5
 # Mixture-divergence construction: 0=reconstructed alpha RHS,
 # 1=discrete BDF alpha history plus native NekRS scalar advection.

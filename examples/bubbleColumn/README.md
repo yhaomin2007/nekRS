@@ -1,3 +1,30 @@
+# Direct gas-velocity transport (UG)
+
+This case now transports `ALPHA, UGX, UGY, UGZ`. The three gas scalars are velocities in m/s. `qg = alpha*ug` is reconstructed only for conservative alpha transport, liquid reconstruction and gas-volume diagnostics. No QG momentum equation is solved.
+
+For each gas component, the implemented equation is
+
+```
+dt(ug_i) + ug.grad(ug_i) + (K/rhoEff)*ug_i
+ = -grad_i(p)/rhoEff + (rhoGas/rhoEff)*g_i
+   + (K/rhoEff)*ul_i + (c/rhoEff)*al_i
+   + div(alpha*tau_g)_i/(alpha*rhoEff) + numerical diffusion,
+c = virtualMassEnabled*virtualMassCoefficient*rhoLiquid,
+rhoEff = rhoGas + c.
+```
+
+The native BDF time derivative and linear drag are implicit. The effective inertia is incorporated by dividing all physical force terms and drag by `rhoEff`; `transportCoeff` stays one. Liquid acceleration is lagged: at each completed step it is computed as `(ul^n-ul^(n-1))/dt_n + ul^n.grad(ul^n)`, then used by the next source assembly (with NekRS explicit extrapolation). Its initial value is zero. No explicit negative gas acceleration remains. VM creates no additional mixture force.
+
+Native mixture scalar advection is canceled using the same native scalar operator, including cubature, before adding gas material advection. Scalar subcycling must be disabled. Pressure, gravity, drag, VM and stress sources are masked below `alphaFloor`; division by alpha is protected. Optional smooth masking and velocity clipping apply to UG; their gas-flux changes are reported after multiplication by alpha.
+
+Both original mixture divergence choices remain available: `mixtureDivergenceMethod=0` reconstructs the alpha RHS, and `1` uses the BDF alpha derivative plus native mixture advection. Density averaging, variable mixture density, drift stress, filters and outlet damping remain configurable.
+
+**Restart:** old `ALPHA,QGX,QGY,QGZ` checkpoints are incompatible with UG scalar semantics. Start a new run (the supplied restart line is disabled), or explicitly convert each old gas momentum scalar to velocity before loading. New checkpoints store UG. `subtractUgxDiffusion`, `subtractUgyDiffusion`, and `subtractUgzDiffusion` replace the former QG diffusion-subtraction parameter names. VM is enabled with coefficient 0.5 in the supplied parameters.
+
+The following historical notes describe the earlier QG implementation and are retained for reference only.
+
+---
+
 # bubbleColumn
 
 Initial one-pass Eulerian mixture/gas-flux scaffold for nekRS. No mesh is

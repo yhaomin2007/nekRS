@@ -25,7 +25,7 @@ struct Parameters {
   dfloat alphaMinimum;
   dfloat alphaMaximum;
   dfloat subtractAlphaDiffusion;
-  dfloat subtractQgDiffusion[3];
+  dfloat subtractUgDiffusion[3];
   dfloat zRampBottom;
   dfloat zRampTop;
   dfloat outletDampingFactor;
@@ -63,17 +63,13 @@ static Parameters p;
 static deviceMemory<dfloat> o_ug;
 static deviceMemory<dfloat> o_ul;
 static deviceMemory<dfloat> o_ulPrevious;
-static deviceMemory<dfloat> o_ugPrevious;
 static deviceMemory<dfloat> o_gradUl;
-static deviceMemory<dfloat> o_virtualMassRelativeAcceleration;
+static deviceMemory<dfloat> o_liquidAcceleration;
 static deviceMemory<dfloat> o_gradAlpha;
 static deviceMemory<dfloat> o_qg;
-static deviceMemory<dfloat> o_gradQgAdvection;
 static deviceMemory<dfloat> o_divQg;
-static deviceMemory<dfloat> o_qgAdvectionFlux;
-static deviceMemory<dfloat> o_divQgAdvectionFlux;
 static deviceMemory<dfloat> o_gradUg;
-// o_gradP is the selected (and optionally time-filtered) gradient used by QG.
+// o_gradP is the selected (and optionally time-filtered) gradient used by UG.
 static deviceMemory<dfloat> o_gradP;
 static deviceMemory<dfloat> o_gradPStrong;
 static deviceMemory<dfloat> o_gradPWeak;
@@ -88,7 +84,7 @@ static int divergenceHistoryCount = 0;
 static occa::memory o_divFilterMatrix;
 static deviceMemory<dfloat> o_alphaDiffusionFlux;
 static deviceMemory<dfloat> o_alphaDiffusionDivergence;
-static deviceMemory<dfloat> o_qgDiffusionDivergence;
+static deviceMemory<dfloat> o_ugDiffusionDivergence;
 static deviceMemory<dfloat> o_scalarDiffusionBase;
 static deviceMemory<dfloat> o_outletRampFactor;
 static deviceMemory<dfloat> o_alphaNativeMaterialAdvection;
@@ -97,7 +93,7 @@ static deviceMemory<dfloat> o_divDriftStress;
 static deviceMemory<dfloat> o_gasStress;
 static deviceMemory<dfloat> o_divGasStress;
 static deviceMemory<dfloat> o_alphaSource;
-static deviceMemory<dfloat> o_qgSource;
+static deviceMemory<dfloat> o_ugSource;
 static deviceMemory<dfloat> o_dragLambda;
 static deviceMemory<dfloat> o_mixtureForce;
 static deviceMemory<dfloat> o_monitorMagnitude;
@@ -138,6 +134,8 @@ static dfloat qgMaskDeltaMagnitudeIntegral = 0.0;
 static dfloat cumulativeQgMaskDeltaIntegral[3] = {0.0, 0.0, 0.0};
 static dfloat cumulativeQgMaskDeltaMagnitudeIntegral = 0.0;
 static bool validationInitialized = false;
+static occa::kernel cancelMixtureAdvectionKernel;
+static occa::kernel addGasStressKernel;
 static occa::kernel reconstructGasVelocityKernel;
 static occa::kernel postProcessGasFluxKernel;
 static occa::kernel clipAlphaKernel;
@@ -162,6 +160,8 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
   if (platform->options.compareArgs("REGISTER ONLY", "TRUE")) {
     platform->kernelRequests.add(request, fileName, kernelInfo);
   } else {
+    cancelMixtureAdvectionKernel = platform->kernelRequests.load(request, "cancelMixtureAdvection");
+    addGasStressKernel = platform->kernelRequests.load(request, "addGasStress");
     reconstructGasVelocityKernel =
         platform->kernelRequests.load(request, "reconstructGasVelocity");
     postProcessGasFluxKernel =
@@ -191,6 +191,12 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
 inline void allocate()
 {
   const dlong offset = nrs->fieldOffset;
+  nekrsCheck(p.virtualMassEnabled < 0.0 || p.virtualMassCoefficient < 0.0
+             || !std::isfinite(p.virtualMassEnabled) || !std::isfinite(p.virtualMassCoefficient),
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "%s", "Virtual mass parameters must be finite and nonnegative.\n");
+  nekrsCheck(nrs->scalar->Nsubsteps != 0, platform->comm.mpiComm(), EXIT_FAILURE,
+             "%s", "UG advection correction requires scalar subcycling disabled.\n");
   nekrsCheck(p.divergenceFilterEnabled != 0.0
                  && (p.divergenceFilterStrength < 0.0
                      || p.divergenceFilterStrength > 1.0),
@@ -270,15 +276,11 @@ inline void allocate()
   o_ug.resize(3 * offset);
   o_ul.resize(3 * offset);
   o_ulPrevious.resize(3 * offset);
-  o_ugPrevious.resize(3 * offset);
   o_gradUl.resize(9 * offset);
-  o_virtualMassRelativeAcceleration.resize(3 * offset);
+  o_liquidAcceleration.resize(3 * offset);
   o_gradAlpha.resize(3 * offset);
   o_qg.resize(3 * offset);
-  o_gradQgAdvection.resize(9 * offset);
   o_divQg.resize(offset);
-  o_qgAdvectionFlux.resize(9 * offset);
-  o_divQgAdvectionFlux.resize(3 * offset);
   o_gradUg.resize(9 * offset);
   o_gradP.resize(3 * offset);
   o_gradPStrong.resize(3 * offset);
@@ -295,7 +297,7 @@ inline void allocate()
   platform->linAlg->fill(offset, 0.0, o_divExtrapolated);
   o_alphaDiffusionFlux.resize(3 * offset);
   o_alphaDiffusionDivergence.resize(offset);
-  o_qgDiffusionDivergence.resize(3 * offset);
+  o_ugDiffusionDivergence.resize(3 * offset);
   o_scalarDiffusionBase.resize(4 * offset);
   o_outletRampFactor.resize(offset);
   o_alphaNativeMaterialAdvection.resize(nrs->scalar->fieldOffsetSum);
@@ -304,7 +306,7 @@ inline void allocate()
   o_gasStress.resize(9 * offset);
   o_divGasStress.resize(3 * offset);
   o_alphaSource.resize(offset);
-  o_qgSource.resize(3 * offset);
+  o_ugSource.resize(3 * offset);
   o_dragLambda.resize(offset);
   o_mixtureForce.resize(3 * offset);
   o_monitorMagnitude.resize(offset);
@@ -329,7 +331,7 @@ inline void allocate()
   o_inletBoundaryID.copyFrom(std::vector<int>{1});
   o_scalarFieldOffsetScan.resize(1);
   o_scalarFieldOffsetScan.copyFrom(std::vector<dlong>{0});
-  const char *scalarNames[4] = {"alpha", "qgx", "qgy", "qgz"};
+  const char *scalarNames[4] = {"alpha", "ugx", "ugy", "ugz"};
   for (int i = 0; i < 4; ++i) {
     o_scalarDiffusionBase.copyFrom(
         nrs->scalar->o_diffusionCoeff(scalarNames[i]),
@@ -405,19 +407,29 @@ inline void reconstructGasVelocity()
                                nrs->fieldOffset,
                                p.alphaFloor,
                                nrs->scalar->o_solution("alpha"),
-                               nrs->scalar->o_solution("qgx"),
-                               nrs->scalar->o_solution("qgy"),
-                               nrs->scalar->o_solution("qgz"),
+                               nrs->scalar->o_solution("ugx"),
+                               nrs->scalar->o_solution("ugy"),
+                               nrs->scalar->o_solution("ugz"),
                                o_ug);
+}
+
+// qg is a derived flux, never a transported scalar.
+inline void reconstructGasFlux()
+{
+  reconstructGasVelocity();
+  for (int i = 0; i < 3; ++i) {
+    auto flux = o_qg.slice(i * nrs->fieldOffset, nrs->fieldOffset);
+    flux.copyFrom(o_ug, nrs->meshV->Nlocal, 0, i * nrs->fieldOffset);
+    platform->linAlg->axmy(nrs->meshV->Nlocal, 1.0,
+                         nrs->scalar->o_solution("alpha"), flux);
+  }
 }
 
 inline void reconstructLiquidVelocity()
 {
   const dlong Nlocal = nrs->meshV->Nlocal;
   const dlong offset = nrs->fieldOffset;
-  o_qg.copyFrom(nrs->scalar->o_solution("qgx"), Nlocal, 0 * offset, 0);
-  o_qg.copyFrom(nrs->scalar->o_solution("qgy"), Nlocal, 1 * offset, 0);
-  o_qg.copyFrom(nrs->scalar->o_solution("qgz"), Nlocal, 2 * offset, 0);
+  reconstructGasFlux();
   buildLiquidVelocityKernel(Nlocal,
                             offset,
                             p.rhoLiquid,
@@ -435,9 +447,7 @@ inline void evaluatePointwiseTerms()
   const dlong offset = nrs->fieldOffset;
   auto alpha = nrs->scalar->o_solution("alpha");
 
-  o_qg.copyFrom(nrs->scalar->o_solution("qgx"), mesh->Nlocal, 0 * offset, 0);
-  o_qg.copyFrom(nrs->scalar->o_solution("qgy"), mesh->Nlocal, 1 * offset, 0);
-  o_qg.copyFrom(nrs->scalar->o_solution("qgz"), mesh->Nlocal, 2 * offset, 0);
+  reconstructGasFlux();
   reconstructGasVelocity();
   buildLiquidVelocityKernel(mesh->Nlocal,
                             offset,
@@ -452,7 +462,6 @@ inline void evaluatePointwiseTerms()
   // and divergence. This keeps the reconstructed cancellation and conservative
   // flux terms single-valued at shared CG nodes.
   opSEM::strongGrad(mesh, offset, alpha, o_gradAlpha);
-  opSEM::strongGradVec(mesh, offset, o_qg, o_gradQgAdvection);
   opSEM::strongDivergence(mesh, offset, o_qg, o_divQg);
   opSEM::strongGradVec(mesh, offset, o_ug, o_gradUg);
   opSEM::strongGradVec(mesh, offset, o_ul, o_gradUl);
@@ -510,24 +519,6 @@ inline void evaluatePointwiseTerms()
     }
   }
 
-  // Form F_ij = q_g,i * u_g,j and take an assembled strong divergence of
-  // each tensor row for the conservative QG transport correction.
-  for (int i = 0; i < 3; ++i) {
-    const auto qi = o_qg.slice(i * offset, offset);
-    for (int j = 0; j < 3; ++j) {
-      const auto ugj = o_ug.slice(j * offset, offset);
-      auto fluxComponent =
-          o_qgAdvectionFlux.slice((3 * i + j) * offset, offset);
-      fluxComponent.copyFrom(qi, offset);
-      platform->linAlg->axmy(mesh->Nlocal, 1.0, ugj, fluxComponent);
-    }
-  }
-  for (int i = 0; i < 3; ++i) {
-    auto flux = o_qgAdvectionFlux.slice(3 * i * offset, 3 * offset);
-    auto divergence = o_divQgAdvectionFlux.slice(i * offset, offset);
-    opSEM::strongDivergence(mesh, offset, flux, divergence);
-  }
-
   buildEquationTermsKernel(mesh->Nlocal,
                            offset,
                            p.rhoLiquid,
@@ -548,18 +539,16 @@ inline void evaluatePointwiseTerms()
                            o_ug,
                            o_ul,
                            o_gradAlpha,
-                           o_gradQgAdvection,
                            o_divQg,
-                           o_divQgAdvectionFlux,
                            o_gradUg,
-                           o_virtualMassRelativeAcceleration,
+                           o_liquidAcceleration,
                            o_gradP,
                            o_rhoM,
                            o_muM,
                            o_driftStress,
                            o_gasStress,
                            o_alphaSource,
-                           o_qgSource,
+                           o_ugSource,
                            o_dragLambda);
 
   // Smoothly increase the implicit mixture viscosity and all implicit scalar
@@ -574,7 +563,7 @@ inline void evaluatePointwiseTerms()
                               mesh->o_z,
                               o_outletRampFactor);
   platform->linAlg->axmy(mesh->Nlocal, 1.0, o_outletRampFactor, o_muM);
-  const char *scalarNames[4] = {"alpha", "qgx", "qgy", "qgz"};
+  const char *scalarNames[4] = {"alpha", "ugx", "ugy", "ugz"};
   for (int i = 0; i < 4; ++i) {
     auto diffusion = nrs->scalar->o_diffusionCoeff(scalarNames[i]);
     diffusion.copyFrom(o_scalarDiffusionBase, mesh->Nlocal, 0, i * offset);
@@ -586,21 +575,17 @@ inline void evaluatePointwiseTerms()
     auto stressRow = o_gasStress.slice(3 * i * offset, 3 * offset);
     auto stressDivergence = o_divGasStress.slice(i * offset, offset);
     opSEM::strongDivergence(mesh, offset, stressRow, stressDivergence);
-    platform->linAlg->axpby(mesh->Nlocal,
-                            1.0 / p.rhoGas,
-                            stressDivergence,
-                            1.0,
-                            o_qgSource,
-                            0,
-                            i * offset);
+    addGasStressKernel(mesh->Nlocal, p.alphaFloor,
+                       p.rhoGas + p.virtualMassEnabled * p.virtualMassCoefficient * p.rhoLiquid,
+                       alpha, stressDivergence, o_ugSource.slice(i * offset, offset));
   }
 }
 
 inline void evaluateNativeAlphaAdvection(deviceMemory<dfloat> &o_advection,
-                                         bool averageSharedNodes)
+                                         bool averageSharedNodes, const char *name = "alpha")
 {
   auto mesh = nrs->meshV;
-  const int alphaIndex = nrs->scalar->nameToIndex.at("alpha");
+  const int alphaIndex = nrs->scalar->nameToIndex.at(name);
 
   // Reuse the exact NekRS scalar-advection operator and the contravariant
   // predicted velocity already prepared for the current timestep.
@@ -682,8 +667,7 @@ inline void initializeHistory()
   evaluatePointwiseTerms();
   const dlong offset = nrs->fieldOffset;
   o_ulPrevious.copyFrom(o_ul, 3 * offset);
-  o_ugPrevious.copyFrom(o_ug, 3 * offset);
-  platform->linAlg->fill(3 * offset, 0.0, o_virtualMassRelativeAcceleration);
+  platform->linAlg->fill(3 * offset, 0.0, o_liquidAcceleration);
 }
 
 inline void postProcessGasFlux()
@@ -698,9 +682,9 @@ inline void postProcessGasFlux()
     return;
   }
 
-  o_qgBeforeMask.copyFrom(nrs->scalar->o_solution("qgx"), Nlocal, 0 * offset, 0);
-  o_qgBeforeMask.copyFrom(nrs->scalar->o_solution("qgy"), Nlocal, 1 * offset, 0);
-  o_qgBeforeMask.copyFrom(nrs->scalar->o_solution("qgz"), Nlocal, 2 * offset, 0);
+  o_qgBeforeMask.copyFrom(nrs->scalar->o_solution("ugx"), Nlocal, 0 * offset, 0);
+  o_qgBeforeMask.copyFrom(nrs->scalar->o_solution("ugy"), Nlocal, 1 * offset, 0);
+  o_qgBeforeMask.copyFrom(nrs->scalar->o_solution("ugz"), Nlocal, 2 * offset, 0);
 
   postProcessGasFluxKernel(
       Nlocal,
@@ -711,17 +695,18 @@ inline void postProcessGasFlux()
       p.gasMomentumCutoff,
       p.gasMomentumFullyActive,
       nrs->scalar->o_solution("alpha"),
-      nrs->scalar->o_solution("qgx"),
-      nrs->scalar->o_solution("qgy"),
-      nrs->scalar->o_solution("qgz"));
+      nrs->scalar->o_solution("ugx"),
+      nrs->scalar->o_solution("ugy"),
+      nrs->scalar->o_solution("ugz"));
 
-  const char *qgNames[3] = {"qgx", "qgy", "qgz"};
+  const char *qgNames[3] = {"ugx", "ugy", "ugz"};
   const MPI_Comm comm = platform->comm.mpiComm();
   for (int i = 0; i < 3; ++i) {
     auto delta = o_qgMaskDelta.slice(i * offset, offset);
     delta.copyFrom(nrs->scalar->o_solution(qgNames[i]), Nlocal);
     platform->linAlg->axpby(
         Nlocal, -1.0, o_qgBeforeMask, 1.0, delta, i * offset, 0);
+    platform->linAlg->axmy(Nlocal, 1.0, nrs->scalar->o_solution("alpha"), delta);
     qgMaskDeltaIntegral[i] = platform->linAlg->innerProd(
         Nlocal, nrs->meshV->o_LMM, delta, comm);
     cumulativeQgMaskDeltaIntegral[i] += qgMaskDeltaIntegral[i];
@@ -774,16 +759,14 @@ inline void updateVirtualMassHistory()
   const dlong offset = nrs->fieldOffset;
   auto alpha = nrs->scalar->o_solution("alpha");
 
-  o_qg.copyFrom(nrs->scalar->o_solution("qgx"), mesh->Nlocal, 0 * offset, 0);
-  o_qg.copyFrom(nrs->scalar->o_solution("qgy"), mesh->Nlocal, 1 * offset, 0);
-  o_qg.copyFrom(nrs->scalar->o_solution("qgz"), mesh->Nlocal, 2 * offset, 0);
+  reconstructGasFlux();
   reconstructGasVelocityKernel(mesh->Nlocal,
                                offset,
                                p.alphaFloor,
                                alpha,
-                               nrs->scalar->o_solution("qgx"),
-                               nrs->scalar->o_solution("qgy"),
-                               nrs->scalar->o_solution("qgz"),
+                               nrs->scalar->o_solution("ugx"),
+                               nrs->scalar->o_solution("ugy"),
+                               nrs->scalar->o_solution("ugz"),
                                o_ug);
   buildLiquidVelocityKernel(mesh->Nlocal,
                             offset,
@@ -799,13 +782,10 @@ inline void updateVirtualMassHistory()
   updateVirtualMassHistoryKernel(mesh->Nlocal,
                                  offset,
                                  1.0 / nrs->dt[0],
-                                 o_ug,
                                  o_ul,
                                  o_ulPrevious,
-                                 o_ugPrevious,
                                  o_gradUl,
-                                 o_gradUg,
-                                 o_virtualMassRelativeAcceleration);
+                                 o_liquidAcceleration);
 }
 
 inline void evaluateMixtureForce()
@@ -868,13 +848,13 @@ inline void subtractScalarDiffusion()
                             o_alphaSource);
   }
 
-  const char *qgNames[3] = {"qgx", "qgy", "qgz"};
+  const char *qgNames[3] = {"ugx", "ugy", "ugz"};
   for (int i = 0; i < 3; ++i) {
-    if (p.subtractQgDiffusion[i] == 0.0) {
+    if (p.subtractUgDiffusion[i] == 0.0) {
       continue;
     }
     auto diffusion = nrs->scalar->o_diffusionCoeff(qgNames[i]);
-    auto divergence = o_qgDiffusionDivergence.slice(i * offset, offset);
+    auto divergence = o_ugDiffusionDivergence.slice(i * offset, offset);
     launchKernel("core-weakLaplacianHex3D",
                  nrs->meshV->Nelements,
                  1,
@@ -889,10 +869,10 @@ inline void subtractScalarDiffusion()
     platform->linAlg->axmy(
         Nlocal, 1.0, nrs->meshV->o_invLMM, divergence);
     platform->linAlg->axpby(Nlocal,
-                            p.subtractQgDiffusion[i],
+                            p.subtractUgDiffusion[i],
                             divergence,
                             1.0,
-                            o_qgSource,
+                            o_ugSource,
                             0,
                             i * offset);
   }
@@ -901,6 +881,18 @@ inline void subtractScalarDiffusion()
 inline void addExplicitSources(double)
 {
   evaluatePointwiseTerms();
+  // Replace pointwise mixture advection with the exact native operator,
+  // which NekRS subsequently subtracts. The remainder is -ug.grad(ug).
+  const char *names[4] = {"alpha", "ugx", "ugy", "ugz"};
+  for (int k = 0; k < 4; ++k) {
+    evaluateNativeAlphaAdvection(o_alphaNativeAdvectionDiagnostic, false, names[k]);
+    const auto native = o_alphaNativeAdvectionDiagnostic.slice(
+        nrs->scalar->fieldOffsetScan[nrs->scalar->nameToIndex.at(names[k])], nrs->fieldOffset);
+    auto source = k == 0 ? o_alphaSource : o_ugSource.slice((k - 1) * nrs->fieldOffset, nrs->fieldOffset);
+    auto grad = k == 0 ? o_gradAlpha : o_gradUg.slice(3 * (k - 1) * nrs->fieldOffset, 3 * nrs->fieldOffset);
+    cancelMixtureAdvectionKernel(nrs->meshV->Nlocal, nrs->fieldOffset,
+                                nrs->fluid->o_U, grad, native, source);
+  }
   captureAlphaAdvectionDiagnostics();
   subtractScalarDiffusion();
   evaluateMixtureForce();
@@ -910,9 +902,9 @@ inline void addExplicitSources(double)
   // Copy only entries written by the pointwise kernels. Avoid whole-view
   // copies because scalar and fluid fields may have different padded extents.
   nrs->scalar->o_explicitTerms("alpha").copyFrom(o_alphaSource, Nlocal);
-  nrs->scalar->o_explicitTerms("qgx").copyFrom(o_qgSource, Nlocal, 0, 0 * offset);
-  nrs->scalar->o_explicitTerms("qgy").copyFrom(o_qgSource, Nlocal, 0, 1 * offset);
-  nrs->scalar->o_explicitTerms("qgz").copyFrom(o_qgSource, Nlocal, 0, 2 * offset);
+  nrs->scalar->o_explicitTerms("ugx").copyFrom(o_ugSource, Nlocal, 0, 0 * offset);
+  nrs->scalar->o_explicitTerms("ugy").copyFrom(o_ugSource, Nlocal, 0, 1 * offset);
+  nrs->scalar->o_explicitTerms("ugz").copyFrom(o_ugSource, Nlocal, 0, 2 * offset);
 
   auto fluidTerms = nrs->fluid->o_explicitTerms();
   for (int i = 0; i < 3; ++i) {
@@ -1017,7 +1009,7 @@ inline void updateProperties(double)
 
 inline occa::memory implicitGasDrag(double, int scalarIndex)
 {
-  // Scalar ordering is ALPHA, QGX, QGY, QGZ.
+  // Scalar ordering is ALPHA, UGX, UGY, UGZ.
   if (p.dragEnabled != 0.0 && scalarIndex >= 1 && scalarIndex <= 3) {
     return o_dragLambda;
   }
@@ -1114,9 +1106,7 @@ inline ValidationState computeValidationState(int tstep)
   state.totalMass = platform->linAlg->innerProd(
       Nlocal, nrs->meshV->o_LMM, o_rhoM, comm);
 
-  o_qg.copyFrom(nrs->scalar->o_solution("qgx"), Nlocal, 0 * offset, 0);
-  o_qg.copyFrom(nrs->scalar->o_solution("qgy"), Nlocal, 1 * offset, 0);
-  o_qg.copyFrom(nrs->scalar->o_solution("qgz"), Nlocal, 2 * offset, 0);
+  reconstructGasFlux();
   state.gasAdvectiveInlet = nrs->meshV->surfaceAreaNormalMultiplyVectorIntegrate(
       offset, o_inletBoundaryID, o_qg);
   state.gasAdvectiveOutlet = nrs->meshV->surfaceAreaNormalMultiplyVectorIntegrate(
@@ -1442,7 +1432,7 @@ inline void printStabilityMonitors(double time, int tstep)
 
   platform->linAlg->entrywiseMag(Nlocal, 3, offset, o_gradP, o_monitorMagnitude);
   buildGasPressureAccelerationMonitorKernel(Nlocal,
-                                            p.rhoGas,
+                                            p.rhoGas + p.virtualMassEnabled * p.virtualMassCoefficient * p.rhoLiquid,
                                             p.gasMomentumCutoff,
                                             nrs->scalar->o_solution("alpha"),
                                             o_monitorMagnitude,
