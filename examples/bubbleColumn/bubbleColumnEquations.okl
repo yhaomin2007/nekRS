@@ -307,9 +307,10 @@
     dfloat ugAdvection[3];
     for (int i = 0; i < 3; ++i) {
       ugAdvection[i] = 0.0;
-      for (int j = 0; j < 3; ++j)
+      for (int j = 0; j < 3; ++j) {
         ugAdvection[i] += (um[n + j * offset] - ug[n + j * offset])
                           * gradUg[n + (3 * i + j) * offset];
+      }
     }
 
     // alpha*tau_g with a Newtonian Stokes stress. Its divergence is added
@@ -336,11 +337,12 @@
     const dfloat rhoEff = rhoGas + c;
     const dfloat dragRate = gasActive * dragEnabled * Ki / rhoEff;
     dragLambda[n] = dragRate;
-    const dfloat gravity[3] = {gravityX, gravityY, gravityZ};
     for (int i = 0; i < 3; ++i) {
+      // Avoid local array initializers: the OCCA CUDA parser crashes on them.
+      const dfloat gravityComponent = (i == 0) ? gravityX : ((i == 1) ? gravityY : gravityZ);
       ugSource[n + i * offset] = ugAdvection[i] + gasActive * (
           -gasPressureEnabled * gradP[n + i * offset] / rhoEff
-          + rhoGas / rhoEff * gravity[i]
+          + rhoGas / rhoEff * gravityComponent
           + dragEnabled * Ki / rhoEff * ul[n + i * offset]
           + c / rhoEff * liquidAcceleration[n + i * offset]);
     }
