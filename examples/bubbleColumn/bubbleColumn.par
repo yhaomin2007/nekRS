@@ -6,24 +6,14 @@ polynomialOrder = 7
 # startFrom = bubblecolumn0.f00036
 stopAt = numSteps
 numSteps = 100000
-dt = initial=1.0e-5+targetCFL=0.01+max=1e-2
-#dt = 1e-5
+#dt = initial=1.0e-5+targetCFL=0.01+max=1e-2
+dt = 1e-5
 timeStepper = tombo2
 checkpointInterval = 1000
 scalars = ALPHA, UGX, UGY, UGZ
 
 [FLUID PRESSURE]
 residualTol = 1e-6
-#initialGuess = previous
-solver = gmres + flexible + nVector=30 + maxIter=500
-preconditioner = multigrid
-smootherType = ASM + FourthOptChebyshev + degree=3
-coarseSolver = boomerAMG + cpu
-
-#solver = PFGMRES + nVector = 25
-initialGuess = projection+nVector=25
-#smootherType = FourthChebyshev+jac
-
 
 [FLUID VELOCITY]
 # Boundary IDs: 1=inlet, 2=outlet, 3=wall
@@ -31,13 +21,13 @@ boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
 residualTol = 1e-6
 rho = 998.2
 viscosity = 1.0e-3
-regularization = hpfrt + nModes=1 + scalingCoeff=100.0
+regularization = hpfrt + nModes=1 + scalingCoeff=10.0
 
 [SCALAR ALPHA]
 boundaryTypeMap = udfDirichlet, zeroNeumann, zeroNeumann
 residualTol = 1e-6
 transportCoeff = 1.0
-diffusionCoeff = 1e-6
+diffusionCoeff = 1e-5
 # NekRS native high-pass-filter relaxation. Use regularization = none to disable.
 regularization = hpfrt + nModes=1 + scalingCoeff=10.0
 
@@ -67,11 +57,11 @@ rhoLiquid = 998.2
 rhoGas = 1.2
 muLiquid = 1.0e-3
 muGas = 1.8e-5
-alphaInitial = 0.0
+alphaInitial = 0.016667
 alphaInlet = 0.016667
 gasInletVelocity = 0.3
-# Uniform initial gas velocity along z (m/s); ugz=alphaInitial*gasInitialVelocity.
-gasInitialVelocity = 0.0
+# Uniform initial gas velocity along z (m/s); ugz=gasInitialVelocity.
+gasInitialVelocity = 0.3
 gravityX = 0.0
 gravityY = 0.0
 gravityZ = -9.81
@@ -89,7 +79,7 @@ outletDampingFactor = 20.0
 smoothGasVelocityMaskEnabled = 1.0
 gasVelocityClipEnabled = 0.0
 gasVelocityMaximum = 0.5
-mixtureVelocityClipEnabled = 1.0
+mixtureVelocityClipEnabled = 0.0
 mixtureVelocityMaximum = 1.0
 gasMomentumCutoff = 1e-4
 gasMomentumFullyActive = 1e-3
@@ -102,7 +92,7 @@ gasPressureGradientMethod = 0
 # Exponential relaxation of the selected lagged pressure gradient used by UG:
 # gradP_used^n = (1-weight)*gradP_used^(n-1) + weight*gradP_lagged^n.
 # Set enabled=0 or weight=1 to recover the unfiltered lagged gradient.
-gasPressureGradientFilterEnabled = 1.0
+gasPressureGradientFilterEnabled = 0
 gasPressureGradientFilterWeight = 0.2
 dragEnabled = 1.0
 bubbleDiameter = 3.0e-3
@@ -118,13 +108,13 @@ alphaConvectionMethod = 0
 gasConvectionMethod = 0
 # Mixture-divergence construction: 0=reconstructed alpha RHS,
 # 1=discrete BDF alpha history plus native NekRS scalar advection.
-mixtureDivergenceMethod = 1
-divergenceFilterEnabled = 1.0
+mixtureDivergenceMethod = 0
+divergenceFilterEnabled = 0
 divergenceFilterModes = 1
 divergenceFilterStrength = 0.25
 divergenceExtrapolationEnabled = 0.0
-divergenceRampEnabled = 1.0
-divergenceRampSteps = 10000
+divergenceRampEnabled = 1
+divergenceRampSteps = 1000
 stabilityMonitorEnabled = 1.0
 stabilityMonitorInterval = 10
 validationOutputInterval = 10
