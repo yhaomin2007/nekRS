@@ -70,9 +70,9 @@ cpp += '\nint main(){\n' + setup + r'''
 cpp += call + r'''
  const double gas=gasDragSource[0];
  assert(gas<0);
- assert(std::abs(qgSource[0]-gas)<1e-12);
- assert(std::abs(mixtureInterphaseAcceleration[0]-.999*gas)<1e-12);
- assert(std::abs(mixtureDragSource[0]-.999*gas)<1e-12);
+ assert(std::abs(ugSource[0]-gas)<1e-12);
+ assert(std::abs(mixtureInterphaseAcceleration[0]-.05*.999*gas)<1e-12);
+ assert(std::abs(mixtureDragSource[0]-.05*.999*gas)<1e-12);
  assert(dragLambda[0]>0);
 '''
 for parameter, value, assertion in [

@@ -4,7 +4,7 @@ import re, subprocess, tempfile
 root=Path(__file__).resolve().parents[1]
 repo=root.parents[1]
 terms=(root/'bubbleColumn2Terms.hpp').read_text()
-block=terms[terms.index('  auto mesh = nrs->meshV;',terms.index('// Suppress QG pressure')):]
+block=terms[terms.index('  auto mesh = nrs->meshV;',terms.index('// Suppress UG pressure')):]
 block=block[:block.index('  o_rhoM.resize')]
 kernel=(repo/'src/platform/linAlg/kernels/axmyVector.okl').read_text()
 kernel=kernel.replace('@kernel ', '').replace('@ restrict ', '')
@@ -14,7 +14,7 @@ cpp=r'''
 #include <cassert>
 using dlong=long;using dfloat=double;
 #define p_NVec 3
-struct Memory {std::vector<double> v;void copyFrom(std::vector<double> x){v=x;}} o_qgPressureWeight;
+struct Memory {std::vector<double> v;void copyFrom(std::vector<double> x){v=x;}} o_ugPressureWeight;
 struct Mesh {long Nelements=2,Nlocal=10;int Nfaces=3,Nfp=2;
  int EToB[6]={1,0,3,0,2,3};
  long vmapM[12]={0,1,2,3,4,5,6,7,8,9,4,5};int oogs=0;};
@@ -34,7 +34,7 @@ void makeMask(){long offset=12;
 '''+kernel+r'''
 int main(){Mesh mesh;Nrs app{&mesh};nrs=&app;makeMask();
  double raw[36],masked[36];for(int i=0;i<36;i++)raw[i]=masked[i]=i+1;
- axmyVector(10,12,0,1.,o_qgPressureWeight.v.data(),masked);
+ axmyVector(10,12,0,1.,o_ugPressureWeight.v.data(),masked);
  for(int c=0;c<3;c++)for(int n=0;n<12;n++){
   bool blocked=n==0||n==1||n==6;
   assert(masked[c*12+n]==(blocked?0:raw[c*12+n]));
@@ -46,7 +46,7 @@ with tempfile.TemporaryDirectory() as t:
  f=Path(t)/'mask.cpp';f.write_text(cpp)
  subprocess.run(['g++','-std=c++17','-Wall','-Wextra','-Werror','-Wno-unknown-pragmas',str(f),'-o',str(Path(t)/'mask')],check=True)
  subprocess.run([str(Path(t)/'mask')],check=True)
-assert 'o_virtualMassRelativeAcceleration,\n                           o_gradPForQG,' in terms
+assert 'o_liquidAcceleration,\n                           o_gradPForUG,' in terms
 assert 'o_gradP,\n' not in terms[terms.index('  buildEquationTermsKernel('):terms.index('  buildEquationTermsKernel(')+2500]
 for path in ['src/solver/fluid/fluidSolver.hpp','src/solver/scalar/scalarSolver.hpp','src/solver/scalar/scalarSolver.cpp']:
  text=(repo/path).read_text()

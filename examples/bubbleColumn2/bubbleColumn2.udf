@@ -60,9 +60,9 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   platform->par->extract("casedata", "alphamaximum", p.alphaMaximum);
   platform->par->extract(
       "casedata", "subtractalphadiffusion", p.subtractAlphaDiffusion);
-  platform->par->extract("casedata", "subtractqgxdiffusion", p.subtractQgDiffusion[0]);
-  platform->par->extract("casedata", "subtractqgydiffusion", p.subtractQgDiffusion[1]);
-  platform->par->extract("casedata", "subtractqgzdiffusion", p.subtractQgDiffusion[2]);
+  platform->par->extract("casedata", "subtractugxdiffusion", p.subtractQgDiffusion[0]);
+  platform->par->extract("casedata", "subtractugydiffusion", p.subtractQgDiffusion[1]);
+  platform->par->extract("casedata", "subtractugzdiffusion", p.subtractQgDiffusion[2]);
   platform->par->extract("casedata", "zrampbottom", p.zRampBottom);
   platform->par->extract("casedata", "zramptop", p.zRampTop);
   platform->par->extract("casedata", "outletdampingfactor", p.outletDampingFactor);
@@ -108,6 +108,12 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   platform->par->extract("casedata", "virtualmasstimederivativeorder", p.virtualMassTimeDerivativeOrder);
   platform->par->extract("casedata", "virtualmassstartstep", p.virtualMassStartStep);
   platform->par->extract("casedata", "virtualmassrampstep", p.virtualMassRampStep);
+  nekrsCheck(!(std::isfinite(p.rhoGas) && p.rhoGas > 0.0
+                 && std::isfinite(p.rhoLiquid) && p.rhoLiquid > 0.0
+                 && std::isfinite(p.virtualMassCoefficient) && p.virtualMassCoefficient >= 0.0
+                 && std::isfinite(p.virtualMassEnabled) && p.virtualMassEnabled >= 0.0),
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "%s", "UG added inertia requires positive finite densities and nonnegative finite VM controls.\n");
   nekrsCheck((p.virtualMassTimeDerivativeOrder != 1 && p.virtualMassTimeDerivativeOrder != 2)
                || p.virtualMassStartStep < 0 || p.virtualMassRampStep < 0,
              platform->comm.mpiComm(), EXIT_FAILURE,
@@ -121,6 +127,21 @@ void UDF_Setup0(MPI_Comm, setupAide &)
 
 void UDF_Setup()
 {
+  nekrsCheck(nrs->scalar->NSfields != 4 || nrs->scalar->anyCvodeSolver,
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "%s", "bubbleColumn2 requires ALPHA,UGX,UGY,UGZ with native scalar solvers.\n");
+  const char *names[4] = {"alpha", "ugx", "ugy", "ugz"};
+  for (int i = 0; i < 4; ++i) {
+    auto it = nrs->scalar->nameToIndex.find(names[i]);
+    nekrsCheck(it == nrs->scalar->nameToIndex.end() || it->second != i,
+               platform->comm.mpiComm(), EXIT_FAILURE,
+               "Expected scalar %s at index %d\n", names[i], i);
+    auto range = platform->linAlg->minMax(nrs->meshV->Nlocal,
+        {nrs->scalar->o_transportCoeff(names[i])}, platform->comm.mpiComm());
+    nekrsCheck(std::abs(range[0].first - 1.0) > 1e-12 || std::abs(range[0].second - 1.0) > 1e-12,
+               platform->comm.mpiComm(), EXIT_FAILURE,
+               "Scalar %s requires transportCoeff=1 for the normalized UG equations\n", names[i]);
+  }
   bubbleColumn2::allocate();
   if (platform->options.getArgs("RESTART FILE NAME").empty()) {
     const auto &p = bubbleColumn2::p;
@@ -131,17 +152,17 @@ void UDF_Setup()
           p.alphaInitial,
           p.ugInitial,
           nrs->scalar->o_solution("alpha"),
-          nrs->scalar->o_solution("qgx"),
-          nrs->scalar->o_solution("qgy"),
-          nrs->scalar->o_solution("qgz"),
+          nrs->scalar->o_solution("ugx"),
+          nrs->scalar->o_solution("ugy"),
+          nrs->scalar->o_solution("ugz"),
           nrs->fluid->o_U);
     } else {
       bubbleColumn2::initializePlumeKernel(
           nrs->meshV->Nlocal, nrs->fieldOffset,
           p.alphaInlet, p.ugInlet, p.initialPlumeHeight, p.initialPlumeThickness,
           nrs->meshV->o_z,
-          nrs->scalar->o_solution("alpha"), nrs->scalar->o_solution("qgx"),
-          nrs->scalar->o_solution("qgy"), nrs->scalar->o_solution("qgz"),
+          nrs->scalar->o_solution("alpha"), nrs->scalar->o_solution("ugx"),
+          nrs->scalar->o_solution("ugy"), nrs->scalar->o_solution("ugz"),
           nrs->fluid->o_U);
     }
     if (platform->comm.mpiRank() == 0)
@@ -151,13 +172,13 @@ void UDF_Setup()
   bubbleColumn2::initializeHistory();
   nrs->userSource = &bubbleColumn2::addExplicitSources;
   if (platform->comm.mpiRank() == 0)
-    printf("bubbleColumn2 QG: original scalars-first order; pressure source zero on inlet surface nodes (ID 1), retained at outlet\n");
+    printf("bubbleColumn2 UG: scalars-first order; pressure source zero on inlet surface nodes (ID 1), retained at outlet\n");
   if (platform->comm.mpiRank() == 0 && bubbleColumn2::p.virtualMassEnabled != 0.0)
-    printf("bubbleColumn2 virtual mass: explicit, time derivative order=%d, startStep=%d rampStep=%d; history collected during delay\n",
+    printf("bubbleColumn2 virtual mass: implicit gas material inertia, lagged liquid acceleration order=%d, startStep=%d rampStep=%d; history collected during delay\n",
            bubbleColumn2::p.virtualMassTimeDerivativeOrder, bubbleColumn2::p.virtualMassStartStep,
            bubbleColumn2::p.virtualMassRampStep);
   if (platform->comm.mpiRank() == 0)
-    printf("bubbleColumn2 drag: complete old-state force explicit in QG and mixture; "
+    printf("bubbleColumn2 drag: old-state drag explicit in UG and mixture; "
            "drag excluded from EXT extrapolation\n");
   if (bubbleColumn2::p.mixtureDragRampEnabled != 0.0 && platform->comm.mpiRank() == 0)
     printf("bubbleColumn2 mixture drag ramp: startStep=%d rampSteps=%d; "
@@ -182,7 +203,7 @@ void UDF_ExecuteStep(double time, int tstep)
   }
   if (nrs->checkpointStep) {
     // Write reconstructed phase velocities as separate vector fields without
-    // replacing the conservative QG checkpoint variables used for restart.
+    // replacing the conservative UG checkpoint variables used for restart.
     bubbleColumn2::reconstructGasVelocity();
     bubbleColumn2::reconstructLiquidVelocity();
     const dlong offset = nrs->fieldOffset;

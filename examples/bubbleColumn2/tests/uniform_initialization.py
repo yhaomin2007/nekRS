@@ -19,9 +19,9 @@ for(double a: {0.,.02,.05}) for(double ug: {0.,.1,-.1}) {
  for(int i=0;i<18;i++)u[i]=99;
  initializeUniform(4,6,a,ug,alpha,x,y,z,u);
  for(int i=0;i<4;i++) {
- assert(alpha[i]==a && x[i]==0 && y[i]==0 && z[i]==a*ug);
- assert(u[i]==0 && u[6+i]==0 && u[12+i]==z[i]);
- assert((u[12+i]-z[i])/(1-a)==0);
+ assert(alpha[i]==a && x[i]==0 && y[i]==0 && z[i]==ug);
+ assert(u[i]==0 && u[6+i]==0 && u[12+i]==a*z[i]);
+ assert((u[12+i]-a*z[i])/(1-a)==0);
  }
  assert(alpha[4]==99 && z[5]==99 && u[16]==99);
 }
@@ -35,7 +35,7 @@ with tempfile.TemporaryDirectory() as t:
 udf=(root/'bubbleColumn2.udf').read_text()
 assert 'if (platform->options.getArgs("RESTART FILE NAME").empty())' in udf
 assert 'if (p.uniformInitialCondition == 1)' in udf
-print('Uniform alpha/QG/mixture initialization, stationary liquid, signed velocity and padding checks passed.')
+print('Uniform alpha/UG/mixture initialization, stationary liquid, signed velocity and padding checks passed.')
 
 k='void initializePlume'+s.split('@kernel void initializePlume')[1].split('@kernel')[0]
 k=k.replace('@ restrict ', '')
@@ -53,9 +53,9 @@ int main(){
  for(int i=0;i<5;i++){
   double profile=.5*(1-std::tanh((height[i]-.05)/.01));
   assert(alpha[i]==.05*profile && qx[i]==0 && qy[i]==0);
-  assert(std::abs(qz[i]-alpha[i]*.3*profile)<1e-16);
-  assert(u[i]==0 && u[6+i]==0 && u[12+i]==qz[i]);
-  assert((u[12+i]-qz[i])/(1-alpha[i])==0);
+  assert(std::abs(qz[i]-.3*profile)<1e-16);
+  assert(u[i]==0 && u[6+i]==0 && u[12+i]==alpha[i]*qz[i]);
+  assert((u[12+i]-alpha[i]*qz[i])/(1-alpha[i])==0);
   if(i)assert(alpha[i]<=alpha[i-1]);
  }
  assert(alpha[5]==99 && qz[5]==99 && u[17]==99);
@@ -66,4 +66,4 @@ with tempfile.TemporaryDirectory() as t:
  f=Path(t)/'plume.cpp';f.write_text(cpp)
  subprocess.run(['g++','-std=c++17','-Wall','-Wextra','-Werror',str(f),'-o',str(Path(t)/'plume')],check=True)
  subprocess.run([str(Path(t)/'plume')],check=True)
-print('Plume profile, consistent QG/mixture, stationary liquid and padding checks passed.')
+print('Plume profile, consistent UG/mixture, stationary liquid and padding checks passed.')

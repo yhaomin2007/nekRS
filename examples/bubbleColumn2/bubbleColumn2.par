@@ -2,14 +2,15 @@ userSections = CASEDATA
 
 [GENERAL]
 polynomialOrder = 9
-#startFrom = bubblecolumn20.f00044
+# Old UG checkpoints are incompatible: start fresh or use a new UG checkpoint.
 stopAt = numSteps
 numSteps = 100000
 #dt = initial=1.0e-6+targetCFL=0.01+max=1e-2
 dt = 1e-5
 timeStepper = tombo2
+# Native BDF controls the implicit gas time derivative, including added inertia.
 checkpointInterval = 1000
-scalars = ALPHA, QGX, QGY, QGZ
+scalars = ALPHA, UGX, UGY, UGZ
 
 [PROBLEMTYPE]
 equation = navierStokes+variableViscosity
@@ -43,21 +44,21 @@ diffusionCoeff = 1e-5
 # NekRS native high-pass-filter relaxation. Use regularization = none to disable.
 regularization = hpfrt + nModes=2 + scalingCoeff=10.0
 
-[SCALAR QGX]
+[SCALAR UGX]
 boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
 residualTol = 1e-6
 transportCoeff = 1.0
 diffusionCoeff = 1e-5
 regularization = hpfrt + nModes=2 + scalingCoeff=10.0
 
-[SCALAR QGY]
+[SCALAR UGY]
 boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
 residualTol = 1e-6
 transportCoeff = 1.0
 diffusionCoeff =1e-5
 regularization = hpfrt + nModes=2 + scalingCoeff=10.0
 
-[SCALAR QGZ]
+[SCALAR UGZ]
 boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
 residualTol = 1e-6
 transportCoeff = 1.0
@@ -76,7 +77,7 @@ initialPlumeHeight = 0.05
 initialPlumeThickness = 0.01
 alphaInlet = 0.05
 gasInletVelocity = 0.1
-# Uniform initial gas velocity along z (m/s); qgz=alphaInitial*gasInitialVelocity.
+# Uniform initial gas velocity along z (m/s); ugz=gasInitialVelocity; um_z=alphaInitial*ugz.
 gasInitialVelocity = 0.0
 gravityX = 0.0
 gravityY = 0.0
@@ -86,9 +87,9 @@ alphaClipEnabled = 1.0
 alphaMinimum = 0.0
 alphaMaximum = 1.0
 subtractAlphaDiffusion = 0.0
-subtractQgxDiffusion = 0.0
-subtractQgyDiffusion = 0.0
-subtractQgzDiffusion = 0.0
+subtractUgxDiffusion = 0.0
+subtractUgyDiffusion = 0.0
+subtractUgzDiffusion = 0.0
 zRampBottom = 0.9
 zRampTop = 0.95
 outletDampingFactor = 20.0
@@ -102,8 +103,8 @@ gasMomentumCutoff = 1e-4
 gasMomentumFullyActive = 1e-3
 gasPressureEnabled = 1.0
 dragEnabled = 1.0
-# Complete drag is always explicit and frozen from the previous completed state.
-# 0 disables only mixture drag; QG drag and virtual mass are retained.
+# Drag is explicit and frozen from the previous completed state (gas acceleration uses rhoEff).
+# 0 disables only mixture drag; UG drag and virtual mass are retained.
 mixtureDragEnabled = 1.0
 # Optional linear ramp of mixture drag only, based on native timestep count.
 mixtureDragRampEnabled = 0.0
@@ -122,9 +123,9 @@ driftStressEnabled = 1.0
 mixtureViscousCorrectionEnabled = 0.0
 virtualMassEnabled = 0.0
 virtualMassCoefficient = 0.5
-# Time derivative: 1=backward first order; 2=variable-step backward second order.
+# Liquid acceleration time derivative: 1=backward first order; 2=variable-step backward second order.
 virtualMassTimeDerivativeOrder = 2
-# No virtual mass source at steps <= this number; active starting at number+1.
+# Added gas inertia and VM forcing activate after this step number.
 virtualMassStartStep = 0
 # Linear ramp duration after start; 0 preserves immediate activation.
 virtualMassRampStep = 0

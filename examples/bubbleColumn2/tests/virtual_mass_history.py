@@ -21,7 +21,7 @@ void check(double h,double k,bool second){
  double c0,c1,c2;virtualMassTimeCoefficients(h,k,second,c0,c1,c2);
  assert(std::abs(c0+c1+c2)<1e-12);
  const int off=3,N=2;
- double ug[9],ul[9],up[9],lp[9],up2[9],lp2[9],gu[27]={},gl[27]={},a[9];
+ double ug[9],ul[9],up[9],lp[9],up2[9],lp2[9],gu[27]={},gl[27]={},a[9],al[9];
  double t=1.3,tp=t-h,tpp=tp-k;
  for(int i=0;i<9;i++){
   ug[i]=t*t;up[i]=tp*tp;up2[i]=tpp*tpp;
@@ -29,7 +29,7 @@ void check(double h,double k,bool second){
  }
  // Add prescribed nonzero gradient for x component; convection stays current.
  for(int n=0;n<N;n++){gl[n]=.4;gu[n]=.2;}
- updateVirtualMassHistory(N,off,c0,c1,c2,ug,ul,lp,up,lp2,up2,gl,gu,a);
+ updateVirtualMassHistory(N,off,c0,c1,c2,ug,ul,lp,up,lp2,up2,gl,gu,a,al);
  for(int i=0;i<3;i++)for(int n=0;n<N;n++){
   int id=n+i*off;
   double derivative=second?4*t:4*t-2*h;
@@ -70,5 +70,5 @@ execute=udf[udf.index('void UDF_ExecuteStep'):]
 assert 'virtualMassStartStep' not in execute  # delayed sources must still collect history
 assert 'updateVirtualMassHistory();' in execute
 # Both VM sources use the single enabled argument from the gated call.
-assert 'a * virtualMassEnabled' in eq and 'gasVirtualMassScale = virtualMassEnabled' in eq
+assert 'addedDensity = virtualMassEnabled' in eq and 'gasVirtualMassScale = virtualMassEnabled' in eq
 print('Actual VM helper/kernel: linear step ramp, first/second order, unequal timesteps, quadratic acceleration, convection, history shifts, padding and paired-source wiring passed.')
