@@ -731,7 +731,7 @@ inline void prepareGasAdvection(bool predicted)
 {
   const dlong offset = nrs->fieldOffset;
   if (predicted) {
-    auto scalar = nrs->scalar;
+    auto &scalar = nrs->scalar;
     reconstructGasVelocityKernel(nrs->meshV->Nlocal, offset, p.alphaFloor,
         scalar->o_Se.slice(scalar->fieldOffsetScan[scalar->nameToIndex.at("alpha")], offset),
         scalar->o_Se.slice(scalar->fieldOffsetScan[scalar->nameToIndex.at("ugx")], offset),
