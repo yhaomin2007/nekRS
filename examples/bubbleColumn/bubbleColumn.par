@@ -84,6 +84,9 @@ mixtureVelocityMaximum = 1.0
 gasMomentumCutoff = 1e-4
 gasMomentumFullyActive = 1e-3
 gasPressureEnabled = 1.0
+# 1: suppress all UG pressure-gradient components at inlet nodes (boundary ID 1).
+# Includes shared inlet/wall corner nodes; 0 retains pressure forcing everywhere.
+gasPressureInletMaskEnabled = 0
 # Pressure gradient used in the UG source:
 # 0 = assembled strong gradient, 1 = mass-normalized weak gradient matching
 # the volume pressure operator used by the native NekRS velocity RHS.

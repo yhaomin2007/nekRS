@@ -1,3 +1,5 @@
+`gasPressureInletMaskEnabled=1` suppresses only the UG pressure-gradient force at inlet face nodes (boundary ID 1), including every shared CG/MPI copy of inlet/wall corner nodes. It applies after gradient selection and time filtering, to all three components. Interior nodes, raw gradient diagnostics, mixture pressure projection, and other UG forces are unchanged. Default is 0. This is an exact node mask, not an inlet damping layer.
+
 # Direct native gas advection
 
 Alpha and all three UG scalars now use separate scalar-owned velocity/contravariant buffers populated from the latest available UG scalars. Mixture fluid velocity and its Urst buffers are never overwritten. Native BDF/EXT scalar transport supplies gas material advection directly; there is no mixture-advection cancellation or replacement gas self-advection source.

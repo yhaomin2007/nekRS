@@ -37,6 +37,7 @@ struct Parameters {
   dfloat gasMomentumCutoff;
   dfloat gasMomentumFullyActive;
   dfloat gasPressureEnabled;
+  int gasPressureInletMaskEnabled = 0;
   // 0 = assembled strong gradient, 1 = mass-normalized weak gradient
   // matching the volume pressure operator used by the native velocity RHS.
   int gasPressureGradientMethod;
@@ -86,6 +87,7 @@ static deviceMemory<dfloat> o_gradGasAdvector;
 static deviceMemory<dfloat> o_gradUg;
 // o_gradP is the selected (and optionally time-filtered) gradient used by UG.
 static deviceMemory<dfloat> o_gradP;
+static deviceMemory<dfloat> o_gasPressureInletMask;
 static deviceMemory<dfloat> o_gradPStrong;
 static deviceMemory<dfloat> o_gradPWeak;
 static deviceMemory<dfloat> o_gradPDifference;
@@ -225,6 +227,9 @@ inline void allocate()
              || !std::isfinite(p.virtualMassEnabled) || !std::isfinite(p.virtualMassCoefficient),
              platform->comm.mpiComm(), EXIT_FAILURE,
              "%s", "Virtual mass parameters must be finite and nonnegative.\n");
+  nekrsCheck(p.gasPressureInletMaskEnabled != 0 && p.gasPressureInletMaskEnabled != 1,
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "%s", "gasPressureInletMaskEnabled must be 0 or 1.\n");
   nekrsCheck(p.scalarExtrapolationEnabled != 0 && p.scalarExtrapolationEnabled != 1,
              platform->comm.mpiComm(), EXIT_FAILURE,
              "%s", "scalarExtrapolationEnabled must be 0 or 1.\n");
@@ -342,6 +347,25 @@ inline void allocate()
   o_divQg.resize(offset);
   o_gradUg.resize(9 * offset);
   o_gradGasAdvector.resize(9 * offset);
+  if (p.gasPressureInletMaskEnabled) {
+    auto mesh = nrs->meshV;
+    std::vector<dfloat> keep(offset, 1.0);
+    for (dlong e = 0; e < mesh->Nelements; ++e) {
+      for (int f = 0; f < mesh->Nfaces; ++f) {
+        if (mesh->EToB[e * mesh->Nfaces + f] != 1) continue;
+        for (int n = 0; n < mesh->Nfp; ++n) {
+          const dlong faceNode = (e * mesh->Nfaces + f) * mesh->Nfp + n;
+          keep[mesh->vmapM[faceNode]] = 0.0;
+        }
+      }
+    }
+    o_gasPressureInletMask.resize(offset);
+    o_gasPressureInletMask.copyFrom(keep.data(), offset);
+    // Propagate inlet membership to every CG copy, including wall corners
+    // and copies on other MPI ranks. A zero on any copy masks them all.
+    oogs::startFinish(o_gasPressureInletMask, 1, 0,
+                      ogsDfloat, ogsMin, mesh->oogs);
+  }
   o_gradP.resize(3 * offset);
   o_gradPStrong.resize(3 * offset);
   o_gradPWeak.resize(3 * offset);
@@ -600,6 +624,11 @@ inline void evaluatePointwiseTerms()
       }
       pressureGradientFilterStep = tstep;
     }
+  }
+
+  if (p.gasPressureInletMaskEnabled) {
+    platform->linAlg->axmyMany(mesh->Nlocal, 3, offset, 0, 1.0,
+                               o_gasPressureInletMask, o_gradP);
   }
 
   if (p.gasTransportMethod == 1) evaluateGasCubatureTransport();

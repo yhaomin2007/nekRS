@@ -65,6 +65,7 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   platform->par->extract(
       "casedata", "gasmomentumfullyactive", p.gasMomentumFullyActive);
   platform->par->extract("casedata", "gaspressureenabled", p.gasPressureEnabled);
+  platform->par->extract("casedata", "gaspressureinletmaskenabled", p.gasPressureInletMaskEnabled);
   platform->par->extract(
       "casedata", "gaspressuregradientmethod", p.gasPressureGradientMethod);
   platform->par->extract("casedata",
