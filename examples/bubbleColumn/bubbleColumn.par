@@ -100,14 +100,8 @@ bubbleDiameter = 3.0e-3
 driftStressEnabled = 1.0
 virtualMassEnabled = 1.0
 virtualMassCoefficient = 0.5
-# Alpha source convection: 0=native NekRS scalar advection (default),
-# 1=um dot opSEM::strongGrad(alpha). Only the alpha source is changed.
-alphaConvectionMethod = 0
-# UG source mixture convection: 0=native cancellation (default),
-# 1=um dot opSEM::strongGrad(ug_i), for all three components.
-gasConvectionMethod = 0
-# Actual gas transport: 0=previous GLL strong operators, 1=cubature.
-# For consistent mixture cancellation use both convectionMethod options = 0.
+# Native alpha/UG advection always uses predicted UG directly.
+# Alpha compression: 0=GLL alpha*div(UG), 1=cubature projection.
 gasTransportMethod = 1
 # Mixture-divergence construction: 0=reconstructed alpha RHS,
 # 1=discrete BDF alpha history plus native NekRS scalar advection.

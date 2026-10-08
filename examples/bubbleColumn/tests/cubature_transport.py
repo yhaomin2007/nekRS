@@ -26,7 +26,7 @@ I=interp(x,z);D=diff(z)
 t,s,r=np.meshgrid(x,x,x,indexing='ij');tc,sc,rc=np.meshgrid(z,z,z,indexing='ij')
 fields=np.array([.2+.02*r*r+.01*s, .3+.1*r*r, -.05+.02*s*s, .04+.01*t*t])
 ac=.2+.02*rc*rc+.01*sc;ux=.3+.1*rc*rc;uy=-.05+.02*sc*sc;uz=.04+.01*tc*tc
-expected=np.array([ux*.04*rc+uy*.01+ac*(.2*rc+.04*sc+.02*tc), ux*.2*rc,uy*.04*sc,uz*.02*tc])
+expected=np.array([ac*(.2*rc+.04*sc+.02*tc), ux*.2*rc,uy*.04*sc,uz*.02*tc])
 # Nonlinear quadrature loads (not GLL pointwise values).
 weights=wc[:,None,None]*wc[None,:,None]*wc[None,None,:]
 loads=np.einsum('ai,bj,ck,fabc->fijk',I,I,I,expected*weights)
@@ -34,7 +34,7 @@ mass=w[:,None,None]*w[None,:,None]*w[None,None,:]
 expected_nodal=loads/mass
 # The projected load must differ from the old GLL pointwise product.
 a0=fields[0];u0,u1,u2=fields[1:]
-gll=np.array([u0*.04*r+u1*.01+a0*(.2*r+.04*s+.02*t),u0*.2*r,u1*.04*s,u2*.02*t])
+gll=np.array([a0*(.2*r+.04*s+.02*t),u0*.2*r,u1*.04*s,u2*.02*t])
 assert np.max(abs(expected_nodal-gll))>1e-5
 geo=np.zeros((12,nq**3));cg=np.zeros((12,cq**3))
 for g in (geo,cg):g[0]=g[4]=g[8]=1.
@@ -54,7 +54,7 @@ with tempfile.TemporaryDirectory() as t:
  subprocess.run(['g++','-std=c++17','-O2',str(p/'test.cpp'),'-o',str(p/'test')],check=True,stderr=subprocess.PIPE)
  subprocess.run([str(p/'test')],check=True)
 # Integral of conservative alpha operator equals boundary gas flux on affine box.
-volume=np.sum(expected[0]*weights)
+volume=np.sum((expected[0]+ux*.04*rc+uy*.01)*weights)
 def flux_at(r,s,t):
  r,s,t=np.broadcast_arrays(r,s,t)
  return (.2+.02*r*r+.01*s)*np.array([.3+.1*r*r,-.05+.02*s*s,.04+.01*t*t])

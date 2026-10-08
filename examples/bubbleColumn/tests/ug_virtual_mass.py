@@ -20,6 +20,19 @@ int main(){
  assert(std::abs(su[8]+9.81*rg/eff)<1e-12);
  assert(lambda[0]==0);
  }
+ // With nonzero gradients, equation sources must not include material
+ // convection; the native scalar solver supplies it exactly once.
+ gradA[0]=4; divQ[0]=3; gradU[0]=2; gradU[16]=3; gradU[32]=4;
+ ug[0]=.7;gp[0]=0;al[0]=0;
+ buildEquationTerms(n,o,rl,rg,.001,.000018,1e-6,0.,0.,.003,0.,0.,0.,0.,0.,alpha,um,ug,ul,gradA,divQ,gradU,al,gp,rho,mu,ds,gs,sa,su,lambda);
+ assert(su[0]==0 && su[4]==0 && su[8]==0);
+ alphaCompression(n,o,alpha,gradU,sa);
+ assert(std::abs(sa[0]+.05*9)<1e-12);
+ // Reconstructed continuity uses the mixture material derivative:
+ // Salpha + Am - Ag + diffusion, not merely the gas compression source.
+ double rhs[4]={sa[0]+.2-.6,0}, diff[4]={.03,0}, div[4]={};
+ buildDivergenceFromAlphaRhs(n,rl,rg,alpha,rhs,diff,div);
+ assert(std::abs(div[0]-(rl-rg)/((1-.05)*rl+.05*rg)*(rhs[0]+.03))<1e-12);
  // Exact drag-only backward Euler transient with VM: stable and converges
  // to unchanged equilibrium for dt much larger than the gas-only timescale.
  double K=100.,eff=rg+.5*rl, v=0., dt=.1;

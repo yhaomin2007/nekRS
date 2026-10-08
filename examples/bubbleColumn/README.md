@@ -1,3 +1,28 @@
+# Direct native gas advection
+
+Alpha and all three UG scalars now use separate scalar-owned velocity/contravariant buffers populated from NekRS's extrapolated UG scalars. Mixture fluid velocity and its Urst buffers are never overwritten. Native BDF/EXT scalar transport supplies gas material advection directly; there is no mixture-advection cancellation or replacement gas self-advection source.
+
+The alpha RHS is `-alpha*div(UG_advector)` plus implicit numerical diffusion and HPF. With `gasTransportMethod=1` the compression product is formed at Gauss cubature points before projection; with 0 it uses GLL strong gradients. Gas pressure, drag, gravity, stress and lagged liquid VM sources retain their prior effective-inertia scaling. The gas advector uses extrapolated alpha for the phase-activity mask and extrapolated UG, so the same advector is used for native alpha advection and its compression source. Scalar subcycling and moving meshes are not supported in this case.
+
+The current equations (before filtering/clipping) are
+
+```text
+dt(alpha) + Ag(alpha) = -alpha*div(UG_advector) + div(Dalpha*grad(alpha))
+dt(ug_i) + Ag(ug_i) + (K/rhoEff)*ug_i
+  = -grad_i(p)/rhoEff + rhoGas*g_i/rhoEff + K*ul_i/rhoEff
+    + c*Dl(ul_i)/rhoEff + div(alpha*tau_g)_i/(alpha*rhoEff)
+    + configured net scalar numerical diffusion
+rhoEff = rhoGas + c,  c = VMEnabled*VMcoeff*rhoLiquid
+```
+
+`Ag` is NekRS's native scalar operator with extrapolated UG as the advector. The alpha compression source uses that same extrapolated advector; source histories retain NekRS's normal EXT treatment. The two existing mixture-velocity reconstruction modes are unchanged.
+
+Mixture divergence method 0 reconstructs `(rhoL-rhoG)/rhoM * [Salpha + Am(alpha)-Ag(alpha)+diffusion]`; method 1 uses `(rhoL-rhoG)/rhoM * [BDF(alpha)+Am(alpha)]`. `Am` explicitly uses fluid-owned mixture Urst, whereas `Ag` uses scalar-owned gas Urst. Both divergence choices, filtering, ramp and extrapolation remain. Method 0 still omits HPF/clipping effects and reconstructs diffusion with strong operators.
+
+The historical cancellation diagnostic columns in the CSV now report NaN because cancellation is no longer performed. The obsolete `alphaConvectionMethod` and `gasConvectionMethod` selectors no longer alter transport. The notes below describe historical implementations, not the current direct-advection algorithm.
+
+---
+
 ## Cubature gas transport
 
 `gasTransportMethod=1` (default) interpolates alpha and gas velocity to native Gauss cubature points, computes `ug.grad(ug_i)` and `ug.grad(alpha)+alpha*div(ug)` there, multiplies by cubature Jacobian/quadrature weights and projects the complete products to GLL with mass-weighted CG assembly. The alpha `alpha*div(ug)` product is formed before projection; no GLL flux differentiation is used in this mode. Native mixture cancellation remains controlled by the independent convection selectors; set both to zero for the intended cubature equations. `gasTransportMethod=0` restores the prior GLL transport for comparison.

@@ -47,8 +47,6 @@ struct Parameters {
   dfloat driftStressEnabled;
   dfloat virtualMassEnabled;
   dfloat virtualMassCoefficient;
-  int alphaConvectionMethod = 0;
-  int gasConvectionMethod = 0;
   int gasTransportMethod = 1;
   int mixtureDivergenceMethod;
   dfloat divergenceFilterEnabled;
@@ -68,7 +66,12 @@ static deviceMemory<dfloat> o_gasCubatureFields;
 static deviceMemory<dfloat> o_gasCubatureProducts;
 static deviceMemory<dfloat> o_gasTransport;
 static occa::kernel gasInterpolateKernel, gasCubatureProductsKernel;
-static occa::kernel gasProjectKernel, replaceGasAdvectionKernel;
+static occa::kernel gasProjectKernel;
+static deviceMemory<dfloat> o_gasAdvector;
+static deviceMemory<dfloat> o_gasUrst;
+static deviceMemory<dfloat> o_alphaGasAdvection;
+static deviceMemory<dfloat> o_alphaMixtureAdvection;
+static deviceMemory<dfloat> o_alphaMixtureRhs;
 static deviceMemory<dfloat> o_ug;
 static deviceMemory<dfloat> o_ul;
 static deviceMemory<dfloat> o_ulPrevious;
@@ -77,6 +80,7 @@ static deviceMemory<dfloat> o_liquidAcceleration;
 static deviceMemory<dfloat> o_gradAlpha;
 static deviceMemory<dfloat> o_qg;
 static deviceMemory<dfloat> o_divQg;
+static deviceMemory<dfloat> o_gradGasAdvector;
 static deviceMemory<dfloat> o_gradUg;
 // o_gradP is the selected (and optionally time-filtered) gradient used by UG.
 static deviceMemory<dfloat> o_gradP;
@@ -143,10 +147,10 @@ static dfloat qgMaskDeltaMagnitudeIntegral = 0.0;
 static dfloat cumulativeQgMaskDeltaIntegral[3] = {0.0, 0.0, 0.0};
 static dfloat cumulativeQgMaskDeltaMagnitudeIntegral = 0.0;
 static bool validationInitialized = false;
-static occa::kernel cancelMixtureAdvectionKernel;
 static occa::kernel addGasStressKernel;
 static occa::kernel reconstructGasVelocityKernel;
 static occa::kernel postProcessGasFluxKernel;
+static occa::kernel alphaCompressionKernel;
 static occa::kernel clipAlphaKernel;
 static occa::kernel clipVectorMagnitudeKernel;
 static occa::kernel initializeUniformKernel;
@@ -175,7 +179,6 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
       gasInterpolateKernel = platform->kernelRequests.load(req, "gasInterpolate");
       gasCubatureProductsKernel = platform->kernelRequests.load(req, "gasCubatureProducts");
       gasProjectKernel = platform->kernelRequests.load(req, "gasProject");
-      replaceGasAdvectionKernel = platform->kernelRequests.load(req, "replaceGasAdvection");
     }
   }
   const std::string request = "bubbleColumn::equations";
@@ -185,12 +188,12 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
   if (platform->options.compareArgs("REGISTER ONLY", "TRUE")) {
     platform->kernelRequests.add(request, fileName, kernelInfo);
   } else {
-    cancelMixtureAdvectionKernel = platform->kernelRequests.load(request, "cancelMixtureAdvection");
     addGasStressKernel = platform->kernelRequests.load(request, "addGasStress");
     reconstructGasVelocityKernel =
         platform->kernelRequests.load(request, "reconstructGasVelocity");
     postProcessGasFluxKernel =
         platform->kernelRequests.load(request, "postProcessGasFlux");
+    alphaCompressionKernel = platform->kernelRequests.load(request, "alphaCompression");
     clipAlphaKernel = platform->kernelRequests.load(request, "clipAlpha");
     clipVectorMagnitudeKernel =
         platform->kernelRequests.load(request, "clipVectorMagnitude");
@@ -221,7 +224,10 @@ inline void allocate()
              platform->comm.mpiComm(), EXIT_FAILURE,
              "%s", "Virtual mass parameters must be finite and nonnegative.\n");
   nekrsCheck(nrs->scalar->Nsubsteps != 0, platform->comm.mpiComm(), EXIT_FAILURE,
-             "%s", "UG advection correction requires scalar subcycling disabled.\n");
+             "%s", "Direct UG advection requires scalar subcycling disabled.\n");
+  nekrsCheck(platform->options.compareArgs("MOVING MESH", "TRUE"),
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "%s", "Direct UG advection requires a fixed mesh.\n");
   nekrsCheck(p.divergenceFilterEnabled != 0.0
                  && (p.divergenceFilterStrength < 0.0
                      || p.divergenceFilterStrength > 1.0),
@@ -247,12 +253,6 @@ inline void allocate()
     o_gasCubatureFields.resize(4 * cubOffset);
     o_gasCubatureProducts.resize(4 * cubOffset);
   }
-  nekrsCheck(p.gasConvectionMethod < 0 || p.gasConvectionMethod > 1,
-             platform->comm.mpiComm(), EXIT_FAILURE,
-             "%s", "gasConvectionMethod must be 0 (native) or 1 (strong gradient).\n");
-  nekrsCheck(p.alphaConvectionMethod < 0 || p.alphaConvectionMethod > 1,
-             platform->comm.mpiComm(), EXIT_FAILURE,
-             "%s", "alphaConvectionMethod must be 0 (native) or 1 (strong gradient).\n");
   nekrsCheck(p.mixtureDivergenceMethod < 0 || p.mixtureDivergenceMethod > 1,
              platform->comm.mpiComm(),
              EXIT_FAILURE,
@@ -323,6 +323,11 @@ inline void allocate()
              "validationOutputInterval must be positive, but is %d\n",
              p.validationOutputInterval);
   o_ug.resize(3 * offset);
+  o_gasAdvector.resize(3 * offset);
+  o_gasUrst.resize(3 * nrs->scalar->vCubatureOffset);
+  o_alphaGasAdvection.resize(nrs->scalar->fieldOffsetSum);
+  o_alphaMixtureAdvection.resize(nrs->scalar->fieldOffsetSum);
+  o_alphaMixtureRhs.resize(offset);
   o_ul.resize(3 * offset);
   o_ulPrevious.resize(3 * offset);
   o_gradUl.resize(9 * offset);
@@ -331,6 +336,7 @@ inline void allocate()
   o_qg.resize(3 * offset);
   o_divQg.resize(offset);
   o_gradUg.resize(9 * offset);
+  o_gradGasAdvector.resize(9 * offset);
   o_gradP.resize(3 * offset);
   o_gradPStrong.resize(3 * offset);
   o_gradPWeak.resize(3 * offset);
@@ -497,7 +503,7 @@ inline void evaluateGasCubatureTransport()
   const dlong cubOffset = mesh->Nelements * mesh->cubNp;
   o_gasTransportFields.copyFrom(nrs->scalar->o_solution("alpha"), mesh->Nlocal);
   for (int i = 0; i < 3; ++i) {
-    o_gasTransportFields.copyFrom(o_ug, mesh->Nlocal, (i + 1) * offset, i * offset);
+    o_gasTransportFields.copyFrom(o_gasAdvector, mesh->Nlocal, (i + 1) * offset, i * offset);
   }
   gasInterpolateKernel(mesh->Nelements, offset, cubOffset,
                        mesh->o_cubInterpT, o_gasTransportFields, o_gasCubatureFields);
@@ -509,7 +515,7 @@ inline void evaluateGasCubatureTransport()
   platform->linAlg->axmyMany(mesh->Nlocal, 4, offset, 0, 1.0, mesh->o_LMM, o_gasTransport);
   oogs::startFinish(o_gasTransport, 4, offset, ogsDfloat, ogsAdd, mesh->oogs);
   platform->linAlg->axmyMany(mesh->Nlocal, 4, offset, 0, 1.0, mesh->o_invLMM, o_gasTransport);
-  o_divQg.copyFrom(o_gasTransport, mesh->Nlocal);
+  // Component zero is projected alpha*div(gasAdvector), not full flux divergence.
 }
 
 inline void evaluatePointwiseTerms()
@@ -535,6 +541,7 @@ inline void evaluatePointwiseTerms()
   opSEM::strongGrad(mesh, offset, alpha, o_gradAlpha);
   opSEM::strongDivergence(mesh, offset, o_qg, o_divQg);
   opSEM::strongGradVec(mesh, offset, o_ug, o_gradUg);
+  if (p.gasTransportMethod == 0) opSEM::strongGradVec(mesh, offset, o_gasAdvector, o_gradGasAdvector);
   opSEM::strongGradVec(mesh, offset, o_ul, o_gradUl);
   // Compute both pressure-gradient discretizations from the same lagged
   // pressure field so they can be compared directly.
@@ -624,8 +631,10 @@ inline void evaluatePointwiseTerms()
                            o_ugSource,
                            o_dragLambda);
   if (p.gasTransportMethod == 1) {
-    replaceGasAdvectionKernel(mesh->Nlocal, offset, o_ug, o_gradUg,
-                              o_gasTransport, o_ugSource);
+    // Native scalar solver now supplies gas material advection directly.
+    platform->linAlg->axpby(mesh->Nlocal, -1.0, o_gasTransport, 0.0, o_alphaSource);
+  } else {
+    alphaCompressionKernel(mesh->Nlocal, offset, alpha, o_gradGasAdvector, o_alphaSource);
   }
 
   // Smoothly increase the implicit mixture viscosity and all implicit scalar
@@ -659,7 +668,7 @@ inline void evaluatePointwiseTerms()
 }
 
 inline void evaluateNativeAlphaAdvection(deviceMemory<dfloat> &o_advection,
-                                         bool averageSharedNodes, const char *name = "alpha")
+                                         bool averageSharedNodes, const char *name = "alpha", bool mixture = false)
 {
   auto mesh = nrs->meshV;
   const int alphaIndex = nrs->scalar->nameToIndex.at(name);
@@ -681,7 +690,7 @@ inline void evaluateNativeAlphaAdvection(deviceMemory<dfloat> &o_advection,
                  nrs->scalar->vFieldOffset,
                  nrs->scalar->vCubatureOffset,
                  nrs->scalar->o_S,
-                 nrs->scalar->o_relUrst,
+                 mixture ? nrs->fluid->o_relUrst : nrs->scalar->o_relUrst,
                  nrs->scalar->o_rho,
                  o_advection);
   } else {
@@ -695,7 +704,7 @@ inline void evaluateNativeAlphaAdvection(deviceMemory<dfloat> &o_advection,
                  nrs->scalar->o_fieldOffsetScan + alphaIndex,
                  nrs->scalar->vFieldOffset,
                  nrs->scalar->o_S,
-                 nrs->scalar->o_relUrst,
+                 mixture ? nrs->fluid->o_relUrst : nrs->scalar->o_relUrst,
                  nrs->scalar->o_rho,
                  o_advection);
   }
@@ -718,32 +727,40 @@ inline void evaluateNativeAlphaAdvection(deviceMemory<dfloat> &o_advection,
   }
 }
 
-inline void captureAlphaAdvectionDiagnostics()
+inline void prepareGasAdvection(bool predicted)
 {
-  if (nrs->scalar->Nsubsteps != 0
-      || nrs->tstep <= 0
-      || nrs->tstep % p.validationOutputInterval != 0) {
-    return;
+  const dlong offset = nrs->fieldOffset;
+  if (predicted) {
+    auto scalar = nrs->scalar;
+    reconstructGasVelocityKernel(nrs->meshV->Nlocal, offset, p.alphaFloor,
+        scalar->o_Se.slice(scalar->fieldOffsetScan[scalar->nameToIndex.at("alpha")], offset),
+        scalar->o_Se.slice(scalar->fieldOffsetScan[scalar->nameToIndex.at("ugx")], offset),
+        scalar->o_Se.slice(scalar->fieldOffsetScan[scalar->nameToIndex.at("ugy")], offset),
+        scalar->o_Se.slice(scalar->fieldOffsetScan[scalar->nameToIndex.at("ugz")], offset),
+        o_gasAdvector);
+  } else {
+    reconstructGasVelocity();
+    o_gasAdvector.copyFrom(o_ug, 3 * offset);
   }
-
   auto mesh = nrs->meshV;
-  const dlong Nlocal = mesh->Nlocal;
-
-  // alphaSource = A_m,user(alpha) - D(q_g). Recover and retain the user-side
-  // mixture-advection term before later callbacks refresh the scratch fields.
-  o_alphaUserAdvectionDiagnostic.copyFrom(o_alphaSource, Nlocal);
-  platform->linAlg->axpby(
-      Nlocal, 1.0, o_divQg, 1.0, o_alphaUserAdvectionDiagnostic);
-
-  // Re-evaluate exactly the same native scalar-advection kernel that NekRS
-  // calls immediately after userSource(). This isolates the spatial
-  // cancellation defect A_m,native(alpha) - A_m,user(alpha).
-  evaluateNativeAlphaAdvection(o_alphaNativeAdvectionDiagnostic, false);
-  alphaAdvectionDiagnosticStep = nrs->tstep;
+  if (platform->options.compareArgs("ADVECTION TYPE", "CUBATURE")) {
+    launchKernel("nrs-UrstCubatureHex3D", mesh->Nelements, 0,
+                 mesh->o_cubvgeo, mesh->o_cubInterpT, offset, 0,
+                 nrs->scalar->vCubatureOffset, o_gasAdvector, o_NULL, o_gasUrst);
+  } else {
+    launchKernel("nrs-UrstHex3D", mesh->Nelements, 0, mesh->o_vgeo,
+                 offset, 0,
+                 o_gasAdvector, o_NULL, o_gasUrst);
+  }
 }
 
 inline void initializeHistory()
 {
+  // Separate scalar advection buffers: fluid Urst and velocity stay mixture-valued.
+  nrs->scalar->o_U = o_gasAdvector;
+  nrs->scalar->o_Ue = o_gasAdvector;
+  nrs->scalar->o_relUrst = o_gasUrst;
+  prepareGasAdvection(false);
   evaluatePointwiseTerms();
   const dlong offset = nrs->fieldOffset;
   o_ulPrevious.copyFrom(o_ul, 3 * offset);
@@ -960,24 +977,8 @@ inline void subtractScalarDiffusion()
 
 inline void addExplicitSources(double)
 {
+  prepareGasAdvection(nrs->tstep > 0);
   evaluatePointwiseTerms();
-  // Replace pointwise mixture advection with the exact native operator,
-  // which NekRS subsequently subtracts. The remainder is -ug.grad(ug).
-  const char *names[4] = {"alpha", "ugx", "ugy", "ugz"};
-  for (int k = 0; k < 4; ++k) {
-    // The pointwise alpha source already contains um.strongGrad(alpha).
-    // Leave the pointwise mixture contribution intact for strong-gradient mode.
-    if ((k == 0 && p.alphaConvectionMethod == 1)
-        || (k > 0 && p.gasConvectionMethod == 1)) continue;
-    evaluateNativeAlphaAdvection(o_alphaNativeAdvectionDiagnostic, false, names[k]);
-    const auto native = o_alphaNativeAdvectionDiagnostic.slice(
-        nrs->scalar->fieldOffsetScan[nrs->scalar->nameToIndex.at(names[k])], nrs->fieldOffset);
-    auto source = k == 0 ? o_alphaSource : o_ugSource.slice((k - 1) * nrs->fieldOffset, nrs->fieldOffset);
-    auto grad = k == 0 ? o_gradAlpha : o_gradUg.slice(3 * (k - 1) * nrs->fieldOffset, 3 * nrs->fieldOffset);
-    cancelMixtureAdvectionKernel(nrs->meshV->Nlocal, nrs->fieldOffset,
-                                nrs->fluid->o_U, grad, native, source);
-  }
-  captureAlphaAdvectionDiagnostics();
   subtractScalarDiffusion();
   evaluateMixtureForce();
   const dlong Nlocal = nrs->meshV->Nlocal;
@@ -1001,9 +1002,22 @@ inline void buildDivergenceFromAlphaRhs(deviceMemory<dfloat>& o_divergence)
   const dlong Nlocal = nrs->meshV->Nlocal;
   const dlong offset = nrs->fieldOffset;
 
-  // Native scalar advection uses u_m. Therefore alphaSource already equals
-  // A_m,user(alpha) - D(q_g), and the complete alpha-equation RHS provides
-  // the reconstructed mixture-material derivative used by continuity.
+  if (nrs->tstep <= 0) {
+    platform->linAlg->fill(Nlocal, 0.0, o_divergence);
+    return;
+  }
+
+  // dt(alpha)+Ag(alpha)=Salpha+diffusion. Therefore
+  // dt(alpha)+Am(alpha)=Salpha+Am(alpha)-Ag(alpha)+diffusion.
+  evaluateNativeAlphaAdvection(o_alphaGasAdvection, true);
+  evaluateNativeAlphaAdvection(o_alphaMixtureAdvection, true, "alpha", true);
+  const int index = nrs->scalar->nameToIndex.at("alpha");
+  const dlong alphaOffset = nrs->scalar->fieldOffsetScan[index];
+  o_alphaMixtureRhs.copyFrom(o_alphaSource, Nlocal);
+  platform->linAlg->axpby(Nlocal, 1.0,
+      o_alphaMixtureAdvection.slice(alphaOffset, offset), 1.0, o_alphaMixtureRhs);
+  platform->linAlg->axpby(Nlocal, -1.0,
+      o_alphaGasAdvection.slice(alphaOffset, offset), 1.0, o_alphaMixtureRhs);
   o_alphaDiffusionFlux.copyFrom(o_gradAlpha, 3 * offset);
   auto diffusion = nrs->scalar->o_diffusionCoeff("alpha");
   platform->linAlg->axmyVector(
@@ -1017,7 +1031,7 @@ inline void buildDivergenceFromAlphaRhs(deviceMemory<dfloat>& o_divergence)
                                     p.rhoLiquid,
                                     p.rhoGas,
                                     nrs->scalar->o_solution("alpha"),
-                                    o_alphaSource,
+                                    o_alphaMixtureRhs,
                                     o_alphaDiffusionDivergence,
                                     o_divergence);
 }
@@ -1039,7 +1053,7 @@ inline void buildDivergenceFromAlphaBdf(deviceMemory<dfloat>& o_divergence)
   const int bdfOrder =
       std::min(nrs->tstep, static_cast<int>(nrs->o_coeffBDF.size()));
 
-  evaluateNativeAlphaAdvection(o_alphaNativeMaterialAdvection, true);
+  evaluateNativeAlphaAdvection(o_alphaNativeMaterialAdvection, true, "alpha", true);
   auto o_alphaAdvection =
       o_alphaNativeMaterialAdvection.slice(alphaOffset, nrs->fieldOffset);
 
@@ -1079,15 +1093,6 @@ inline void updateProperties(double)
   assembleDivergence(o_divSource);
   o_validationMassFlux.copyFrom(o_divSource, Nlocal, 1 * offset, 0);
 
-  // Method 0 must use the same mixture advection choice as alpha sources.
-  if (p.alphaConvectionMethod == 0) {
-    evaluateNativeAlphaAdvection(o_alphaNativeAdvectionDiagnostic, false);
-    const int index = nrs->scalar->nameToIndex.at("alpha");
-    auto native = o_alphaNativeAdvectionDiagnostic.slice(
-        nrs->scalar->fieldOffsetScan[index], offset);
-    cancelMixtureAdvectionKernel(Nlocal, offset, nrs->fluid->o_U,
-                                o_gradAlpha, native, o_alphaSource);
-  }
   // Component 0 stores the unfiltered two-term method 0 result.
   buildDivergenceFromAlphaRhs(o_divSource);
   assembleDivergence(o_divSource);
@@ -1211,11 +1216,8 @@ inline ValidationState computeValidationState(int tstep)
   // in the alpha source: integral_Omega D_avg(q_g) dV = integral_boundary q_g.n dA.
   // This extra SEM operation is needed only on rows written to the CSV.
   if (tstep % p.validationOutputInterval == 0) {
-    if (p.gasTransportMethod == 1) {
-      o_validationDivQg.copyFrom(o_gasTransport, Nlocal);
-    } else {
-      opSEM::strongDivergence(nrs->meshV, offset, o_qg, o_validationDivQg);
-    }
+    // Diagnostic of current physical qg; advection uses a predicted velocity.
+    opSEM::strongDivergence(nrs->meshV, offset, o_qg, o_validationDivQg);
     state.alphaDivQgVolumeIntegral = platform->linAlg->innerProd(
         Nlocal, nrs->meshV->o_LMM, o_validationDivQg, comm);
     state.alphaDivergenceTheoremDefect =

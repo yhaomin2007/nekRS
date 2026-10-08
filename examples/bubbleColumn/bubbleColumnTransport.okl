@@ -135,9 +135,9 @@
             if(field==2) div+=dy;
             if(field==3) div+=dz;
           }
-          // div(alpha*ug) evaluated by the product rule at quadrature points.
+          // Compression alpha*div(gasAdvector) at quadrature points.
           // alpha*div(ug) is included BEFORE projection to GLL.
-          products[id]+=JW*cube[id]*div;
+          products[id]=JW*cube[id]*div;
         }
       }
     }

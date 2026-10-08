@@ -295,23 +295,9 @@
     driftStress[n + 7 * offset] = driftScale * dz * dy;
     driftStress[n + 8 * offset] = driftScale * dz * dz;
 
-    // NekRS supplies native dealiased A_m(alpha)=u_m.grad(alpha). Recover the
-    // conservative gas continuity equation with assembled user-side operators.
-    alphaSource[n] = um[n + 0 * offset] * gradAlpha[n + 0 * offset]
-                     + um[n + 1 * offset] * gradAlpha[n + 1 * offset]
-                     + um[n + 2 * offset] * gradAlpha[n + 2 * offset]
-                     - divQg[n];
-
-    // Native mixture advection is canceled in addExplicitSources using
-    // exactly the same NekRS operator; these terms temporarily include it.
-    dfloat ugAdvection[3];
-    for (int i = 0; i < 3; ++i) {
-      ugAdvection[i] = 0.0;
-      for (int j = 0; j < 3; ++j) {
-        ugAdvection[i] += (um[n + j * offset] - ug[n + j * offset])
-                          * gradUg[n + (3 * i + j) * offset];
-      }
-    }
+    // Convection is supplied directly by native scalars using gasAdvector.
+    // Alpha compression is replaced below with the matching advector result.
+    alphaSource[n] = -a * divUg;
 
     // alpha*tau_g with a Newtonian Stokes stress. Its divergence is added
     // outside this pointwise kernel after applying the SEM divergence.
@@ -340,7 +326,7 @@
     for (int i = 0; i < 3; ++i) {
       // Avoid local array initializers: the OCCA CUDA parser crashes on them.
       const dfloat gravityComponent = (i == 0) ? gravityX : ((i == 1) ? gravityY : gravityZ);
-      ugSource[n + i * offset] = ugAdvection[i] + gasActive * (
+      ugSource[n + i * offset] = gasActive * (
           -gasPressureEnabled * gradP[n + i * offset] / rhoEff
           + rhoGas / rhoEff * gravityComponent
           + dragEnabled * Ki / rhoEff * ul[n + i * offset]
@@ -439,5 +425,15 @@
   for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
     for (int j = 0; j < 3; ++j) source[n] -= um[n + j * offset] * grad[n + j * offset];
     source[n] += nativeAdvection[n];
+  }
+}
+
+@kernel void alphaCompression(const dlong N, const dlong offset,
+                              @ restrict const dfloat *alpha,
+                              @ restrict const dfloat *grad,
+                              @ restrict dfloat *source)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    source[n]=-alpha[n]*(grad[n]+grad[n+4*offset]+grad[n+8*offset]);
   }
 }
