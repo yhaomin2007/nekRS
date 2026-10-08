@@ -79,6 +79,7 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   platform->par->extract("casedata", "virtualmassenabled", p.virtualMassEnabled);
   platform->par->extract("casedata", "virtualmasscoefficient", p.virtualMassCoefficient);
   platform->par->extract("casedata", "gastransportmethod", p.gasTransportMethod);
+  platform->par->extract("casedata", "scalarextrapolationenabled", p.scalarExtrapolationEnabled);
   platform->par->extract(
       "casedata", "mixturedivergencemethod", p.mixtureDivergenceMethod);
   platform->par->extract("casedata", "divergencefilterenabled", p.divergenceFilterEnabled);

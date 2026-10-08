@@ -103,6 +103,9 @@ virtualMassCoefficient = 0.5
 # Native alpha/UG advection always uses predicted UG directly.
 # Alpha compression: 0=GLL alpha*div(UG), 1=cubature projection.
 gasTransportMethod = 1
+# 0: latest-state scalar convection and explicit RHS (EXT1); 1: configured EXT history
+# BDF time derivative and fluid EXT are unchanged.
+scalarExtrapolationEnabled = 0
 # Mixture-divergence construction: 0=reconstructed alpha RHS,
 # 1=discrete BDF alpha history plus native NekRS scalar advection.
 mixtureDivergenceMethod = 0

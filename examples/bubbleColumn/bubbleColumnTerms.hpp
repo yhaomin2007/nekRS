@@ -48,6 +48,7 @@ struct Parameters {
   dfloat virtualMassEnabled;
   dfloat virtualMassCoefficient;
   int gasTransportMethod = 1;
+  int scalarExtrapolationEnabled = 0;
   int mixtureDivergenceMethod;
   dfloat divergenceFilterEnabled;
   int divergenceFilterModes;
@@ -68,6 +69,7 @@ static deviceMemory<dfloat> o_gasTransport;
 static occa::kernel gasInterpolateKernel, gasCubatureProductsKernel;
 static occa::kernel gasProjectKernel;
 static deviceMemory<dfloat> o_gasAdvector;
+static deviceMemory<dfloat> o_scalarCoeffEXT;
 static deviceMemory<dfloat> o_gasUrst;
 static deviceMemory<dfloat> o_alphaGasAdvection;
 static deviceMemory<dfloat> o_alphaMixtureAdvection;
@@ -223,6 +225,9 @@ inline void allocate()
              || !std::isfinite(p.virtualMassEnabled) || !std::isfinite(p.virtualMassCoefficient),
              platform->comm.mpiComm(), EXIT_FAILURE,
              "%s", "Virtual mass parameters must be finite and nonnegative.\n");
+  nekrsCheck(p.scalarExtrapolationEnabled != 0 && p.scalarExtrapolationEnabled != 1,
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "%s", "scalarExtrapolationEnabled must be 0 or 1.\n");
   nekrsCheck(nrs->scalar->Nsubsteps != 0, platform->comm.mpiComm(), EXIT_FAILURE,
              "%s", "Direct UG advection requires scalar subcycling disabled.\n");
   nekrsCheck(platform->options.compareArgs("MOVING MESH", "TRUE"),
@@ -727,21 +732,13 @@ inline void evaluateNativeAlphaAdvection(deviceMemory<dfloat> &o_advection,
   }
 }
 
-inline void prepareGasAdvection(bool predicted)
+inline void prepareGasAdvection()
 {
   const dlong offset = nrs->fieldOffset;
-  if (predicted) {
-    auto &scalar = nrs->scalar;
-    reconstructGasVelocityKernel(nrs->meshV->Nlocal, offset, p.alphaFloor,
-        scalar->o_Se.slice(scalar->fieldOffsetScan[scalar->nameToIndex.at("alpha")], offset),
-        scalar->o_Se.slice(scalar->fieldOffsetScan[scalar->nameToIndex.at("ugx")], offset),
-        scalar->o_Se.slice(scalar->fieldOffsetScan[scalar->nameToIndex.at("ugy")], offset),
-        scalar->o_Se.slice(scalar->fieldOffsetScan[scalar->nameToIndex.at("ugz")], offset),
-        o_gasAdvector);
-  } else {
-    reconstructGasVelocity();
-    o_gasAdvector.copyFrom(o_ug, 3 * offset);
-  }
+  // Evaluate nonlinear convection at one time level. Native sumMakef applies
+  // EXT to its history; predicting the advector here would extrapolate twice.
+  reconstructGasVelocity();
+  o_gasAdvector.copyFrom(o_ug, 3 * offset);
   auto mesh = nrs->meshV;
   if (platform->options.compareArgs("ADVECTION TYPE", "CUBATURE")) {
     launchKernel("nrs-UrstCubatureHex3D", mesh->Nelements, 0,
@@ -760,7 +757,18 @@ inline void initializeHistory()
   nrs->scalar->o_U = o_gasAdvector;
   nrs->scalar->o_Ue = o_gasAdvector;
   nrs->scalar->o_relUrst = o_gasUrst;
-  prepareGasAdvection(false);
+  if (!p.scalarExtrapolationEnabled) {
+    // Keep the original length: core kernels are compiled for p_nEXT and
+    // history allocation/lagging also relies on the configured length.
+    const auto nEXT = nrs->scalar->o_coeffEXT.size();
+    o_scalarCoeffEXT.resize(nEXT);
+    std::vector<dfloat> coefficients(nEXT, 0.0);
+    coefficients[0] = 1.0;
+    o_scalarCoeffEXT.copyFrom(coefficients.data(), nEXT);
+    // Do not modify the shared nrs/fluid coefficient memory in place.
+    nrs->scalar->o_coeffEXT = o_scalarCoeffEXT;
+  }
+  prepareGasAdvection();
   evaluatePointwiseTerms();
   const dlong offset = nrs->fieldOffset;
   o_ulPrevious.copyFrom(o_ul, 3 * offset);
@@ -977,7 +985,7 @@ inline void subtractScalarDiffusion()
 
 inline void addExplicitSources(double)
 {
-  prepareGasAdvection(nrs->tstep > 0);
+  prepareGasAdvection();
   evaluatePointwiseTerms();
   subtractScalarDiffusion();
   evaluateMixtureForce();

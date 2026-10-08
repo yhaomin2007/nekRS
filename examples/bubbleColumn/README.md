@@ -1,8 +1,8 @@
 # Direct native gas advection
 
-Alpha and all three UG scalars now use separate scalar-owned velocity/contravariant buffers populated from NekRS's extrapolated UG scalars. Mixture fluid velocity and its Urst buffers are never overwritten. Native BDF/EXT scalar transport supplies gas material advection directly; there is no mixture-advection cancellation or replacement gas self-advection source.
+Alpha and all three UG scalars now use separate scalar-owned velocity/contravariant buffers populated from the latest available UG scalars. Mixture fluid velocity and its Urst buffers are never overwritten. Native BDF/EXT scalar transport supplies gas material advection directly; there is no mixture-advection cancellation or replacement gas self-advection source.
 
-The alpha RHS is `-alpha*div(UG_advector)` plus implicit numerical diffusion and HPF. With `gasTransportMethod=1` the compression product is formed at Gauss cubature points before projection; with 0 it uses GLL strong gradients. Gas pressure, drag, gravity, stress and lagged liquid VM sources retain their prior effective-inertia scaling. The gas advector uses extrapolated alpha for the phase-activity mask and extrapolated UG, so the same advector is used for native alpha advection and its compression source. Scalar subcycling and moving meshes are not supported in this case.
+The alpha RHS is `-alpha*div(UG_advector)` plus implicit numerical diffusion and HPF. With `gasTransportMethod=1` the compression product is formed at Gauss cubature points before projection; with 0 it uses GLL strong gradients. Gas pressure, drag, gravity, stress and lagged liquid VM sources retain their prior effective-inertia scaling. The gas advector uses latest-state alpha for the phase-activity mask and latest-state UG, so the same advector is used for native alpha advection and its compression source. Scalar subcycling and moving meshes are not supported in this case.
 
 The current equations (before filtering/clipping) are
 
@@ -15,7 +15,7 @@ dt(ug_i) + Ag(ug_i) + (K/rhoEff)*ug_i
 rhoEff = rhoGas + c,  c = VMEnabled*VMcoeff*rhoLiquid
 ```
 
-`Ag` is NekRS's native scalar operator with extrapolated UG as the advector. The alpha compression source uses that same extrapolated advector; source histories retain NekRS's normal EXT treatment. The two existing mixture-velocity reconstruction modes are unchanged.
+`Ag` is NekRS's native scalar operator with latest-state UG as the advector. The alpha compression source uses that same advector. `scalarExtrapolationEnabled=0` (default) gives the scalar solver independent EXT coefficients `[1,0,...]`, so convection and every explicit scalar RHS, including compression and HPF, use the latest available state without history extrapolation. BDF and fluid EXT are unchanged. This is first-order explicit treatment, not implicit convection. With 1, the configured EXT combines nonlinear-term histories; the gas advector itself is still not predicted. The two existing mixture-velocity reconstruction modes are unchanged.
 
 Mixture divergence method 0 reconstructs `(rhoL-rhoG)/rhoM * [Salpha + Am(alpha)-Ag(alpha)+diffusion]`; method 1 uses `(rhoL-rhoG)/rhoM * [BDF(alpha)+Am(alpha)]`. `Am` explicitly uses fluid-owned mixture Urst, whereas `Ag` uses scalar-owned gas Urst. Both divergence choices, filtering, ramp and extrapolation remain. Method 0 still omits HPF/clipping effects and reconstructs diffusion with strong operators.
 
