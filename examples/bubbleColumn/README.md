@@ -1,3 +1,5 @@
+Inlet/wall corner nodes now use wall precedence for both UG and mixture velocity: their prescribed velocity is zero from either face. A nodal wall-membership mask is assembled across CG/MPI copies and passed through boundary `usrwrk`. Inlet interior nodes retain uniform prescribed velocity; alpha inlet remains unchanged. This removes conflicting corner values but does not smooth the inlet profile or add a damping layer. The discrete inlet flux can decrease because rim quadrature nodes now have zero velocity.
+
 `gasPressureInletMaskEnabled=1` suppresses only the UG pressure-gradient force at inlet face nodes (boundary ID 1), including every shared CG/MPI copy of inlet/wall corner nodes. It applies after gradient selection and time filtering, to all three components. Interior nodes, raw gradient diagnostics, mixture pressure projection, and other UG forces are unchanged. Default is 0. This is an exact node mask, not an inlet damping layer.
 
 # Direct native gas advection

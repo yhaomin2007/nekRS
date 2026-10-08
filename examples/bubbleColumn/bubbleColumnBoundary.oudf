@@ -7,7 +7,9 @@ void udfDirichlet(bcData *bc)
       // Density-averaged inlet velocity; the liquid inlet velocity is zero.
       bc->uxFluid = 0.0;
       bc->uyFluid = 0.0;
-      bc->uzFluid = p_ALPHA_INLET * p_RHO_GAS * p_UG_INLET / rhoM;
+      // Wall precedence: shared rim nodes get zero from either face.
+      bc->uzFluid = bc->usrwrk[bc->idxVol]
+                    * p_ALPHA_INLET * p_RHO_GAS * p_UG_INLET / rhoM;
     } else if (bc->id == 3) {
       bc->uxFluid = 0.0;
       bc->uyFluid = 0.0;
@@ -25,6 +27,7 @@ void udfDirichlet(bcData *bc)
   } else if (isField("scalar ugy")) {
     bc->sScalar = 0.0;
   } else if (isField("scalar ugz")) {
-    bc->sScalar = (bc->id == 1) ? p_UG_INLET : 0.0;
+    bc->sScalar = (bc->id == 1)
+        ? bc->usrwrk[bc->idxVol] * p_UG_INLET : 0.0;
   }
 }

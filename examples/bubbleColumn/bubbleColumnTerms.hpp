@@ -88,6 +88,7 @@ static deviceMemory<dfloat> o_gradUg;
 // o_gradP is the selected (and optionally time-filtered) gradient used by UG.
 static deviceMemory<dfloat> o_gradP;
 static deviceMemory<dfloat> o_gasPressureInletMask;
+static deviceMemory<dfloat> o_inletVelocityWeight;
 static deviceMemory<dfloat> o_gradPStrong;
 static deviceMemory<dfloat> o_gradPWeak;
 static deviceMemory<dfloat> o_gradPDifference;
@@ -347,6 +348,26 @@ inline void allocate()
   o_divQg.resize(offset);
   o_gradUg.resize(9 * offset);
   o_gradGasAdvector.resize(9 * offset);
+  {
+    auto mesh = nrs->meshV;
+    std::vector<dfloat> weight(offset, 1.0);
+    for (dlong e = 0; e < mesh->Nelements; ++e) {
+      for (int f = 0; f < mesh->Nfaces; ++f) {
+        if (mesh->EToB[e * mesh->Nfaces + f] != 3) continue;
+        for (int n = 0; n < mesh->Nfp; ++n) {
+          const dlong faceNode = (e * mesh->Nfaces + f) * mesh->Nfp + n;
+          weight[mesh->vmapM[faceNode]] = 0.0;
+        }
+      }
+    }
+    o_inletVelocityWeight.resize(offset);
+    o_inletVelocityWeight.copyFrom(weight.data(), offset);
+    // Wall precedence at shared inlet/wall nodes, including remote copies.
+    oogs::startFinish(o_inletVelocityWeight, 1, 0,
+                      ogsDfloat, ogsMin, mesh->oogs);
+    // This case reserves boundary usrwrk for the nodal inlet velocity weight.
+    platform->app->bc->o_usrwrk = o_inletVelocityWeight;
+  }
   if (p.gasPressureInletMaskEnabled) {
     auto mesh = nrs->meshV;
     std::vector<dfloat> keep(offset, 1.0);
