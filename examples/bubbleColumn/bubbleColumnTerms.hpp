@@ -49,7 +49,7 @@ struct Parameters {
   dfloat virtualMassEnabled;
   dfloat virtualMassCoefficient;
   int gasTransportMethod = 1;
-  int alphaCompressionEnabled = 1;
+  int alphaCompressionMode = 1;
   int scalarExtrapolationEnabled = 0;
   int mixtureDivergenceMethod;
   dfloat divergenceFilterEnabled;
@@ -112,6 +112,8 @@ static deviceMemory<dfloat> o_divDriftStress;
 static deviceMemory<dfloat> o_gasStress;
 static deviceMemory<dfloat> o_divGasStress;
 static deviceMemory<dfloat> o_alphaSource;
+// Frozen, nodal div(ug) reaction for implicit alpha compression.
+static deviceMemory<dfloat> o_alphaCompressionRate;
 static deviceMemory<dfloat> o_ugSource;
 static deviceMemory<dfloat> o_dragLambda;
 static deviceMemory<dfloat> o_mixtureForce;
@@ -250,9 +252,9 @@ inline void allocate()
   nekrsCheck(p.gasTransportMethod < 0 || p.gasTransportMethod > 1,
              platform->comm.mpiComm(), EXIT_FAILURE,
              "%s", "gasTransportMethod must be 0 (GLL) or 1 (cubature).\n");
-  nekrsCheck(p.alphaCompressionEnabled != 0 && p.alphaCompressionEnabled != 1,
+  nekrsCheck(p.alphaCompressionMode < 0 || p.alphaCompressionMode > 2,
              platform->comm.mpiComm(), EXIT_FAILURE,
-             "%s", "alphaCompressionEnabled must be 0 or 1.\n");
+             "%s", "alphaCompressionMode must be 0 (off), 1 (explicit), or 2 (implicit).\n");
   nekrsCheck(p.gasTransportMethod == 1 && (!platform->options.compareArgs("ADVECTION TYPE", "CUBATURE")
              || nrs->meshV->cubNq < nrs->meshV->Nq),
              platform->comm.mpiComm(), EXIT_FAILURE,
@@ -415,6 +417,7 @@ inline void allocate()
   o_gasStress.resize(9 * offset);
   o_divGasStress.resize(3 * offset);
   o_alphaSource.resize(offset);
+  o_alphaCompressionRate.resize(offset);
   o_ugSource.resize(3 * offset);
   o_dragLambda.resize(offset);
   o_mixtureForce.resize(3 * offset);
@@ -656,7 +659,7 @@ inline void evaluatePointwiseTerms()
                                o_gasPressureInletMask, o_gradP);
   }
 
-  if (p.gasTransportMethod == 1) evaluateGasCubatureTransport();
+  if (p.alphaCompressionMode == 1 && p.gasTransportMethod == 1) evaluateGasCubatureTransport();
 
   buildEquationTermsKernel(mesh->Nlocal,
                            offset,
@@ -689,16 +692,18 @@ inline void evaluatePointwiseTerms()
                            o_alphaSource,
                            o_ugSource,
                            o_dragLambda);
-  if (p.gasTransportMethod == 1) {
-    // Native scalar solver now supplies gas material advection directly.
+  if (p.alphaCompressionMode == 0) {
+    platform->linAlg->fill(mesh->Nlocal, 0.0, o_alphaSource);
+  } else if (p.alphaCompressionMode == 2) {
+    // Retain -d_g^n*alpha for post-solve continuity reconstruction. It is
+    // removed from the explicit forcing in addExplicitSources(), below.
+    o_alphaSource.copyFrom(alpha, mesh->Nlocal);
+    platform->linAlg->axmy(mesh->Nlocal, -1.0,
+                           o_alphaCompressionRate, o_alphaSource);
+  } else if (p.gasTransportMethod == 1) {
     platform->linAlg->axpby(mesh->Nlocal, -1.0, o_gasTransport, 0.0, o_alphaSource);
   } else {
     alphaCompressionKernel(mesh->Nlocal, offset, alpha, o_gradGasAdvector, o_alphaSource);
-  }
-  // Diagnostic nonconservative transport: retain native gas advection,
-  // but suppress only -alpha*div(ug). Diffusion subtraction is added later.
-  if (!p.alphaCompressionEnabled) {
-    platform->linAlg->fill(mesh->Nlocal, 0.0, o_alphaSource);
   }
 
   // Smoothly increase the implicit mixture viscosity and all implicit scalar
@@ -798,6 +803,13 @@ inline void prepareGasAdvection()
   // EXT to its history; predicting the advector here would extrapolate twice.
   reconstructGasVelocity();
   o_gasAdvector.copyFrom(o_ug, 3 * offset);
+  if (p.alphaCompressionMode == 2) {
+    // Freeze once before the scalar solve; do not refresh in properties.
+    // Native Helmholtz supports nodal reaction coefficients, not a cubature
+    // multiplication operator. Preserve the signed divergence without clipping.
+    opSEM::strongDivergence(nrs->meshV, offset, o_gasAdvector,
+                            o_alphaCompressionRate);
+  }
   auto mesh = nrs->meshV;
   if (platform->options.compareArgs("ADVECTION TYPE", "CUBATURE")) {
     launchKernel("nrs-UrstCubatureHex3D", mesh->Nelements, 0,
@@ -1046,6 +1058,9 @@ inline void addExplicitSources(double)
 {
   prepareGasAdvection();
   evaluatePointwiseTerms();
+  if (p.alphaCompressionMode == 2) {
+    platform->linAlg->fill(nrs->meshV->Nlocal, 0.0, o_alphaSource);
+  }
   subtractScalarDiffusion();
   evaluateMixtureForce();
   const dlong Nlocal = nrs->meshV->Nlocal;
@@ -1175,6 +1190,10 @@ inline void updateProperties(double)
 inline occa::memory implicitGasDrag(double, int scalarIndex)
 {
   // Scalar ordering is ALPHA, UGX, UGY, UGZ.
+  if (scalarIndex == nrs->scalar->nameToIndex.at("alpha")
+      && p.alphaCompressionMode == 2) {
+    return o_alphaCompressionRate;
+  }
   if (p.dragEnabled != 0.0 && scalarIndex >= 1 && scalarIndex <= 3) {
     return o_dragLambda;
   }
