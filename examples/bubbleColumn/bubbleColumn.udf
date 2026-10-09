@@ -83,6 +83,8 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   // Legacy 0/1 key remains accepted; the new mode takes precedence.
   platform->par->extract("casedata", "alphacompressionenabled", p.alphaCompressionMode);
   platform->par->extract("casedata", "alphacompressionmode", p.alphaCompressionMode);
+  platform->par->extract("casedata", "alphacompressioninletthickness",
+                         p.alphaCompressionInletThickness);
   platform->par->extract("casedata", "scalarextrapolationenabled", p.scalarExtrapolationEnabled);
   platform->par->extract(
       "casedata", "mixturedivergencemethod", p.mixtureDivergenceMethod);

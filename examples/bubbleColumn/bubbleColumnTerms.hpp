@@ -50,6 +50,7 @@ struct Parameters {
   dfloat virtualMassCoefficient;
   int gasTransportMethod = 1;
   int alphaCompressionMode = 1;
+  dfloat alphaCompressionInletThickness = 0.0;
   int scalarExtrapolationEnabled = 0;
   int mixtureDivergenceMethod;
   int divergenceComparisonInterval = 10;
@@ -163,6 +164,7 @@ static occa::kernel addGasStressKernel;
 static occa::kernel reconstructGasVelocityKernel;
 static occa::kernel postProcessGasFluxKernel;
 static occa::kernel alphaCompressionKernel;
+static occa::kernel maskAlphaCompressionInletKernel;
 static occa::kernel clipAlphaKernel;
 static occa::kernel clipVectorMagnitudeKernel;
 static occa::kernel initializeUniformKernel;
@@ -206,6 +208,8 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
     postProcessGasFluxKernel =
         platform->kernelRequests.load(request, "postProcessGasFlux");
     alphaCompressionKernel = platform->kernelRequests.load(request, "alphaCompression");
+    maskAlphaCompressionInletKernel =
+        platform->kernelRequests.load(request, "maskAlphaCompressionInlet");
     clipAlphaKernel = platform->kernelRequests.load(request, "clipAlpha");
     clipVectorMagnitudeKernel =
         platform->kernelRequests.load(request, "clipVectorMagnitude");
@@ -259,6 +263,10 @@ inline void allocate()
   nekrsCheck(p.alphaCompressionMode < 0 || p.alphaCompressionMode > 2,
              platform->comm.mpiComm(), EXIT_FAILURE,
              "%s", "alphaCompressionMode must be 0 (off), 1 (explicit), or 2 (implicit).\n");
+  nekrsCheck(!std::isfinite(p.alphaCompressionInletThickness)
+                 || p.alphaCompressionInletThickness < 0.0,
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "%s", "alphaCompressionInletThickness must be finite and nonnegative.\n");
   nekrsCheck(p.gasTransportMethod == 1 && (!platform->options.compareArgs("ADVECTION TYPE", "CUBATURE")
              || nrs->meshV->cubNq < nrs->meshV->Nq),
              platform->comm.mpiComm(), EXIT_FAILURE,
@@ -715,6 +723,13 @@ inline void evaluatePointwiseTerms()
   } else {
     alphaCompressionKernel(mesh->Nlocal, offset, alpha, o_gradGasAdvector, o_alphaSource);
   }
+  if (p.alphaCompressionMode == 1 && p.alphaCompressionInletThickness > 0.0) {
+    // Mask the assembled source for both GLL and cubature explicit modes.
+    // Keep this source masked in post-solve continuity reconstruction too.
+    maskAlphaCompressionInletKernel(mesh->Nlocal,
+                                    p.alphaCompressionInletThickness,
+                                    mesh->o_z, o_alphaSource);
+  }
 
   // Smoothly increase the implicit mixture viscosity and all implicit scalar
   // diffusion coefficients near the outlet. Do not scale the explicit gas
@@ -819,6 +834,13 @@ inline void prepareGasAdvection()
     // multiplication operator. Preserve the signed divergence without clipping.
     opSEM::strongDivergence(nrs->meshV, offset, o_gasAdvector,
                             o_alphaCompressionRate);
+    if (p.alphaCompressionInletThickness > 0.0) {
+      // The same frozen masked rate supplies the implicit alpha operator
+      // and its post-solve RHS reconstruction. Do not mask it twice there.
+      maskAlphaCompressionInletKernel(nrs->meshV->Nlocal,
+                                      p.alphaCompressionInletThickness,
+                                      nrs->meshV->o_z, o_alphaCompressionRate);
+    }
   }
   auto mesh = nrs->meshV;
   if (platform->options.compareArgs("ADVECTION TYPE", "CUBATURE")) {

@@ -437,3 +437,15 @@
     source[n]=-alpha[n]*(grad[n]+grad[n+4*offset]+grad[n+8*offset]);
   }
 }
+
+// This case has its planar inlet at z=0. Mask only the alpha compression
+// source/coefficient; the gas advector and its divergence remain intact.
+@kernel void maskAlphaCompressionInlet(const dlong N,
+                                       const dfloat thickness,
+                                       @ restrict const dfloat *z,
+                                       @ restrict dfloat *term)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    if (thickness > 0.0 && z[n] <= thickness) term[n] = 0.0;
+  }
+}

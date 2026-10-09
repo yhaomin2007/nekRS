@@ -111,6 +111,10 @@ gasTransportMethod = 1
 # gasTransportMethod selects GLL/cubature compression only for mode 1.
 # UG velocity equation has no corresponding ug_i*div(ug) source.
 alphaCompressionMode = 1
+# Metres from the inlet plane z=0: suppress alpha*div(ug) at z <= thickness.
+# 0 disables this local mask; positive values work with modes 1 and 2.
+# A nodal step mask is applied after assembly/projection in explicit mode.
+alphaCompressionInletThickness = 0.01
 # 0: latest-state scalar convection and explicit RHS (EXT1); 1: configured EXT history
 # BDF time derivative and fluid EXT are unchanged.
 scalarExtrapolationEnabled = 0
