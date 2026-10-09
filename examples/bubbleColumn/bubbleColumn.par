@@ -106,6 +106,9 @@ virtualMassCoefficient = 0.5
 # Native alpha/UG advection always uses predicted UG directly.
 # Alpha compression: 0=GLL alpha*div(UG), 1=cubature projection.
 gasTransportMethod = 1
+# Diagnostic: 0 removes only -alpha*div(ug) from alpha RHS; 1 retains it.
+# UG velocity equation has no corresponding ug_i*div(ug) source.
+alphaCompressionEnabled = 1
 # 0: latest-state scalar convection and explicit RHS (EXT1); 1: configured EXT history
 # BDF time derivative and fluid EXT are unchanged.
 scalarExtrapolationEnabled = 0

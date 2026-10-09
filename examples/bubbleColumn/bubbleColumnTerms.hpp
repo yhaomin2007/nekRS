@@ -49,6 +49,7 @@ struct Parameters {
   dfloat virtualMassEnabled;
   dfloat virtualMassCoefficient;
   int gasTransportMethod = 1;
+  int alphaCompressionEnabled = 1;
   int scalarExtrapolationEnabled = 0;
   int mixtureDivergenceMethod;
   dfloat divergenceFilterEnabled;
@@ -249,6 +250,9 @@ inline void allocate()
   nekrsCheck(p.gasTransportMethod < 0 || p.gasTransportMethod > 1,
              platform->comm.mpiComm(), EXIT_FAILURE,
              "%s", "gasTransportMethod must be 0 (GLL) or 1 (cubature).\n");
+  nekrsCheck(p.alphaCompressionEnabled != 0 && p.alphaCompressionEnabled != 1,
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "%s", "alphaCompressionEnabled must be 0 or 1.\n");
   nekrsCheck(p.gasTransportMethod == 1 && (!platform->options.compareArgs("ADVECTION TYPE", "CUBATURE")
              || nrs->meshV->cubNq < nrs->meshV->Nq),
              platform->comm.mpiComm(), EXIT_FAILURE,
@@ -690,6 +694,11 @@ inline void evaluatePointwiseTerms()
     platform->linAlg->axpby(mesh->Nlocal, -1.0, o_gasTransport, 0.0, o_alphaSource);
   } else {
     alphaCompressionKernel(mesh->Nlocal, offset, alpha, o_gradGasAdvector, o_alphaSource);
+  }
+  // Diagnostic nonconservative transport: retain native gas advection,
+  // but suppress only -alpha*div(ug). Diffusion subtraction is added later.
+  if (!p.alphaCompressionEnabled) {
+    platform->linAlg->fill(mesh->Nlocal, 0.0, o_alphaSource);
   }
 
   // Smoothly increase the implicit mixture viscosity and all implicit scalar
