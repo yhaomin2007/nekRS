@@ -117,6 +117,8 @@ scalarExtrapolationEnabled = 0
 # Mixture-divergence construction: 0=reconstructed alpha RHS,
 # 1=discrete BDF alpha history plus native NekRS scalar advection.
 mixtureDivergenceMethod = 0
+# Raw method0/method1/difference statistics in log and comparison CSV.
+divergenceComparisonInterval = 10
 divergenceFilterEnabled = 0
 divergenceFilterModes = 1
 divergenceFilterStrength = 0.25

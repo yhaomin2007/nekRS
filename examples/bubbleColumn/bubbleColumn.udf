@@ -86,6 +86,7 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   platform->par->extract("casedata", "scalarextrapolationenabled", p.scalarExtrapolationEnabled);
   platform->par->extract(
       "casedata", "mixturedivergencemethod", p.mixtureDivergenceMethod);
+  platform->par->extract("casedata", "divergencecomparisoninterval", p.divergenceComparisonInterval);
   platform->par->extract("casedata", "divergencefilterenabled", p.divergenceFilterEnabled);
   platform->par->extract("casedata", "divergencefiltermodes", p.divergenceFilterModes);
   platform->par->extract("casedata", "divergencefilterstrength", p.divergenceFilterStrength);
@@ -138,6 +139,7 @@ void UDF_ExecuteStep(double time, int tstep)
     bubbleColumn::updateVirtualMassHistory();
   }
   if (tstep > 0) {
+    bubbleColumn::printDivergenceComparison(time, tstep);
     bubbleColumn::printStabilityMonitors(time, tstep);
     bubbleColumn::printPressureGradientComparison(time, tstep);
   }
@@ -176,28 +178,20 @@ void UDF_ExecuteStep(double time, int tstep)
     nrs->writeToFile(
         "gradpWeak", time, nrs->meshV, {{"velocity", gradPWeak}});
 
-    // Export both mixture-divergence constructions from the same solution
-    // state. scalar00 is method 0 (reconstructed alpha RHS), scalar01 is
-    // method 1 (BDF alpha derivative plus native NekRS advection), and
-    // scalar02 is the actual pressure-projection target after any temporal
-    // extrapolation and startup ramp.
-    bubbleColumn::o_validationMassFlux.copyFrom(
-        nrs->fluid->o_div, nrs->meshV->Nlocal, 2 * offset, 0);
+    // Raw reconstructions are cached in userProperties before the fluid solve.
+    // scalar00: raw method0; scalar01: raw method1; scalar02: actual target;
+    // scalar03: raw method0 - raw method1. No diagnostic scratch aliasing.
     std::vector<deviceMemory<dfloat>> divAlphaRhs = {
-        bubbleColumn::o_validationMassFlux.slice(
-            0 * offset, nrs->meshV->Nlocal)};
+        bubbleColumn::o_divComparison.slice(0 * offset, nrs->meshV->Nlocal)};
     std::vector<deviceMemory<dfloat>> divAlphaBdf = {
-        bubbleColumn::o_validationMassFlux.slice(
-            1 * offset, nrs->meshV->Nlocal)};
+        bubbleColumn::o_divComparison.slice(1 * offset, nrs->meshV->Nlocal)};
     std::vector<deviceMemory<dfloat>> divPressureTarget = {
-        bubbleColumn::o_validationMassFlux.slice(
-            2 * offset, nrs->meshV->Nlocal)};
-    nrs->writeToFile("div",
-                     time,
-                     nrs->meshV,
-                     {{"scalar00", divAlphaRhs},
-                      {"scalar01", divAlphaBdf},
-                      {"scalar02", divPressureTarget}});
+        deviceMemory<dfloat>(nrs->fluid->o_div).slice(0, nrs->meshV->Nlocal)};
+    std::vector<deviceMemory<dfloat>> divDifference = {
+        bubbleColumn::o_divComparison.slice(2 * offset, nrs->meshV->Nlocal)};
+    nrs->writeToFile("div", time, nrs->meshV,
+                     {{"scalar00", divAlphaRhs}, {"scalar01", divAlphaBdf},
+                      {"scalar02", divPressureTarget}, {"scalar03", divDifference}});
     nrs->copyToNek(time, tstep);
     nek::userchk();
   }

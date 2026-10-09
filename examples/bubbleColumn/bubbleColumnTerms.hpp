@@ -52,6 +52,7 @@ struct Parameters {
   int alphaCompressionMode = 1;
   int scalarExtrapolationEnabled = 0;
   int mixtureDivergenceMethod;
+  int divergenceComparisonInterval = 10;
   dfloat divergenceFilterEnabled;
   int divergenceFilterModes;
   dfloat divergenceFilterStrength;
@@ -96,6 +97,9 @@ static deviceMemory<dfloat> o_gradPDifference;
 static deviceMemory<dfloat> o_rhoM;
 static deviceMemory<dfloat> o_muM;
 static deviceMemory<dfloat> o_divSource;
+// Cached raw method0, raw method1, and their signed difference.
+static deviceMemory<dfloat> o_divComparison;
+static deviceMemory<dfloat> o_divComparisonScratch;
 static deviceMemory<dfloat> o_divPrevious;
 static deviceMemory<dfloat> o_divOlder;
 static deviceMemory<dfloat> o_divExtrapolated;
@@ -270,6 +274,9 @@ inline void allocate()
     o_gasCubatureFields.resize(4 * cubOffset);
     o_gasCubatureProducts.resize(4 * cubOffset);
   }
+  nekrsCheck(p.divergenceComparisonInterval < 1,
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "%s", "divergenceComparisonInterval must be positive.\n");
   nekrsCheck(p.mixtureDivergenceMethod < 0 || p.mixtureDivergenceMethod > 1,
              platform->comm.mpiComm(),
              EXIT_FAILURE,
@@ -400,6 +407,9 @@ inline void allocate()
   o_rhoM.resize(offset);
   o_muM.resize(offset);
   o_divSource.resize(offset);
+  o_divComparison.resize(3 * offset);
+  o_divComparisonScratch.resize(offset);
+  platform->linAlg->fill(3 * offset, 0.0, o_divComparison);
   o_divPrevious.resize(offset);
   o_divOlder.resize(offset);
   o_divExtrapolated.resize(offset);
@@ -1171,6 +1181,9 @@ inline void updateProperties(double)
   // Component 1 stores method 1. It must be evaluated first because its
   // optional modal filter uses the whole workspace as scratch storage.
   buildDivergenceFromAlphaBdf(o_divSource);
+  auto rawMethod1 = o_divComparison.slice(offset, offset);
+  rawMethod1.copyFrom(o_divSource, Nlocal);
+  assembleDivergence(rawMethod1);
   filterDivergence(o_divSource);
   assembleDivergence(o_divSource);
   o_validationMassFlux.copyFrom(o_divSource, Nlocal, 1 * offset, 0);
@@ -1178,6 +1191,10 @@ inline void updateProperties(double)
   // Component 0 stores the unfiltered two-term method 0 result.
   buildDivergenceFromAlphaRhs(o_divSource);
   assembleDivergence(o_divSource);
+  o_divComparison.copyFrom(o_divSource, Nlocal, 0, 0);
+  auto difference = o_divComparison.slice(2 * offset, offset);
+  difference.copyFrom(o_divSource, Nlocal);
+  platform->linAlg->axpby(Nlocal, -1.0, rawMethod1, 1.0, difference);
   o_validationMassFlux.copyFrom(o_divSource, Nlocal, 0 * offset, 0);
 
   const auto o_selectedDivergence = o_validationMassFlux.slice(
@@ -1185,6 +1202,51 @@ inline void updateProperties(double)
   o_divSource.copyFrom(o_selectedDivergence, Nlocal);
   nrs->fluid->o_prop.slice(0 * nrs->fieldOffset, nrs->fieldOffset).copyFrom(o_muM);
   nrs->fluid->o_prop.slice(1 * nrs->fieldOffset, nrs->fieldOffset).copyFrom(o_rhoM);
+}
+
+inline void printDivergenceComparison(double time, int tstep)
+{
+  if (tstep <= 0 || tstep % p.divergenceComparisonInterval != 0) return;
+  auto mesh = nrs->meshV;
+  const dlong N = mesh->Nlocal, offset = nrs->fieldOffset;
+  const auto comm = platform->comm.mpiComm();
+  dfloat minimum[3], maximum[3], mean[3], rms[3];
+  for (int i = 0; i < 3; ++i) {
+    auto field = o_divComparison.slice(i * offset, offset);
+    minimum[i] = platform->linAlg->min(N, field, comm);
+    maximum[i] = platform->linAlg->max(N, field, comm);
+    mean[i] = platform->linAlg->innerProd(N, mesh->o_LMM, field, comm) / mesh->volume;
+    o_divComparisonScratch.copyFrom(field, N);
+    platform->linAlg->axmy(N, 1.0, mesh->o_LMM, o_divComparisonScratch);
+    const dfloat meanSquare = platform->linAlg->innerProd(
+        N, o_divComparisonScratch, field, comm) / mesh->volume;
+    rms[i] = std::sqrt(std::max(meanSquare, static_cast<dfloat>(0.0)));
+  }
+  const dfloat maxAbsDifference = std::max(std::abs(minimum[2]), std::abs(maximum[2]));
+  const dfloat relativeRms = rms[2] / std::max(
+      std::max(rms[0], rms[1]), static_cast<dfloat>(1.0e-30));
+  if (platform->comm.mpiRank() == 0) {
+    printf("divUmCompare step=%d time=%.8e rawM0[min,max,mean,rms]=[%.8e,%.8e,%.8e,%.8e] "
+           "rawM1[min,max,mean,rms]=[%.8e,%.8e,%.8e,%.8e] "
+           "M0-M1[min,max,mean,rms]=[%.8e,%.8e,%.8e,%.8e] maxAbsDiff=%.8e relRmsDiff=%.8e\n",
+           tstep, time, minimum[0], maximum[0], mean[0], rms[0],
+           minimum[1], maximum[1], mean[1], rms[1],
+           minimum[2], maximum[2], mean[2], rms[2], maxAbsDifference, relativeRms);
+    static std::ofstream output;
+    if (!output.is_open()) {
+      std::ifstream previous("bubbleColumn_divergence_compare.csv");
+      const bool header = previous.peek() == std::ifstream::traits_type::eof();
+      output.open("bubbleColumn_divergence_compare.csv", std::ios::app);
+      if (header) output << "step,time,m0_min,m0_max,m0_mean,m0_rms,m1_min,m1_max,m1_mean,m1_rms,"
+                            "diff_min,diff_max,diff_mean,diff_rms,diff_maxabs,diff_relative_rms\n";
+      output << std::scientific << std::setprecision(16);
+    }
+    output << tstep << ',' << time;
+    for (int i = 0; i < 3; ++i)
+      output << ',' << minimum[i] << ',' << maximum[i] << ',' << mean[i] << ',' << rms[i];
+    output << ',' << maxAbsDifference << ',' << relativeRms << '\n';
+    output.flush();
+  }
 }
 
 inline occa::memory implicitGasDrag(double, int scalarIndex)
