@@ -57,6 +57,12 @@ rhoLiquid = 998.2
 rhoGas = 1.2
 muLiquid = 1.0e-3
 muGas = 1.8e-5
+# Fresh starts: 0=uniform, 1=original smooth axial plume. Restart files take precedence.
+initialConditionMode = 1
+initialPlumeHeight = 0.05
+initialPlumeThickness = 0.01
+# Uniform mode uses alphaInitial and gasInitialVelocity.
+# Plume mode uses alphaInlet and gasInletVelocity times the tanh profile.
 alphaInitial = 0.016667
 alphaInlet = 0.016667
 gasInletVelocity = 0.3

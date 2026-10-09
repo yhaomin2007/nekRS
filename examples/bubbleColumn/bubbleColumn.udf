@@ -30,6 +30,20 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   platform->par->extract("casedata", "gasinletvelocity", p.ugInlet);
   platform->par->extract("casedata", "uginitial", p.ugInitial);
   platform->par->extract("casedata", "gasinitialvelocity", p.ugInitial);
+  platform->par->extract("casedata", "initialconditionmode", p.initialConditionMode);
+  platform->par->extract("casedata", "initialplumeheight", p.initialPlumeHeight);
+  platform->par->extract("casedata", "initialplumethickness", p.initialPlumeThickness);
+  nekrsCheck(p.initialConditionMode < 0 || p.initialConditionMode > 1,
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "%s", "initialConditionMode must be 0 (uniform) or 1 (plume).\n");
+  nekrsCheck(p.initialConditionMode == 1
+                 && !(std::isfinite(p.initialPlumeHeight) && p.initialPlumeHeight >= 0.0
+                      && std::isfinite(p.initialPlumeThickness) && p.initialPlumeThickness > 0.0
+                      && std::isfinite(p.alphaInlet) && p.alphaInlet >= 0.0 && p.alphaInlet <= 1.0
+                      && std::isfinite(p.ugInlet)),
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "%s", "Plume initialization requires nonnegative finite height, positive finite "
+             "thickness, alphaInlet in [0,1] and finite gasInletVelocity.\n");
   nekrsCheck(!(std::isfinite(p.alphaInitial) && p.alphaInitial >= 0.0
                && p.alphaInitial <= 1.0 && std::isfinite(p.ugInitial)
                && std::isfinite(p.rhoLiquid) && p.rhoLiquid > 0.0
@@ -107,18 +121,29 @@ void UDF_Setup()
   bubbleColumn::allocate();
   if (platform->options.getArgs("RESTART FILE NAME").empty()) {
     const auto &p = bubbleColumn::p;
-    bubbleColumn::initializeUniformKernel(
-        nrs->meshV->Nlocal,
-        nrs->fieldOffset,
-        p.rhoLiquid,
-        p.rhoGas,
-        p.alphaInitial,
-        p.ugInitial,
-        nrs->scalar->o_solution("alpha"),
-        nrs->scalar->o_solution("ugx"),
-        nrs->scalar->o_solution("ugy"),
-        nrs->scalar->o_solution("ugz"),
-        nrs->fluid->o_U);
+    if (p.initialConditionMode == 1) {
+      bubbleColumn::initializePlumeKernel(
+          nrs->meshV->Nlocal, nrs->fieldOffset, p.rhoLiquid, p.rhoGas,
+          p.alphaInlet, p.ugInlet, p.initialPlumeHeight, p.initialPlumeThickness,
+          nrs->meshV->o_z,
+          nrs->scalar->o_solution("alpha"),
+          nrs->scalar->o_solution("ugx"),
+          nrs->scalar->o_solution("ugy"),
+          nrs->scalar->o_solution("ugz"), nrs->fluid->o_U);
+    } else {
+      bubbleColumn::initializeUniformKernel(
+          nrs->meshV->Nlocal,
+          nrs->fieldOffset,
+          p.rhoLiquid,
+          p.rhoGas,
+          p.alphaInitial,
+          p.ugInitial,
+          nrs->scalar->o_solution("alpha"),
+          nrs->scalar->o_solution("ugx"),
+          nrs->scalar->o_solution("ugy"),
+          nrs->scalar->o_solution("ugz"),
+          nrs->fluid->o_U);
+    }
   }
   bubbleColumn::initializeHistory();
   nrs->userSource = &bubbleColumn::addExplicitSources;
