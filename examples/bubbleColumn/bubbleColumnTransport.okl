@@ -268,3 +268,44 @@
     }
   }
 }
+
+// Nek5000 convop_cons_3d: differentiate Cartesian alpha*UG products on GL
+// points, multiply by JW and physical metrics, then use gasProject (I^T).
+// cube contains separately interpolated [alpha, UGx, UGy, UGz].
+@kernel void alphaConservativeCubature(const dlong Nelements, const dlong cubOffset,
+                                       @ restrict const dfloat *D,
+                                       @ restrict const dfloat *vgeo,
+                                       @ restrict const dfloat *cube,
+                                       @ restrict dfloat *products)
+{
+  for (dlong e=0;e<Nelements;++e;@outer(0)) {
+    for (int j=0;j<p_cubNq;++j;@inner(1)) {
+      for (int i=0;i<p_cubNq;++i;@inner(0)) {
+        for (int k=0;k<p_cubNq;++k) {
+          const dlong id=e*p_cubNp+k*p_cubNq*p_cubNq+j*p_cubNq+i;
+          const dlong g=e*p_cubNp*p_Nvgeo+k*p_cubNq*p_cubNq+j*p_cubNq+i;
+          dfloat div=0;
+          for (int component=0;component<3;++component) {
+            dfloat dr=0,ds=0,dt=0;
+            for (int n=0;n<p_cubNq;++n) {
+              const dlong ir=e*p_cubNp+k*p_cubNq*p_cubNq+j*p_cubNq+n;
+              const dlong is=e*p_cubNp+k*p_cubNq*p_cubNq+n*p_cubNq+i;
+              const dlong it=e*p_cubNp+n*p_cubNq*p_cubNq+j*p_cubNq+i;
+              const dlong shift=(component+1)*cubOffset;
+              dr+=D[i*p_cubNq+n]*cube[ir]*cube[ir+shift];
+              ds+=D[j*p_cubNq+n]*cube[is]*cube[is+shift];
+              dt+=D[k*p_cubNq+n]*cube[it]*cube[it+shift];
+            }
+            // RX/RY/RZ, SX/SY/SZ, TX/TY/TZ are consecutive metric IDs.
+            div+=vgeo[g+(p_RXID+component)*p_cubNp]*dr
+                +vgeo[g+(p_SXID+component)*p_cubNp]*ds
+                +vgeo[g+(p_TXID+component)*p_cubNp]*dt;
+          }
+          products[id]=vgeo[g+p_JWID*p_cubNp]*div;
+          // gasProject processes four fields; only alpha is needed here.
+          for (int field=1;field<4;++field) products[id+field*cubOffset]=0;
+        }
+      }
+    }
+  }
+}

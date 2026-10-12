@@ -76,7 +76,7 @@ static deviceMemory<dfloat> o_gasCubatureFields;
 static deviceMemory<dfloat> o_gasCubatureProducts;
 static deviceMemory<dfloat> o_gasTransport;
 static occa::kernel gasInterpolateKernel, gasCubatureProductsKernel;
-static occa::kernel gasProjectKernel;
+static occa::kernel gasProjectKernel, alphaConservativeCubatureKernel;
 static deviceMemory<dfloat> o_gasAdvector;
 static deviceMemory<dfloat> o_scalarCoeffEXT;
 static deviceMemory<dfloat> o_gasUrst;
@@ -187,7 +187,7 @@ static occa::kernel buildOutletRampFactorKernel;
 
 inline void registerKernels(deviceKernelProperties &kernelInfo)
 {
-  if (p.gasTransportMethod == 1) {
+  if (p.gasTransportMethod == 1 || p.alphaTransportForm == 2) {
     auto cubInfo = kernelInfo;
     int cubN = 0;
     platform->options.getArgs("CUBATURE POLYNOMIAL DEGREE", cubN);
@@ -200,6 +200,7 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
       gasInterpolateKernel = platform->kernelRequests.load(req, "gasInterpolate");
       gasCubatureProductsKernel = platform->kernelRequests.load(req, "gasCubatureProducts");
       gasProjectKernel = platform->kernelRequests.load(req, "gasProject");
+      alphaConservativeCubatureKernel = platform->kernelRequests.load(req, "alphaConservativeCubature");
     }
   }
   const std::string request = "bubbleColumn::equations";
@@ -271,22 +272,22 @@ inline void allocate()
   nekrsCheck(p.alphaCompressionMode < 0 || p.alphaCompressionMode > 2,
              platform->comm.mpiComm(), EXIT_FAILURE,
              "%s", "alphaCompressionMode must be 0 (off), 1 (explicit), or 2 (implicit).\n");
-  nekrsCheck(p.alphaTransportForm < 0 || p.alphaTransportForm > 1,
+  nekrsCheck(p.alphaTransportForm < 0 || p.alphaTransportForm > 2,
              platform->comm.mpiComm(), EXIT_FAILURE,
-             "%s", "alphaTransportForm must be 0 (split) or 1 (direct flux divergence).\n");
+             "%s", "alphaTransportForm must be 0 (split), 1 (nodal flux), or 2 (cubature flux).\n");
   nekrsCheck(!std::isfinite(p.alphaCompressionInletThickness)
                  || p.alphaCompressionInletThickness < 0.0,
              platform->comm.mpiComm(), EXIT_FAILURE,
              "%s", "alphaCompressionInletThickness must be finite and nonnegative.\n");
-  nekrsCheck(p.gasTransportMethod == 1 && (!platform->options.compareArgs("ADVECTION TYPE", "CUBATURE")
+  nekrsCheck((p.gasTransportMethod == 1 || p.alphaTransportForm == 2) && (!platform->options.compareArgs("ADVECTION TYPE", "CUBATURE")
              || nrs->meshV->cubNq < nrs->meshV->Nq),
              platform->comm.mpiComm(), EXIT_FAILURE,
              "%s", "Cubature gas transport requires native cubature with cubNq >= Nq.\n");
-  nekrsCheck(p.gasTransportMethod == 1
+  nekrsCheck((p.gasTransportMethod == 1 || p.alphaTransportForm == 2)
              && 2 * nrs->meshV->cubNq - 1 < 3 * (nrs->meshV->Nq - 1) - 1,
              platform->comm.mpiComm(), EXIT_FAILURE,
              "%s", "Gas cubature quadrature is insufficient for quadratic transport loads.\n");
-  if (p.gasTransportMethod == 1) {
+  if (p.gasTransportMethod == 1 || p.alphaTransportForm == 2) {
     const dlong cubOffset = nrs->meshV->Nelements * nrs->meshV->cubNp;
     o_gasTransportFields.resize(4 * offset);
     o_gasTransport.resize(4 * offset);
@@ -584,7 +585,7 @@ inline void reconstructLiquidVelocity()
                             o_ul);
 }
 
-inline void evaluateGasCubatureTransport()
+inline void evaluateGasCubatureTransport(bool conservativeAlpha = false)
 {
   auto mesh = nrs->meshV;
   const dlong offset = nrs->fieldOffset;
@@ -595,15 +596,20 @@ inline void evaluateGasCubatureTransport()
   }
   gasInterpolateKernel(mesh->Nelements, offset, cubOffset,
                        mesh->o_cubInterpT, o_gasTransportFields, o_gasCubatureFields);
-  gasCubatureProductsKernel(mesh->Nelements, cubOffset, mesh->o_cubD,
-                            mesh->o_cubvgeo, o_gasCubatureFields, o_gasCubatureProducts);
+  if (conservativeAlpha) {
+    alphaConservativeCubatureKernel(mesh->Nelements, cubOffset, mesh->o_cubD,
+        mesh->o_cubvgeo, o_gasCubatureFields, o_gasCubatureProducts);
+  } else {
+    gasCubatureProductsKernel(mesh->Nelements, cubOffset, mesh->o_cubD,
+        mesh->o_cubvgeo, o_gasCubatureFields, o_gasCubatureProducts);
+  }
   gasProjectKernel(mesh->Nelements, offset, cubOffset, mesh->o_cubInterpT,
                    mesh->o_vgeo, o_gasCubatureProducts, o_gasTransport);
   // Mass-weighted CG assembly of normalized nodal loads.
   platform->linAlg->axmyMany(mesh->Nlocal, 4, offset, 0, 1.0, mesh->o_LMM, o_gasTransport);
   oogs::startFinish(o_gasTransport, 4, offset, ogsDfloat, ogsAdd, mesh->oogs);
   platform->linAlg->axmyMany(mesh->Nlocal, 4, offset, 0, 1.0, mesh->o_invLMM, o_gasTransport);
-  // Component zero is projected alpha*div(gasAdvector), not full flux divergence.
+  // Component zero is full div(alpha*UG) in conservative mode, compression otherwise.
 }
 
 inline void evaluatePointwiseTerms()
@@ -724,7 +730,10 @@ inline void evaluatePointwiseTerms()
                            o_alphaSource,
                            o_ugSource,
                            o_dragLambda);
-  if (p.alphaTransportForm == 1) {
+  if (p.alphaTransportForm == 2) {
+    evaluateGasCubatureTransport(true);
+    platform->linAlg->axpby(mesh->Nlocal, -1.0, o_gasTransport, 0.0, o_alphaSource);
+  } else if (p.alphaTransportForm == 1) {
     // Form the flux from the same frozen UG advector used at this time level.
     // Rebuild with the updated alpha in post-solve properties as well.
     o_alphaConservativeFlux.copyFrom(o_gasAdvector, 3 * offset);
@@ -1127,7 +1136,7 @@ inline void addExplicitSources(double)
   // Copy only entries written by the pointwise kernels. Avoid whole-view
   // copies because scalar and fluid fields may have different padded extents.
   nrs->scalar->o_explicitTerms("alpha").copyFrom(o_alphaSource, Nlocal);
-  if (p.alphaTransportForm == 1) {
+  if (p.alphaTransportForm != 0) {
     // Native sumMakef subtracts Ag using the same EXT coefficients as FU.
     // Adding the assembled native Ag here cancels that contribution after
     // mass assembly, leaving exactly -div(alpha*UG) as explicit transport.
