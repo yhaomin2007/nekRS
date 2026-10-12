@@ -145,6 +145,8 @@ mixtureDivergenceMethod = 0
 # Raw method0/method1/difference statistics in log and comparison CSV.
 divergenceComparisonInterval = 10
 divergenceFilterEnabled = 0
+# Filter the selected target for either mixtureDivergenceMethod (0 or 1).
+# Raw method0/method1/difference exports and statistics remain unfiltered.
 divergenceFilterModes = 1
 divergenceFilterStrength = 0.25
 divergenceExtrapolationEnabled = 0.0

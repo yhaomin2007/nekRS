@@ -1246,17 +1246,13 @@ inline void updateProperties(double)
   const dlong Nlocal = nrs->meshV->Nlocal;
   const dlong offset = nrs->fieldOffset;
 
-  // Reuse the existing three-component validation-flux workspace for
-  // diagnostics to avoid a dedicated 3*fieldOffset allocation.
-  // Component 1 stores method 1. It must be evaluated first because its
-  // optional modal filter uses the whole workspace as scratch storage.
+  // Cache both assembled raw targets independently before selecting/filtering.
+  // filterDivergence uses o_validationMassFlux as scratch, so do not keep
+  // either candidate in that workspace across the filter call.
   buildDivergenceFromAlphaBdf(o_divSource);
   auto rawMethod1 = o_divComparison.slice(offset, offset);
   rawMethod1.copyFrom(o_divSource, Nlocal);
   assembleDivergence(rawMethod1);
-  filterDivergence(o_divSource);
-  assembleDivergence(o_divSource);
-  o_validationMassFlux.copyFrom(o_divSource, Nlocal, 1 * offset, 0);
 
   // Component 0 stores the unfiltered two-term method 0 result.
   buildDivergenceFromAlphaRhs(o_divSource);
@@ -1265,11 +1261,14 @@ inline void updateProperties(double)
   auto difference = o_divComparison.slice(2 * offset, offset);
   difference.copyFrom(o_divSource, Nlocal);
   platform->linAlg->axpby(Nlocal, -1.0, rawMethod1, 1.0, difference);
-  o_validationMassFlux.copyFrom(o_divSource, Nlocal, 0 * offset, 0);
 
-  const auto o_selectedDivergence = o_validationMassFlux.slice(
+  const auto o_selectedDivergence = o_divComparison.slice(
       p.mixtureDivergenceMethod * offset, offset);
   o_divSource.copyFrom(o_selectedDivergence, Nlocal);
+  // Apply the same modal filter to the selected target for either method.
+  // Preserve raw method0/method1/difference exports and statistics above.
+  filterDivergence(o_divSource);
+  if (p.divergenceFilterEnabled != 0.0) assembleDivergence(o_divSource);
   nrs->fluid->o_prop.slice(0 * nrs->fieldOffset, nrs->fieldOffset).copyFrom(o_muM);
   nrs->fluid->o_prop.slice(1 * nrs->fieldOffset, nrs->fieldOffset).copyFrom(o_rhoM);
 }
