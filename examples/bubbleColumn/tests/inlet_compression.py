@@ -50,7 +50,8 @@ evaluation = host.split("inline void evaluatePointwiseTerms()")[1].split(
     "inline void prepareGasAdvection()")[0]
 assert evaluation.index("alphaCompressionKernel(mesh->Nlocal") < evaluation.index(
     "maskAlphaCompressionInletKernel(mesh->Nlocal")
-assert "p.alphaCompressionMode == 1 && p.alphaCompressionInletThickness > 0.0" in evaluation
+assert "p.alphaTransportForm == 0 && p.alphaCompressionMode == 1" in evaluation
+assert "&& p.alphaCompressionInletThickness > 0.0" in evaluation
 preparation = host.split("inline void prepareGasAdvection()")[1].split(
     "inline void postProcessGasFlux")[0]
 assert preparation.index("opSEM::strongDivergence") < preparation.index(

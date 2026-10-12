@@ -123,6 +123,12 @@ gasTransportMethod = 1
 # gasTransportMethod selects GLL/cubature compression only for mode 1.
 # UG velocity equation has no corresponding ug_i*div(ug) source.
 alphaCompressionMode = 1
+# 0: native UG.grad(alpha) plus configurable alpha*div(UG).
+# 1: direct explicit div(alpha*UG), nodal product + assembled strong divergence.
+# Form 1 includes full compression and ignores alphaCompressionMode/inlet mask.
+# Native alpha advection is canceled; UG equations are unchanged.
+# This nodal flux product is not cubature-dealiased even with gasTransportMethod=1.
+alphaTransportForm = 1
 # Metres from the inlet plane z=0: suppress alpha*div(ug) at z <= thickness.
 # 0 disables this local mask; positive values work with modes 1 and 2.
 # A nodal step mask is applied after assembly/projection in explicit mode.
