@@ -30,6 +30,11 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   platform->par->extract("casedata", "gasinletvelocity", p.ugInlet);
   platform->par->extract("casedata", "uginitial", p.ugInitial);
   platform->par->extract("casedata", "gasinitialvelocity", p.ugInitial);
+  platform->par->extract("casedata", "gasvelocitylowalphacutoffenabled",
+                         p.gasVelocityLowAlphaCutoffEnabled);
+  nekrsCheck(p.gasVelocityLowAlphaCutoffEnabled < 0 || p.gasVelocityLowAlphaCutoffEnabled > 1,
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "%s", "gasVelocityLowAlphaCutoffEnabled must be 0 or 1.\n");
   platform->par->extract("casedata", "initialconditionmode", p.initialConditionMode);
   platform->par->extract("casedata", "initialplumeheight", p.initialPlumeHeight);
   platform->par->extract("casedata", "initialplumethickness", p.initialPlumeThickness);

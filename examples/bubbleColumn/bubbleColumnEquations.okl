@@ -1,5 +1,6 @@
 @kernel void reconstructGasVelocity(const dlong N,
                                     const dlong offset,
+                                    const int lowAlphaCutoffEnabled,
                                     const dfloat alphaFloor,
                                     @ restrict const dfloat *alpha,
                                     @ restrict const dfloat *ugx,
@@ -9,7 +10,7 @@
 {
   for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
     const dfloat a = alpha[n] < 0.0 ? 0.0 : (alpha[n] > 1.0 ? 1.0 : alpha[n]);
-    const dfloat activeWeight = a > alphaFloor ? 1.0 : 0.0;
+    const dfloat activeWeight = (!lowAlphaCutoffEnabled || a > alphaFloor) ? 1.0 : 0.0;
     ug[n + 0 * offset] = ugx[n] * activeWeight;
     ug[n + 1 * offset] = ugy[n] * activeWeight;
     ug[n + 2 * offset] = ugz[n] * activeWeight;
@@ -49,6 +50,7 @@
 
 @kernel void postProcessGasFlux(
     const dlong N,
+    const int lowAlphaCutoffEnabled,
     const dfloat smoothMaskEnabled,
     const dfloat velocityClipEnabled,
     const dfloat velocityMaximum,
@@ -62,15 +64,15 @@
 {
   for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
     dfloat weight = 1.0;
-    if (smoothMaskEnabled != 0.0 && alpha[n] <= alphaCutoff) {
+    if (lowAlphaCutoffEnabled && smoothMaskEnabled != 0.0 && alpha[n] <= alphaCutoff) {
       weight = 0.0;
-    } else if (smoothMaskEnabled != 0.0 && alpha[n] < alphaFullyActive) {
+    } else if (lowAlphaCutoffEnabled && smoothMaskEnabled != 0.0 && alpha[n] < alphaFullyActive) {
       const dfloat ramp =
           (alpha[n] - alphaCutoff) / (alphaFullyActive - alphaCutoff);
       weight = ramp * ramp * (3.0 - 2.0 * ramp);
     }
     const dfloat a = alpha[n] < 0.0 ? 0.0 : (alpha[n] > 1.0 ? 1.0 : alpha[n]);
-    const dfloat activeWeight = a > alphaFloor ? 1.0 : 0.0;
+    const dfloat activeWeight = (!lowAlphaCutoffEnabled || a > alphaFloor) ? 1.0 : 0.0;
     dfloat ux = weight * ugx[n] * activeWeight;
     dfloat uy = weight * ugy[n] * activeWeight;
     dfloat uz = weight * ugz[n] * activeWeight;

@@ -33,6 +33,7 @@ struct Parameters {
   dfloat zRampTop;
   dfloat outletDampingFactor;
   dfloat smoothGasVelocityMaskEnabled;
+  int gasVelocityLowAlphaCutoffEnabled = 1;
   dfloat gasVelocityClipEnabled;
   dfloat gasVelocityMaximum;
   dfloat mixtureVelocityClipEnabled;
@@ -540,6 +541,7 @@ inline void reconstructGasVelocity()
 {
   reconstructGasVelocityKernel(nrs->meshV->Nlocal,
                                nrs->fieldOffset,
+                               p.gasVelocityLowAlphaCutoffEnabled,
                                p.alphaFloor,
                                nrs->scalar->o_solution("alpha"),
                                nrs->scalar->o_solution("ugx"),
@@ -887,7 +889,8 @@ inline void postProcessGasFlux()
 {
   const dlong Nlocal = nrs->meshV->Nlocal;
   const dlong offset = nrs->fieldOffset;
-  if (p.smoothGasVelocityMaskEnabled == 0.0 && p.gasVelocityClipEnabled == 0.0) {
+  if ((!p.gasVelocityLowAlphaCutoffEnabled || p.smoothGasVelocityMaskEnabled == 0.0)
+      && p.gasVelocityClipEnabled == 0.0) {
     for (int i = 0; i < 3; ++i) {
       qgMaskDeltaIntegral[i] = 0.0;
     }
@@ -901,6 +904,7 @@ inline void postProcessGasFlux()
 
   postProcessGasFluxKernel(
       Nlocal,
+      p.gasVelocityLowAlphaCutoffEnabled,
       p.smoothGasVelocityMaskEnabled,
       p.gasVelocityClipEnabled,
       p.gasVelocityMaximum,
@@ -975,6 +979,7 @@ inline void updateVirtualMassHistory()
   reconstructGasFlux();
   reconstructGasVelocityKernel(mesh->Nlocal,
                                offset,
+                               p.gasVelocityLowAlphaCutoffEnabled,
                                p.alphaFloor,
                                alpha,
                                nrs->scalar->o_solution("ugx"),

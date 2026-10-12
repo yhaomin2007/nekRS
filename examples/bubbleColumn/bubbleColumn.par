@@ -74,6 +74,10 @@ gravityX = 0.0
 gravityY = 0.0
 gravityZ = -9.81
 alphaFloor = 1e-6
+# 0 preserves UG in low-alpha regions: disables both hard alphaFloor velocity
+# cutoff and smoothGasVelocityMaskEnabled damping. 1 restores both controls.
+# Source-term safety thresholds and velocity magnitude clipping remain active.
+gasVelocityLowAlphaCutoffEnabled = 0
 alphaClipEnabled = 1.0
 alphaMinimum = 0.0
 alphaMaximum = 1.0
