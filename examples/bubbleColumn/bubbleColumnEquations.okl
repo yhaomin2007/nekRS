@@ -120,6 +120,7 @@
                             const dfloat gasInletVelocity,
                             const dfloat plumeHeight,
                             const dfloat plumeThickness,
+                            const int uniformGasVelocity,
                             @ restrict const dfloat *z,
                             @ restrict dfloat *alpha,
                             @ restrict dfloat *ugx,
@@ -131,7 +132,7 @@
     // Restore the original axial plume profile, now writing UG directly.
     const dfloat profile = 0.5 * (1.0 - tanh((z[n] - plumeHeight) / plumeThickness));
     const dfloat a = alphaInlet * profile;
-    const dfloat ugVertical = gasInletVelocity * profile;
+    const dfloat ugVertical = gasInletVelocity * (uniformGasVelocity ? 1.0 : profile);
     const dfloat rhoM = (1.0 - a) * rhoLiquid + a * rhoGas;
     alpha[n] = a;
     ugx[n] = 0.0;

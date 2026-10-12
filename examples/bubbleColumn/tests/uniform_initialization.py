@@ -35,7 +35,7 @@ with tempfile.TemporaryDirectory() as t:
  subprocess.run([str(Path(t)/'check')],check=True)
 udf=(root/'bubbleColumn.udf').read_text()
 assert 'if (platform->options.getArgs("RESTART FILE NAME").empty())' in udf
-assert 'if (p.initialConditionMode == 1)' in udf
+assert 'if (p.initialConditionMode != 0)' in udf
 assert 'initializePlumeKernel' in udf
 assert "nrs->userDivergence = &bubbleColumn::updateDivergence;" in udf
 print('Uniform alpha/UG/mixture initialization, stationary liquid, signed velocity and padding checks passed.')

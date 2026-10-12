@@ -33,10 +33,11 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   platform->par->extract("casedata", "initialconditionmode", p.initialConditionMode);
   platform->par->extract("casedata", "initialplumeheight", p.initialPlumeHeight);
   platform->par->extract("casedata", "initialplumethickness", p.initialPlumeThickness);
-  nekrsCheck(p.initialConditionMode < 0 || p.initialConditionMode > 1,
+  nekrsCheck(p.initialConditionMode < 0 || p.initialConditionMode > 2,
              platform->comm.mpiComm(), EXIT_FAILURE,
-             "%s", "initialConditionMode must be 0 (uniform) or 1 (plume).\n");
-  nekrsCheck(p.initialConditionMode == 1
+             "%s", "initialConditionMode must be 0 (uniform), 1 (alpha/UG plume), "
+             "or 2 (alpha plume, uniform UG).\n");
+  nekrsCheck(p.initialConditionMode != 0
                  && !(std::isfinite(p.initialPlumeHeight) && p.initialPlumeHeight >= 0.0
                       && std::isfinite(p.initialPlumeThickness) && p.initialPlumeThickness > 0.0
                       && std::isfinite(p.alphaInlet) && p.alphaInlet >= 0.0 && p.alphaInlet <= 1.0
@@ -121,10 +122,11 @@ void UDF_Setup()
   bubbleColumn::allocate();
   if (platform->options.getArgs("RESTART FILE NAME").empty()) {
     const auto &p = bubbleColumn::p;
-    if (p.initialConditionMode == 1) {
+    if (p.initialConditionMode != 0) {
       bubbleColumn::initializePlumeKernel(
           nrs->meshV->Nlocal, nrs->fieldOffset, p.rhoLiquid, p.rhoGas,
-          p.alphaInlet, p.ugInlet, p.initialPlumeHeight, p.initialPlumeThickness,
+          p.alphaInlet, p.initialConditionMode == 2 ? p.ugInitial : p.ugInlet,
+          p.initialPlumeHeight, p.initialPlumeThickness, p.initialConditionMode == 2,
           nrs->meshV->o_z,
           nrs->scalar->o_solution("alpha"),
           nrs->scalar->o_solution("ugx"),
