@@ -1,0 +1,43 @@
+// Case-local diagnostics: avoid the core entrywiseMag offset-shadowing bug.
+@kernel void fieldMagnitude(const dlong N, const int Nfields,
+                            const dlong fieldOffset,
+                            @ restrict const dfloat *field,
+                            @ restrict dfloat *magnitude)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    dfloat sum = 0.0;
+    for (int component = 0; component < Nfields; ++component) {
+      const dfloat value = field[n + component * fieldOffset];
+      sum += value * value;
+    }
+    magnitude[n] = sqrt(sum);
+  }
+}
+
+// Fixed-mesh nodal CFL, using the same contravariant/GLL-spacing definition
+// as nrs-cflHex3D. Global reduction is performed by linAlg::max on Nlocal.
+@kernel void gasPointwiseCfl(const dlong N, const dfloat dt,
+                             const dlong fieldOffset,
+                             @ restrict const dfloat *vgeo,
+                             @ restrict const dfloat *inverseSpacing,
+                             @ restrict const dfloat *velocity,
+                             @ restrict dfloat *cfl)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    const dlong element = n / p_Np;
+    const int node = n % p_Np;
+    const int i = node % p_Nq;
+    const int j = (node / p_Nq) % p_Nq;
+    const int k = node / (p_Nq * p_Nq);
+    const dlong g = element * p_Np * p_Nvgeo + node;
+    const dfloat ux = velocity[n];
+    const dfloat uy = velocity[n + fieldOffset];
+    const dfloat uz = velocity[n + 2 * fieldOffset];
+    const dfloat ur = ux*vgeo[g+p_RXID*p_Np] + uy*vgeo[g+p_RYID*p_Np] + uz*vgeo[g+p_RZID*p_Np];
+    const dfloat us = ux*vgeo[g+p_SXID*p_Np] + uy*vgeo[g+p_SYID*p_Np] + uz*vgeo[g+p_SZID*p_Np];
+    const dfloat ut = ux*vgeo[g+p_TXID*p_Np] + uy*vgeo[g+p_TYID*p_Np] + uz*vgeo[g+p_TZID*p_Np];
+    cfl[n] = dt*(fabs(ur)*inverseSpacing[i] + fabs(us)*inverseSpacing[j] + fabs(ut)*inverseSpacing[k]);
+  }
+}
+
+

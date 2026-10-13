@@ -170,6 +170,8 @@ static occa::kernel addGasStressKernel;
 static occa::kernel reconstructGasVelocityKernel;
 static occa::kernel postProcessGasFluxKernel;
 static occa::kernel alphaCompressionKernel;
+static occa::kernel fieldMagnitudeKernel;
+static occa::kernel gasPointwiseCflKernel;
 static occa::kernel maskAlphaCompressionInletKernel;
 static occa::kernel clipAlphaKernel;
 static occa::kernel clipVectorMagnitudeKernel;
@@ -187,6 +189,13 @@ static occa::kernel buildOutletRampFactorKernel;
 
 inline void registerKernels(deviceKernelProperties &kernelInfo)
 {
+  const std::string diagnosticsRequest = "bubbleColumn::diagnostics";
+  if (platform->options.compareArgs("REGISTER ONLY", "TRUE")) {
+    platform->kernelRequests.add(diagnosticsRequest, "bubbleColumnDiagnostics.okl", kernelInfo);
+  } else {
+    fieldMagnitudeKernel = platform->kernelRequests.load(diagnosticsRequest, "fieldMagnitude");
+    gasPointwiseCflKernel = platform->kernelRequests.load(diagnosticsRequest, "gasPointwiseCfl");
+  }
   if (p.gasTransportMethod == 1 || p.alphaTransportForm == 2) {
     auto cubInfo = kernelInfo;
     int cubN = 0;
@@ -455,7 +464,7 @@ inline void allocate()
   o_monitorMagnitude.resize(offset);
   o_gasPressureAccelerationActive.resize(offset);
   o_gasPressureAccelerationInactive.resize(offset);
-  o_gasCfl.resize(nrs->meshV->Nelements);
+  o_gasCfl.resize(nrs->meshV->Nlocal);
   o_inverseGllSpacing.resize(nrs->meshV->N + 1);
   std::vector<dfloat> inverseGllSpacing(nrs->meshV->N + 1);
   for (int n = 0; n < nrs->meshV->N + 1; ++n) {
@@ -953,7 +962,7 @@ inline void postProcessGasFlux()
         Nlocal, nrs->meshV->o_LMM, delta, comm);
     cumulativeQgMaskDeltaIntegral[i] += qgMaskDeltaIntegral[i];
   }
-  platform->linAlg->entrywiseMag(
+  fieldMagnitudeKernel(
       Nlocal, 3, offset, o_qgMaskDelta, o_monitorMagnitude);
   qgMaskDeltaMagnitudeIntegral = platform->linAlg->innerProd(
       Nlocal, nrs->meshV->o_LMM, o_monitorMagnitude, comm);
@@ -1374,17 +1383,10 @@ inline void updateDivergenceHistory()
 inline dfloat computeGasCfl()
 {
   auto mesh = nrs->meshV;
-  launchKernel("nrs-cflHex3D",
-               mesh->Nelements,
-               nrs->dt[0],
-               mesh->o_vgeo,
-               o_inverseGllSpacing,
-               nrs->fieldOffset,
-               o_ug,
-               nrs->geom ? nrs->geom->o_U : o_NULL,
-               o_gasCfl);
+  gasPointwiseCflKernel(mesh->Nlocal, nrs->dt[0], nrs->fieldOffset,
+                        mesh->o_vgeo, o_inverseGllSpacing, o_ug, o_gasCfl);
   return platform->linAlg->max(
-      mesh->Nelements, o_gasCfl, platform->comm.mpiComm());
+      mesh->Nlocal, o_gasCfl, platform->comm.mpiComm());
 }
 
 struct ValidationState {
@@ -1746,7 +1748,7 @@ inline void printStabilityMonitors(double time, int tstep)
   const dfloat maxDiv =
       platform->linAlg->amax(Nlocal, nrs->fluid->o_div, comm);
 
-  platform->linAlg->entrywiseMag(Nlocal, 3, offset, o_gradP, o_monitorMagnitude);
+  fieldMagnitudeKernel(Nlocal, 3, offset, o_gradP, o_monitorMagnitude);
   buildGasPressureAccelerationMonitorKernel(Nlocal,
                                             p.rhoGas + p.virtualMassEnabled * p.virtualMassCoefficient * p.rhoLiquid,
                                             p.gasMomentumCutoff,
@@ -1765,7 +1767,7 @@ inline void printStabilityMonitors(double time, int tstep)
   const dfloat meanAlpha = platform->linAlg->innerProd(
       Nlocal, nrs->meshV->o_LMM, alpha, comm) / nrs->meshV->volume;
 
-  platform->linAlg->entrywiseMag(Nlocal, 3, offset, o_qg, o_monitorMagnitude);
+  fieldMagnitudeKernel(Nlocal, 3, offset, o_qg, o_monitorMagnitude);
   const dfloat maxQg = platform->linAlg->max(Nlocal, o_monitorMagnitude, comm);
 
   buildGasFluxConsistencyMonitorKernel(Nlocal,
@@ -1777,11 +1779,11 @@ inline void printStabilityMonitors(double time, int tstep)
   const dfloat maxQgConsistencyError =
       platform->linAlg->max(Nlocal, o_monitorMagnitude, comm);
 
-  platform->linAlg->entrywiseMag(Nlocal, 3, offset, o_ug, o_monitorMagnitude);
+  fieldMagnitudeKernel(Nlocal, 3, offset, o_ug, o_monitorMagnitude);
   const dfloat maxUg = platform->linAlg->max(Nlocal, o_monitorMagnitude, comm);
   const dfloat gasCfl = computeGasCfl();
 
-  platform->linAlg->entrywiseMag(
+  fieldMagnitudeKernel(
       Nlocal, 9, offset, o_driftStress, o_monitorMagnitude);
   const dfloat maxDriftStress =
       platform->linAlg->max(Nlocal, o_monitorMagnitude, comm);
@@ -1810,7 +1812,7 @@ inline void printStabilityMonitors(double time, int tstep)
     printf("bubbleColumn stability step=%d time=%.8e max|divTarget|=%.8e "
            "min(alpha)=%.8e max(alpha)=%.8e mean(alpha)=%.8e "
            "max|qg|=%.8e max|qg-alpha*ug|=%.8e "
-           "maxActive|gradP|/rhoG=%.8e maxInactive|gradP|/rhoG=%.8e "
+           "maxActive|gradP|/rhoEff=%.8e maxInactive|gradP|/rhoEff=%.8e "
            "max|ug|=%.8e CFL(ug)=%.8e max|tauDrift|=%.8e "
            "max(lambdaD*dt)=%.8e "
            "inletArea=%.8e inletMean(alpha)=%.8e "
