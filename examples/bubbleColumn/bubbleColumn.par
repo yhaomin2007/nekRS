@@ -68,6 +68,9 @@ initialPlumeThickness = 0.01
 alphaInitial = 0.016667
 alphaInlet = 0.016667
 gasInletVelocity = 0.3
+# Wall-distance taper width (m): smoothstep from zero at wall to bulk velocity.
+# 0 restores flat inlet with wall precedence; no flow-rate normalization.
+gasInletProfileWidth = 0.01
 # Uniform initial gas velocity along z (m/s); ugz=gasInitialVelocity.
 gasInitialVelocity = 0.3
 gravityX = 0.0

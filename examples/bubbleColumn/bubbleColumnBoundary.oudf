@@ -7,7 +7,7 @@ void udfDirichlet(bcData *bc)
       // Density-averaged inlet velocity; the liquid inlet velocity is zero.
       bc->uxFluid = 0.0;
       bc->uyFluid = 0.0;
-      // Wall precedence: shared rim nodes get zero from either face.
+      // Smooth inlet weight; shared wall/rim nodes remain exactly zero.
       bc->uzFluid = bc->usrwrk[bc->idxVol]
                     * p_ALPHA_INLET * p_RHO_GAS * p_UG_INLET / rhoM;
     } else if (bc->id == 3) {

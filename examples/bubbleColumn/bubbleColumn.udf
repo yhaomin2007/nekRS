@@ -28,6 +28,10 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   platform->par->extract("casedata", "alphainitial", p.alphaInitial);
   platform->par->extract("casedata", "alphainlet", p.alphaInlet);
   platform->par->extract("casedata", "gasinletvelocity", p.ugInlet);
+  platform->par->extract("casedata", "gasinletprofilewidth", p.gasInletProfileWidth);
+  nekrsCheck(!std::isfinite(p.gasInletProfileWidth) || p.gasInletProfileWidth < 0.0,
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "%s", "gasInletProfileWidth must be finite and nonnegative.\n");
   platform->par->extract("casedata", "uginitial", p.ugInitial);
   platform->par->extract("casedata", "gasinitialvelocity", p.ugInitial);
   platform->par->extract("casedata", "gasvelocitylowalphacutoffenabled",

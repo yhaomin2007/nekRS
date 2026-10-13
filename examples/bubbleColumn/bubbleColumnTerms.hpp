@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cmath>
+#include <algorithm>
 #include <fstream>
 #include <iomanip>
 #include <vector>
@@ -18,6 +19,7 @@ struct Parameters {
   dfloat alphaInitial;
   dfloat alphaInlet;
   dfloat ugInlet;
+  dfloat gasInletProfileWidth = 0.0;
   dfloat ugInitial = 0.0;
   int initialConditionMode = 0;
   dfloat initialPlumeHeight = 0.05;
@@ -186,6 +188,13 @@ static occa::kernel buildMixtureForceKernel;
 static occa::kernel buildGasPressureAccelerationMonitorKernel;
 static occa::kernel buildGasFluxConsistencyMonitorKernel;
 static occa::kernel buildOutletRampFactorKernel;
+
+inline dfloat inletProfileWeight(dfloat wallDistance, dfloat width)
+{
+  if (width <= 0.0) return 1.0;
+  const dfloat s = std::max(dfloat(0.0), std::min(dfloat(1.0), wallDistance / width));
+  return s * s * (3.0 - 2.0 * s);
+}
 
 inline void registerKernels(deviceKernelProperties &kernelInfo)
 {
@@ -394,6 +403,14 @@ inline void allocate()
   {
     auto mesh = nrs->meshV;
     std::vector<dfloat> weight(offset, 1.0);
+    if (p.gasInletProfileWidth > 0.0) {
+      // Mesh wall distance avoids assuming a circular or rectangular inlet.
+      // The profile is consumed only by inlet Dirichlet boundaries.
+      const auto distance = mesh->minDistance(std::vector<dlong>{3}, "cheap_dist");
+      for (dlong n = 0; n < mesh->Nlocal; ++n) {
+        weight[n] = inletProfileWeight(distance[n], p.gasInletProfileWidth);
+      }
+    }
     for (dlong e = 0; e < mesh->Nelements; ++e) {
       for (int f = 0; f < mesh->Nfaces; ++f) {
         if (mesh->EToB[e * mesh->Nfaces + f] != 3) continue;
@@ -1805,8 +1822,11 @@ inline void printStabilityMonitors(double time, int tstep)
       inletArea > 0.0 ? inletAlphaIntegral / inletArea : 0.0;
   const dfloat inletQgFlux = nrs->meshV->surfaceAreaNormalMultiplyVectorIntegrate(
       offset, o_inletBoundaryID, o_qg);
+  o_surfaceScalar.copyFrom(o_inletVelocityWeight, Nlocal);
+  const dfloat inletProfileArea = nrs->meshV->surfaceAreaMultiplyIntegrate(
+      o_inletBoundaryID, o_surfaceScalar);
   const dfloat prescribedQgFluxMagnitude =
-      p.alphaInlet * std::abs(p.ugInlet) * inletArea;
+      p.alphaInlet * std::abs(p.ugInlet) * inletProfileArea;
 
   if (platform->comm.mpiRank() == 0) {
     printf("bubbleColumn stability step=%d time=%.8e max|divTarget|=%.8e "
