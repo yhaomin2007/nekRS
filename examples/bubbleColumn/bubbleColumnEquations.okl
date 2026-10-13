@@ -1,3 +1,37 @@
+@kernel void recoverAlphaRhs(const dlong N, const dlong alphaOffset,
+                             const dlong historyOffset, const int order,
+                             const dfloat inverseDt,
+                             @ restrict const dfloat *mass,
+                             @ restrict const dfloat *forcing,
+                             @ restrict const dfloat *history,
+                             @ restrict const dfloat *coeff,
+                             @ restrict dfloat *rhs)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    dfloat oldTime = 0.0;
+    for (int j = 0; j < order; ++j)
+      oldTime += coeff[j] * history[n + alphaOffset + (j + 1) * historyOffset];
+    rhs[n] = forcing[n + alphaOffset] / mass[n] - inverseDt * oldTime;
+  }
+}
+
+@kernel void alphaBoundaryRhs(const dlong Nmasked,
+                              @ restrict const dlong *ids,
+                              const dlong alphaOffset, const dlong historyOffset,
+                              const int order, const dfloat inverseDt, const dfloat g0,
+                              @ restrict const dfloat *history,
+                              @ restrict const dfloat *coeff,
+                              @ restrict dfloat *rhs)
+{
+  for (dlong i = 0; i < Nmasked; ++i; @tile(p_blockSize, @outer, @inner)) {
+    const dlong n = ids[i];
+    dfloat value = g0 * history[n + alphaOffset];
+    for (int j = 0; j < order; ++j)
+      value -= coeff[j] * history[n + alphaOffset + (j + 1) * historyOffset];
+    rhs[n] = inverseDt * value;
+  }
+}
+
 @kernel void reconstructGasVelocity(const dlong N,
                                     const dlong offset,
                                     const int lowAlphaCutoffEnabled,
@@ -86,34 +120,6 @@
   }
 }
 
-@kernel void initializeUniform(const dlong N,
-                             const dlong offset,
-                             const dfloat rhoLiquid,
-                             const dfloat rhoGas,
-                             const dfloat alphaInitial,
-                             const dfloat gasInitialVelocity,
-                             @ restrict dfloat *alpha,
-                             @ restrict dfloat *ugx,
-                             @ restrict dfloat *ugy,
-                             @ restrict dfloat *ugz,
-                             @ restrict dfloat *um)
-{
-  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
-    // Uniform gas state with initially stationary liquid.
-    const dfloat a = alphaInitial;
-    const dfloat ugVertical = gasInitialVelocity;
-    const dfloat rhoM = (1.0 - a) * rhoLiquid + a * rhoGas;
-
-    alpha[n] = a;
-    ugx[n] = 0.0;
-    ugy[n] = 0.0;
-    ugz[n] = ugVertical;
-    um[n + 0 * offset] = 0.0;
-    um[n + 1 * offset] = 0.0;
-    um[n + 2 * offset] = rhoGas * a * ugVertical / rhoM;
-  }
-}
-
 @kernel void initializePlume(const dlong N,
                             const dlong offset,
                             const dfloat rhoLiquid,
@@ -122,7 +128,6 @@
                             const dfloat gasInletVelocity,
                             const dfloat plumeHeight,
                             const dfloat plumeThickness,
-                            const int uniformGasVelocity,
                             @ restrict const dfloat *z,
                             @ restrict dfloat *alpha,
                             @ restrict dfloat *ugx,
@@ -134,7 +139,7 @@
     // Restore the original axial plume profile, now writing UG directly.
     const dfloat profile = 0.5 * (1.0 - tanh((z[n] - plumeHeight) / plumeThickness));
     const dfloat a = alphaInlet * profile;
-    const dfloat ugVertical = gasInletVelocity * (uniformGasVelocity ? 1.0 : profile);
+    const dfloat ugVertical = gasInletVelocity * profile;
     const dfloat rhoM = (1.0 - a) * rhoLiquid + a * rhoGas;
     alpha[n] = a;
     ugx[n] = 0.0;
@@ -299,7 +304,7 @@
     const dfloat a = (aRaw < 0.0) ? 0.0 : ((aRaw > 1.0) ? 1.0 : aRaw);
     const dfloat beta = 1.0 - a;
     const dfloat betaSafe = (beta > alphaFloor) ? beta : alphaFloor;
-    const dfloat gasActive = (a >= alphaFloor) ? 1.0 : 0.0;
+    const dfloat gasActive = 1.0;
     const dfloat rhoM = beta * rhoLiquid + a * rhoGas;
     const dfloat muM = beta * muLiquid + a * muGas;
 
@@ -421,11 +426,8 @@
     dfloat driftAccelerationY = 0.0;
     dfloat driftAccelerationZ = 0.0;
     if (driftStressEnabled != 0.0) {
-      // The drift-stress divergence is the only mixture-momentum source that
-      // uses u_g. Suppress it wherever the gas phase is numerically absent.
-      // This second mask prevents differentiation of neighboring nonzero
-      // drift stress from leaking a gas-dependent source into alpha < floor.
-      const dfloat gasActive = (alpha[n] >= alphaFloor) ? 1.0 : 0.0;
+      // Keep drift divergence active; alpha enters the stress itself.
+      const dfloat gasActive = 1.0;
       driftAccelerationX =
           -gasActive * divDriftStress[n + 0 * offset] / rhoM[n];
       driftAccelerationY =
@@ -447,7 +449,8 @@
                           @ restrict dfloat *source)
 {
   for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
-    if (alpha[n] > alphaFloor) source[n] += divStress[n] / (alpha[n] * rhoEff);
+    const dfloat aSafe = alpha[n] > alphaFloor ? alpha[n] : alphaFloor;
+    source[n] += divStress[n] / (aSafe * rhoEff);
   }
 }
 

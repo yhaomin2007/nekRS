@@ -2,6 +2,8 @@ userSections = CASEDATA
 
 [GENERAL]
 polynomialOrder = 7
+# Resolve degree-14 alpha*UG products before conservative differentiation.
+cubaturePolynomialOrder = 14
 # UG scalars require a new run or a converted UG restart.
 # startFrom = bubblecolumn0.f00036
 stopAt = numSteps
@@ -57,30 +59,17 @@ rhoLiquid = 998.2
 rhoGas = 1.2
 muLiquid = 1.0e-3
 muGas = 1.8e-5
-# Fresh starts: 0=uniform alpha/UG; 1=alpha/UG plume; 2=alpha plume, uniform UG.
-# Restart files take precedence.
-initialConditionMode = 2
+# Fresh starts use an axial plume for alpha and UG; restart files take precedence.
 initialPlumeHeight = 0.05
 initialPlumeThickness = 0.01
-# Uniform mode uses alphaInitial and gasInitialVelocity.
-# Plume mode uses alphaInlet and gasInletVelocity times the tanh profile.
-# Mode 2 uses alphaInlet times the profile, with uniform gasInitialVelocity.
-alphaInitial = 0.016667
 alphaInlet = 0.016667
 gasInletVelocity = 0.3
-# Wall-distance taper width (m): smoothstep from zero at wall to bulk velocity.
-# 0 restores flat inlet with wall precedence; no flow-rate normalization.
-gasInletProfileWidth = 0.01
-# Uniform initial gas velocity along z (m/s); ugz=gasInitialVelocity.
+# Initial UG plume peak (m/s), multiplied by the axial tanh profile.
 gasInitialVelocity = 0.3
 gravityX = 0.0
 gravityY = 0.0
 gravityZ = -9.81
 alphaFloor = 1e-6
-# 0 preserves UG in low-alpha regions: disables both hard alphaFloor velocity
-# cutoff and smoothGasVelocityMaskEnabled damping. 1 restores both controls.
-# Source-term safety thresholds and velocity magnitude clipping remain active.
-gasVelocityLowAlphaCutoffEnabled = 0
 alphaClipEnabled = 1.0
 alphaMinimum = 0.0
 alphaMaximum = 1.0
@@ -91,7 +80,6 @@ subtractUgzDiffusion = 0.0
 zRampBottom = 0.9
 zRampTop = 0.95
 outletDampingFactor = 20.0
-smoothGasVelocityMaskEnabled = 1.0
 gasVelocityClipEnabled = 0.0
 gasVelocityMaximum = 0.5
 mixtureVelocityClipEnabled = 0.0
@@ -118,37 +106,17 @@ bubbleDiameter = 3.0e-3
 driftStressEnabled = 1.0
 virtualMassEnabled = 1.0
 virtualMassCoefficient = 0.5
-# Native alpha/UG advection always uses predicted UG directly.
-# Alpha compression: 0=GLL alpha*div(UG), 1=cubature projection.
+# Native scalar convection uses mixture U; its exact contribution is canceled
+# in the RHS. Alpha uses conservative cubature div(alpha*UG); UG uses UG.grad(UG).
+# Scalar explicit terms use EXT1; diffusion and gas drag remain implicit.
 gasTransportMethod = 1
-# 0: off (diagnostic); 1: explicit compression; 2: implicit frozen div(ug)*alpha.
-# Mode 2 uses assembled nodal strong divergence in native Helmholtz;
-# gasTransportMethod selects GLL/cubature compression only for mode 1.
-# UG velocity equation has no corresponding ug_i*div(ug) source.
-alphaCompressionMode = 1
-# 0: native UG.grad(alpha) plus configurable alpha*div(UG).
-# 1: direct explicit div(alpha*UG), nodal product + assembled strong divergence.
-# 2: Nek5000-style cubature div(alpha*UG): interpolate separately, form flux
-# at GL points, differentiate, weight and transpose-project with CG assembly.
-# Forms 1 and 2 include full compression and ignores alphaCompressionMode/inlet mask.
-# Native alpha advection is canceled; UG equations are unchanged.
-# Form 1 is not cubature-dealiased; form 2 requires native cubature enabled.
-# gasTransportMethod retains its previous meaning for form 0.
-alphaTransportForm = 2
-# Metres from the inlet plane z=0: suppress alpha*div(ug) at z <= thickness.
-# 0 disables this local mask; positive values work with modes 1 and 2.
-# A nodal step mask is applied after assembly/projection in explicit mode.
-alphaCompressionInletThickness = 0.01
-# 0: latest-state scalar convection and explicit RHS (EXT1); 1: configured EXT history
-# BDF time derivative and fluid EXT are unchanged.
-scalarExtrapolationEnabled = 0
-# Mixture-divergence construction: 0=reconstructed alpha RHS,
-# 1=discrete BDF alpha history plus native NekRS scalar advection.
-mixtureDivergenceMethod = 0
+# Target mixture divergence comes only from the actual alpha equation RHS.
+# 0 imposes div(U)=0; 1 enables the reconstructed target (optionally ramped).
+mixtureDivergenceEnabled = 1
 # Raw method0/method1/difference statistics in log and comparison CSV.
 divergenceComparisonInterval = 10
 divergenceFilterEnabled = 0
-# Filter the selected target for either mixtureDivergenceMethod (0 or 1).
+# Filter the recovered alpha-RHS target after reconstruction.
 # Raw method0/method1/difference exports and statistics remain unfiltered.
 divergenceFilterModes = 1
 divergenceFilterStrength = 0.25

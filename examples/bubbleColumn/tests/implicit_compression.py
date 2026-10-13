@@ -16,7 +16,7 @@ int o_alphaCompressionRate=11,o_dragLambda=22,o_NULL=0;
 int main() {
  for(int form=0;form<=1;++form) for(int mode=0;mode<=2;++mode) for(int drag=0;drag<=1;++drag) {
    p.alphaTransportForm=form;p.alphaCompressionMode=mode;p.dragEnabled=drag;
-   assert(implicitGasDrag(0,0)==(form==0 && mode==2?11:0));
+   assert(implicitGasDrag(0,0)==0);
    for(int i=1;i<=3;++i) assert(implicitGasDrag(0,i)==(drag?22:0));
  }
 }
@@ -29,6 +29,5 @@ with tempfile.TemporaryDirectory() as t:
 properties=s.split('inline void updateProperties(double)')[1].split('inline occa::memory implicitGasDrag')[0]
 assert 'prepareGasAdvection' not in properties
 source=s.split('inline void addExplicitSources(double)')[1].split('inline void buildDivergenceFromAlphaRhs')[0]
-assert source.index('if (p.alphaTransportForm == 0 && p.alphaCompressionMode == 2)')<source.index('subtractScalarDiffusion();')
-assert 'o_alphaCompressionRate, o_alphaSource' in s
-print('Actual implicit callback: alpha reaction only in mode 2; UG drag unchanged. Frozen-rate and explicit-source routing checked.')
+assert 'recoverAlphaRhsKernel' in s
+print('Actual implicit callback: alpha has no reaction; UG drag remains switchable.')

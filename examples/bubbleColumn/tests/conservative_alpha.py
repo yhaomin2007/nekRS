@@ -56,14 +56,15 @@ with tempfile.TemporaryDirectory() as directory:
 case = (root/'examples/bubbleColumn/bubbleColumnTerms.hpp').read_text()
 evaluation = case.split('inline void evaluatePointwiseTerms()')[1].split(
     'inline void evaluateNativeAlphaAdvection')[0]
-assert 'o_alphaConservativeFlux.copyFrom(o_gasAdvector' in evaluation
-assert 'opSEM::strongDivergence(mesh, offset, o_alphaConservativeFlux, o_alphaSource)' in evaluation
+assert 'evaluateGasCubatureTransport(true);' in evaluation
 forcing = case.split('inline void addExplicitSources(double)')[1].split(
     'inline void buildDivergenceFromAlphaRhs')[0]
-assert 'evaluateNativeAlphaAdvection(o_alphaGasAdvection, true);' in forcing
-assert '1.0, nrs->scalar->o_explicitTerms("alpha")' in forcing
+assert 'evaluateNativeAlphaAdvection(o_alphaGasAdvection, true, names[i], true);' in forcing
+assert '1.0, nrs->scalar->o_explicitTerms(names[i])' in forcing
 reconstruction = case.split('inline void buildDivergenceFromAlphaRhs')[1].split(
     'inline void buildDivergenceFromAlphaBdf')[0]
-assert 'if (p.alphaTransportForm == 0)' in reconstruction
+assert 'recoverAlphaRhsKernel' in reconstruction
+assert 'core-weakLaplacianHex3D' in reconstruction
+assert 'o_alphaBeforeClip' in reconstruction
 print('Actual nodal flux product and core EXT1/EXT2 native-advection cancellation '
       'pass unequal shared-node mass assembly. Direct RHS reconstruction routing checked.')

@@ -6,11 +6,7 @@ s=re.sub(r'; @tile\(p_blockSize, @outer, @inner\)','',s)
 cpp='#include <cmath>\n#include <cassert>\n#include <initializer_list>\nusing dfloat=double; using dlong=long;\n'+s+'''
 int main(){
  const int n=2,o=4; const double rl=998.2,rg=1.2;
- double alpha[4],x[4],y[4],z[4],um[12];
- for(double a:{0.,.02,.05}) for(double v:{0.,.3,-.3}) {
- initializeUniform(n,o,rl,rg,a,v,alpha,x,y,z,um);
- assert(z[0]==v); assert(std::abs(um[8]-rg*a*v/((1-a)*rl+a*rg))<1e-15);
- }
+ double alpha[4]={},um[12]={};
  double ug[12]={},ul[12]={},q[12]={},gradA[12]={},gradU[36]={},divQ[4]={},al[12]={},gp[12]={},rho[4],mu[4],ds[36],gs[36],sa[4],su[12],lambda[4];
  alpha[0]=alpha[1]=.05; gp[0]=gp[1]=10; al[0]=al[1]=2;
  for(double cv:{0.,.5}) {
@@ -45,7 +41,11 @@ int main(){
  // Inactive gas stress does not divide by zero.
  alpha[0]=0;alpha[1]=.05; double st[4]={1,1},src[4]={};
  addGasStress(n,1e-6,500.3,alpha,st,src);
- assert(src[0]==0 && std::abs(src[1]-1/(.05*500.3))<1e-12);
+ assert(std::abs(src[0]-1/(1e-6*500.3))<1e-6 && std::abs(src[1]-1/(.05*500.3))<1e-12);
+ // Dilute gas keeps pressure, drag and VM acceleration; only denominators are protected.
+ gp[0]=10;al[0]=2;
+ buildEquationTerms(n,o,rl,rg,.001,.000018,1e-6,1.,1.,.003,1.,.5,0.,0.,-9.81,alpha,um,ug,ul,gradA,divQ,gradU,al,gp,rho,mu,ds,gs,sa,su,lambda);
+ assert(lambda[0]>0 && std::isfinite(su[0]) && std::abs(su[8]+9.81*rg/(rg+.5*rl))<1e-12);
 }
 '''
 with tempfile.TemporaryDirectory() as t:

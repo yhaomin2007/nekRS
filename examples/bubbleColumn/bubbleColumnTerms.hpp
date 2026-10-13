@@ -16,12 +16,9 @@ struct Parameters {
   dfloat rhoGas;
   dfloat muLiquid;
   dfloat muGas;
-  dfloat alphaInitial;
   dfloat alphaInlet;
   dfloat ugInlet;
-  dfloat gasInletProfileWidth = 0.0;
   dfloat ugInitial = 0.0;
-  int initialConditionMode = 0;
   dfloat initialPlumeHeight = 0.05;
   dfloat initialPlumeThickness = 0.01;
   dfloat gravity[3];
@@ -35,7 +32,7 @@ struct Parameters {
   dfloat zRampTop;
   dfloat outletDampingFactor;
   dfloat smoothGasVelocityMaskEnabled;
-  int gasVelocityLowAlphaCutoffEnabled = 1;
+  int gasVelocityLowAlphaCutoffEnabled = 0;
   dfloat gasVelocityClipEnabled;
   dfloat gasVelocityMaximum;
   dfloat mixtureVelocityClipEnabled;
@@ -56,10 +53,11 @@ struct Parameters {
   dfloat virtualMassCoefficient;
   int gasTransportMethod = 1;
   int alphaCompressionMode = 1;
-  int alphaTransportForm = 0;
+  int alphaTransportForm = 2;
   dfloat alphaCompressionInletThickness = 0.0;
   int scalarExtrapolationEnabled = 0;
-  int mixtureDivergenceMethod;
+  int mixtureDivergenceMethod = 0;
+  int mixtureDivergenceEnabled = 1;
   int divergenceComparisonInterval = 10;
   dfloat divergenceFilterEnabled;
   int divergenceFilterModes;
@@ -85,6 +83,8 @@ static deviceMemory<dfloat> o_gasUrst;
 static deviceMemory<dfloat> o_alphaGasAdvection;
 static deviceMemory<dfloat> o_alphaMixtureAdvection;
 static deviceMemory<dfloat> o_alphaMixtureRhs;
+static deviceMemory<dfloat> o_alphaClipRate;
+static deviceMemory<dfloat> o_alphaBeforeClip;
 static deviceMemory<dfloat> o_alphaConservativeFlux;
 static deviceMemory<dfloat> o_ug;
 static deviceMemory<dfloat> o_ul;
@@ -172,12 +172,13 @@ static occa::kernel addGasStressKernel;
 static occa::kernel reconstructGasVelocityKernel;
 static occa::kernel postProcessGasFluxKernel;
 static occa::kernel alphaCompressionKernel;
+static occa::kernel recoverAlphaRhsKernel;
+static occa::kernel alphaBoundaryRhsKernel;
 static occa::kernel fieldMagnitudeKernel;
 static occa::kernel gasPointwiseCflKernel;
 static occa::kernel maskAlphaCompressionInletKernel;
 static occa::kernel clipAlphaKernel;
 static occa::kernel clipVectorMagnitudeKernel;
-static occa::kernel initializeUniformKernel;
 static occa::kernel initializePlumeKernel;
 static occa::kernel buildLiquidVelocityKernel;
 static occa::kernel updateVirtualMassHistoryKernel;
@@ -188,13 +189,6 @@ static occa::kernel buildMixtureForceKernel;
 static occa::kernel buildGasPressureAccelerationMonitorKernel;
 static occa::kernel buildGasFluxConsistencyMonitorKernel;
 static occa::kernel buildOutletRampFactorKernel;
-
-inline dfloat inletProfileWeight(dfloat wallDistance, dfloat width)
-{
-  if (width <= 0.0) return 1.0;
-  const dfloat s = std::max(dfloat(0.0), std::min(dfloat(1.0), wallDistance / width));
-  return s * s * (3.0 - 2.0 * s);
-}
 
 inline void registerKernels(deviceKernelProperties &kernelInfo)
 {
@@ -234,12 +228,13 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
     postProcessGasFluxKernel =
         platform->kernelRequests.load(request, "postProcessGasFlux");
     alphaCompressionKernel = platform->kernelRequests.load(request, "alphaCompression");
+    recoverAlphaRhsKernel = platform->kernelRequests.load(request, "recoverAlphaRhs");
+    alphaBoundaryRhsKernel = platform->kernelRequests.load(request, "alphaBoundaryRhs");
     maskAlphaCompressionInletKernel =
         platform->kernelRequests.load(request, "maskAlphaCompressionInlet");
     clipAlphaKernel = platform->kernelRequests.load(request, "clipAlpha");
     clipVectorMagnitudeKernel =
         platform->kernelRequests.load(request, "clipVectorMagnitude");
-    initializeUniformKernel = platform->kernelRequests.load(request, "initializeUniform");
     initializePlumeKernel = platform->kernelRequests.load(request, "initializePlume");
     buildLiquidVelocityKernel = platform->kernelRequests.load(request, "buildLiquidVelocity");
     updateVirtualMassHistoryKernel =
@@ -262,6 +257,16 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
 inline void allocate()
 {
   const dlong offset = nrs->fieldOffset;
+  nekrsCheck(nrs->meshV->cubNq < 2 * nrs->meshV->N + 1,
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "%s", "Direct conservative flux differentiation requires cubaturePolynomialOrder >= 2*polynomialOrder.\n");
+  for (const char *name : {"alpha", "ugx", "ugy", "ugz"}) {
+    auto coefficient = nrs->scalar->o_transportCoeff(name);
+    const auto lo = platform->linAlg->min(nrs->meshV->Nlocal, coefficient, platform->comm.mpiComm());
+    const auto hi = platform->linAlg->max(nrs->meshV->Nlocal, coefficient, platform->comm.mpiComm());
+    nekrsCheck(lo != 1.0 || hi != 1.0, platform->comm.mpiComm(), EXIT_FAILURE,
+               "%s", "This case requires transportCoeff=1 for alpha and UG.\n");
+  }
   nekrsCheck(p.virtualMassEnabled < 0.0 || p.virtualMassCoefficient < 0.0
              || !std::isfinite(p.virtualMassEnabled) || !std::isfinite(p.virtualMassCoefficient),
              platform->comm.mpiComm(), EXIT_FAILURE,
@@ -390,6 +395,9 @@ inline void allocate()
   o_alphaGasAdvection.resize(nrs->scalar->fieldOffsetSum);
   o_alphaMixtureAdvection.resize(nrs->scalar->fieldOffsetSum);
   o_alphaMixtureRhs.resize(offset);
+  o_alphaClipRate.resize(offset);
+  o_alphaBeforeClip.resize(offset);
+  platform->linAlg->fill(offset, 0.0, o_alphaClipRate);
   o_alphaConservativeFlux.resize(3 * offset);
   o_ul.resize(3 * offset);
   o_ulPrevious.resize(3 * offset);
@@ -403,14 +411,6 @@ inline void allocate()
   {
     auto mesh = nrs->meshV;
     std::vector<dfloat> weight(offset, 1.0);
-    if (p.gasInletProfileWidth > 0.0) {
-      // Mesh wall distance avoids assuming a circular or rectangular inlet.
-      // The profile is consumed only by inlet Dirichlet boundaries.
-      const auto distance = mesh->minDistance(std::vector<dlong>{3}, "cheap_dist");
-      for (dlong n = 0; n < mesh->Nlocal; ++n) {
-        weight[n] = inletProfileWeight(distance[n], p.gasInletProfileWidth);
-      }
-    }
     for (dlong e = 0; e < mesh->Nelements; ++e) {
       for (int f = 0; f < mesh->Nfaces; ++f) {
         if (mesh->EToB[e * mesh->Nfaces + f] != 3) continue;
@@ -661,7 +661,6 @@ inline void evaluatePointwiseTerms()
   opSEM::strongGrad(mesh, offset, alpha, o_gradAlpha);
   opSEM::strongDivergence(mesh, offset, o_qg, o_divQg);
   opSEM::strongGradVec(mesh, offset, o_ug, o_gradUg);
-  if (p.gasTransportMethod == 0) opSEM::strongGradVec(mesh, offset, o_gasAdvector, o_gradGasAdvector);
   opSEM::strongGradVec(mesh, offset, o_ul, o_gradUl);
   // Compute both pressure-gradient discretizations from the same lagged
   // pressure field so they can be compared directly.
@@ -722,8 +721,6 @@ inline void evaluatePointwiseTerms()
                                o_gasPressureInletMask, o_gradP);
   }
 
-  if (p.alphaTransportForm == 0 && p.alphaCompressionMode == 1
-      && p.gasTransportMethod == 1) evaluateGasCubatureTransport();
 
   buildEquationTermsKernel(mesh->Nlocal,
                            offset,
@@ -756,38 +753,8 @@ inline void evaluatePointwiseTerms()
                            o_alphaSource,
                            o_ugSource,
                            o_dragLambda);
-  if (p.alphaTransportForm == 2) {
-    evaluateGasCubatureTransport(true);
-    platform->linAlg->axpby(mesh->Nlocal, -1.0, o_gasTransport, 0.0, o_alphaSource);
-  } else if (p.alphaTransportForm == 1) {
-    // Form the flux from the same frozen UG advector used at this time level.
-    // Rebuild with the updated alpha in post-solve properties as well.
-    o_alphaConservativeFlux.copyFrom(o_gasAdvector, 3 * offset);
-    platform->linAlg->axmyMany(mesh->Nlocal, 3, offset, 0, 1.0,
-                               alpha, o_alphaConservativeFlux);
-    opSEM::strongDivergence(mesh, offset, o_alphaConservativeFlux, o_alphaSource);
-    platform->linAlg->axpby(mesh->Nlocal, -1.0, o_alphaSource, 0.0, o_alphaSource);
-  } else if (p.alphaCompressionMode == 0) {
-    platform->linAlg->fill(mesh->Nlocal, 0.0, o_alphaSource);
-  } else if (p.alphaCompressionMode == 2) {
-    // Retain -d_g^n*alpha for post-solve continuity reconstruction. It is
-    // removed from the explicit forcing in addExplicitSources(), below.
-    o_alphaSource.copyFrom(alpha, mesh->Nlocal);
-    platform->linAlg->axmy(mesh->Nlocal, -1.0,
-                           o_alphaCompressionRate, o_alphaSource);
-  } else if (p.gasTransportMethod == 1) {
-    platform->linAlg->axpby(mesh->Nlocal, -1.0, o_gasTransport, 0.0, o_alphaSource);
-  } else {
-    alphaCompressionKernel(mesh->Nlocal, offset, alpha, o_gradGasAdvector, o_alphaSource);
-  }
-  if (p.alphaTransportForm == 0 && p.alphaCompressionMode == 1
-      && p.alphaCompressionInletThickness > 0.0) {
-    // Mask the assembled source for both GLL and cubature explicit modes.
-    // Keep this source masked in post-solve continuity reconstruction too.
-    maskAlphaCompressionInletKernel(mesh->Nlocal,
-                                    p.alphaCompressionInletThickness,
-                                    mesh->o_z, o_alphaSource);
-  }
+  evaluateGasCubatureTransport(true);
+  platform->linAlg->axpby(mesh->Nlocal, -1.0, o_gasTransport, 0.0, o_alphaSource);
 
   // Smoothly increase the implicit mixture viscosity and all implicit scalar
   // diffusion coefficients near the outlet. Do not scale the explicit gas
@@ -820,7 +787,7 @@ inline void evaluatePointwiseTerms()
 }
 
 inline void evaluateNativeAlphaAdvection(deviceMemory<dfloat> &o_advection,
-                                         bool averageSharedNodes, const char *name = "alpha", bool mixture = false)
+                                         bool averageSharedNodes, const char *name = "alpha", bool mixture = true)
 {
   auto mesh = nrs->meshV;
   const int alphaIndex = nrs->scalar->nameToIndex.at(name);
@@ -886,38 +853,14 @@ inline void prepareGasAdvection()
   // EXT to its history; predicting the advector here would extrapolate twice.
   reconstructGasVelocity();
   o_gasAdvector.copyFrom(o_ug, 3 * offset);
-  if (p.alphaTransportForm == 0 && p.alphaCompressionMode == 2) {
-    // Freeze once before the scalar solve; do not refresh in properties.
-    // Native Helmholtz supports nodal reaction coefficients, not a cubature
-    // multiplication operator. Preserve the signed divergence without clipping.
-    opSEM::strongDivergence(nrs->meshV, offset, o_gasAdvector,
-                            o_alphaCompressionRate);
-    if (p.alphaCompressionInletThickness > 0.0) {
-      // The same frozen masked rate supplies the implicit alpha operator
-      // and its post-solve RHS reconstruction. Do not mask it twice there.
-      maskAlphaCompressionInletKernel(nrs->meshV->Nlocal,
-                                      p.alphaCompressionInletThickness,
-                                      nrs->meshV->o_z, o_alphaCompressionRate);
-    }
-  }
-  auto mesh = nrs->meshV;
-  if (platform->options.compareArgs("ADVECTION TYPE", "CUBATURE")) {
-    launchKernel("nrs-UrstCubatureHex3D", mesh->Nelements, 0,
-                 mesh->o_cubvgeo, mesh->o_cubInterpT, offset, 0,
-                 nrs->scalar->vCubatureOffset, o_gasAdvector, o_NULL, o_gasUrst);
-  } else {
-    launchKernel("nrs-UrstHex3D", mesh->Nelements, 0, mesh->o_vgeo,
-                 offset, 0,
-                 o_gasAdvector, o_NULL, o_gasUrst);
-  }
 }
 
 inline void initializeHistory()
 {
-  // Separate scalar advection buffers: fluid Urst and velocity stay mixture-valued.
-  nrs->scalar->o_U = o_gasAdvector;
-  nrs->scalar->o_Ue = o_gasAdvector;
-  nrs->scalar->o_relUrst = o_gasUrst;
+  // Native scalar transport remains mixture-based; user RHS replaces it.
+  nrs->scalar->o_U = nrs->fluid->o_U;
+  nrs->scalar->o_Ue = nrs->fluid->o_Ue;
+  nrs->scalar->o_relUrst = nrs->fluid->o_relUrst;
   if (!p.scalarExtrapolationEnabled) {
     // Keep the original length: core kernels are compiled for p_nEXT and
     // history allocation/lagging also relies on the configured length.
@@ -989,6 +932,8 @@ inline void postProcessGasFlux()
 inline void clipAlpha(double, int)
 {
   alphaClipDeltaVolume = 0.0;
+  o_alphaBeforeClip.copyFrom(nrs->scalar->o_solution("alpha"), nrs->meshV->Nlocal);
+  platform->linAlg->fill(nrs->meshV->Nlocal, 0.0, o_alphaClipRate);
   if (p.alphaClippingEnabled == 0.0) {
     return;
   }
@@ -999,12 +944,15 @@ inline void clipAlpha(double, int)
   const dfloat volumeBefore = platform->linAlg->innerProd(
       Nlocal, nrs->meshV->o_LMM, alpha, comm);
 
+  o_alphaClipRate.copyFrom(alpha, Nlocal);
   clipAlphaKernel(Nlocal,
                   p.alphaMinimum,
                   p.alphaMaximum,
                   alpha);
   const dfloat volumeAfter = platform->linAlg->innerProd(
       Nlocal, nrs->meshV->o_LMM, alpha, comm);
+  platform->linAlg->axpby(Nlocal, nrs->g0 / nrs->dt[0], alpha,
+      -nrs->g0 / nrs->dt[0], o_alphaClipRate);
   alphaClipDeltaVolume = volumeAfter - volumeBefore;
   cumulativeAlphaClipDeltaVolume += alphaClipDeltaVolume;
 }
@@ -1151,9 +1099,6 @@ inline void addExplicitSources(double)
 {
   prepareGasAdvection();
   evaluatePointwiseTerms();
-  if (p.alphaTransportForm == 0 && p.alphaCompressionMode == 2) {
-    platform->linAlg->fill(nrs->meshV->Nlocal, 0.0, o_alphaSource);
-  }
   subtractScalarDiffusion();
   evaluateMixtureForce();
   const dlong Nlocal = nrs->meshV->Nlocal;
@@ -1162,20 +1107,23 @@ inline void addExplicitSources(double)
   // Copy only entries written by the pointwise kernels. Avoid whole-view
   // copies because scalar and fluid fields may have different padded extents.
   nrs->scalar->o_explicitTerms("alpha").copyFrom(o_alphaSource, Nlocal);
-  if (p.alphaTransportForm != 0) {
-    // Native sumMakef subtracts Ag using the same EXT coefficients as FU.
-    // Adding the assembled native Ag here cancels that contribution after
-    // mass assembly, leaving exactly -div(alpha*UG) as explicit transport.
-    // Keep o_alphaSource physical for continuity reconstruction.
-    evaluateNativeAlphaAdvection(o_alphaGasAdvection, true);
-    const int index = nrs->scalar->nameToIndex.at("alpha");
+  // Gas momentum remains material-velocity form: subtract UG.grad(UG),
+  // not div(UG tensor UG). Alpha has already received -div(alpha*UG).
+  evaluateGasCubatureTransport(false);
+  const char *names[4] = {"alpha", "ugx", "ugy", "ugz"};
+  for (int i = 0; i < 3; ++i) {
+    auto source = o_ugSource.slice(i * offset, offset);
+    platform->linAlg->axpby(Nlocal, -1.0,
+        o_gasTransport.slice((i + 1) * offset, offset), 1.0, source);
+    nrs->scalar->o_explicitTerms(names[i + 1]).copyFrom(source, Nlocal);
+  }
+  for (int i = 0; i < 4; ++i) {
+    evaluateNativeAlphaAdvection(o_alphaGasAdvection, true, names[i], true);
+    const int index = nrs->scalar->nameToIndex.at(names[i]);
     platform->linAlg->axpby(Nlocal, 1.0,
         o_alphaGasAdvection.slice(nrs->scalar->fieldOffsetScan[index], offset),
-        1.0, nrs->scalar->o_explicitTerms("alpha"));
+        1.0, nrs->scalar->o_explicitTerms(names[i]));
   }
-  nrs->scalar->o_explicitTerms("ugx").copyFrom(o_ugSource, Nlocal, 0, 0 * offset);
-  nrs->scalar->o_explicitTerms("ugy").copyFrom(o_ugSource, Nlocal, 0, 1 * offset);
-  nrs->scalar->o_explicitTerms("ugz").copyFrom(o_ugSource, Nlocal, 0, 2 * offset);
 
   auto fluidTerms = nrs->fluid->o_explicitTerms();
   for (int i = 0; i < 3; ++i) {
@@ -1193,27 +1141,38 @@ inline void buildDivergenceFromAlphaRhs(deviceMemory<dfloat>& o_divergence)
     return;
   }
 
-  // dt(alpha)+Ag(alpha)=Salpha+diffusion. Therefore
-  // dt(alpha)+Am(alpha)=Salpha+Am(alpha)-Ag(alpha)+diffusion.
-  evaluateNativeAlphaAdvection(o_alphaGasAdvection, true);
-  evaluateNativeAlphaAdvection(o_alphaMixtureAdvection, true, "alpha", true);
   const int index = nrs->scalar->nameToIndex.at("alpha");
   const dlong alphaOffset = nrs->scalar->fieldOffsetScan[index];
-  o_alphaMixtureRhs.copyFrom(o_alphaSource, Nlocal);
+  const int bdfOrder = std::min(nrs->tstep, static_cast<int>(nrs->o_coeffBDF.size()));
+  // Native o_JwF contains the actual explicit RHS (including cancellation,
+  // HPF and EXT history) plus the BDF history load. Remove only that history.
+  recoverAlphaRhsKernel(Nlocal, alphaOffset, nrs->scalar->fieldOffsetSum,
+      bdfOrder, 1.0 / nrs->dt[0], nrs->meshV->o_LMM,
+      nrs->scalar->o_JwF, nrs->scalar->o_S, nrs->o_coeffBDF, o_alphaMixtureRhs);
+  platform->linAlg->axmy(Nlocal, 1.0, nrs->meshV->o_LMM, o_alphaMixtureRhs);
+  oogs::startFinish(o_alphaMixtureRhs, 1, 0, ogsDfloat, ogsAdd, nrs->meshV->oogs);
+  platform->linAlg->axmy(Nlocal, 1.0, nrs->meshV->o_invLMM, o_alphaMixtureRhs);
+  // Use the native weak diffusion stiffness with its negative RHS sign.
+  launchKernel("core-weakLaplacianHex3D", nrs->meshV->Nelements, 1,
+      o_scalarFieldOffsetScan, nrs->meshV->o_ggeo, nrs->meshV->o_D,
+      nrs->scalar->o_diffusionCoeff("alpha"), o_alphaBeforeClip,
+      o_alphaDiffusionDivergence);
+  oogs::startFinish(o_alphaDiffusionDivergence, 1, 0, ogsDfloat, ogsAdd, nrs->meshV->oogs);
+  platform->linAlg->axmy(Nlocal, -1.0, nrs->meshV->o_invLMM, o_alphaDiffusionDivergence);
+  platform->linAlg->axpby(Nlocal, 1.0, o_alphaDiffusionDivergence, 1.0, o_alphaMixtureRhs);
+  platform->linAlg->axpby(Nlocal, 1.0, o_alphaClipRate, 1.0, o_alphaMixtureRhs);
+  // At Dirichlet nodes the imposed boundary replaces the evolution equation.
+  auto &solver = nrs->scalar->ellipticSolver[index];
+  if (solver->Nmasked()) {
+    alphaBoundaryRhsKernel(solver->Nmasked(), solver->o_maskIds(), alphaOffset,
+        nrs->scalar->fieldOffsetSum, bdfOrder, 1.0 / nrs->dt[0], nrs->g0,
+        nrs->scalar->o_S, nrs->o_coeffBDF, o_alphaMixtureRhs);
+  }
+  evaluateNativeAlphaAdvection(o_alphaMixtureAdvection, true, "alpha", true);
   platform->linAlg->axpby(Nlocal, 1.0,
       o_alphaMixtureAdvection.slice(alphaOffset, offset), 1.0, o_alphaMixtureRhs);
-  if (p.alphaTransportForm == 0) {
-    platform->linAlg->axpby(Nlocal, -1.0,
-        o_alphaGasAdvection.slice(alphaOffset, offset), 1.0, o_alphaMixtureRhs);
-  }
-  o_alphaDiffusionFlux.copyFrom(o_gradAlpha, 3 * offset);
-  auto diffusion = nrs->scalar->o_diffusionCoeff("alpha");
-  platform->linAlg->axmyVector(
-      Nlocal, offset, 0, 1.0, diffusion, o_alphaDiffusionFlux);
-  opSEM::strongDivergence(nrs->meshV,
-                          offset,
-                          o_alphaDiffusionFlux,
-                          o_alphaDiffusionDivergence);
+  // Diffusion is already incorporated in the recovered alpha RHS.
+  platform->linAlg->fill(Nlocal, 0.0, o_alphaDiffusionDivergence);
 
   buildDivergenceFromAlphaRhsKernel(Nlocal,
                                     p.rhoLiquid,
@@ -1265,10 +1224,8 @@ inline void updateProperties(double)
   // mixture divergence implied by the alpha-equation RHS.
   postProcessGasFlux();
   evaluatePointwiseTerms();
-  // Evaluate both alternatives from the same solution state for checkpoint
-  // diagnostics. Method 0 intentionally contains only the user alpha source
-  // and reconstructed strong diffusion divergence. Do not add recovered HPF
-  // or apply the optional modal divergence filter to that diagnostic.
+  // Cache recovered-RHS and BDF diagnostics. Only the recovered alpha RHS
+  // supplies the pressure target; BDF remains an independent comparison.
   const dlong Nlocal = nrs->meshV->Nlocal;
   const dlong offset = nrs->fieldOffset;
 
@@ -1346,11 +1303,7 @@ inline void printDivergenceComparison(double time, int tstep)
 
 inline occa::memory implicitGasDrag(double, int scalarIndex)
 {
-  // Scalar ordering is ALPHA, UGX, UGY, UGZ.
-  if (scalarIndex == nrs->scalar->nameToIndex.at("alpha")
-      && p.alphaTransportForm == 0 && p.alphaCompressionMode == 2) {
-    return o_alphaCompressionRate;
-  }
+  // Only gas drag is an implicit reaction; alpha transport is conservative/explicit.
   if (p.dragEnabled != 0.0 && scalarIndex >= 1 && scalarIndex <= 3) {
     return o_dragLambda;
   }
@@ -1360,6 +1313,10 @@ inline occa::memory implicitGasDrag(double, int scalarIndex)
 inline void updateDivergence(double)
 {
   const dlong Nlocal = nrs->meshV->Nlocal;
+  if (!p.mixtureDivergenceEnabled) {
+    platform->linAlg->fill(Nlocal, 0.0, nrs->fluid->o_div);
+    return;
+  }
   if (p.divergenceExtrapolationEnabled == 0.0 || divergenceHistoryCount == 0) {
     nrs->fluid->o_div.copyFrom(o_divSource, Nlocal);
   } else if (divergenceHistoryCount == 1) {
