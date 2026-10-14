@@ -27,7 +27,10 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   platform->options.getArgs("POLYNOMIAL DEGREE", N);
   platform->options.getArgs("CUBATURE POLYNOMIAL DEGREE", cubN);
   const auto interpolationHeader = bubbleColumn::missingCubatureInterpolationHeader(N, cubN);
-  if (!interpolationHeader.empty()) platform->kernelInfo["headers"] += interpolationHeader;
+  if (!interpolationHeader.empty()) {
+    platform->kernelInfo["headers"].asArray();
+    platform->kernelInfo["headers"] += interpolationHeader;
+  }
   auto &p = bubbleColumn::p;
   platform->par->extract("casedata", "rholiquid", p.rhoLiquid);
   platform->par->extract("casedata", "rhogas", p.rhoGas);

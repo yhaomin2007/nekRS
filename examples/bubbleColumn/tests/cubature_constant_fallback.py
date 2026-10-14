@@ -68,6 +68,38 @@ with tempfile.TemporaryDirectory() as directory:
     subprocess.run([str(path/'fixed')],check=True)
     parser=root.parent/'occa-cub-parser/bin/occa'
     if parser.exists():
+        # Exercise the actual UDF insertion with real OCCA JSON and header
+        # assembly. A missing .asArray() silently stores a string that OCCA
+        # does not emit; manually concatenating the header missed this bug.
+        udf=(case/'bubbleColumn.udf').read_text()
+        insertion=udf.split('  if (!interpolationHeader.empty()) {',1)[1].split('\n  }',1)[0]
+        occa_root=parser.parents[1]
+        routing='''#include <occa.hpp>
+#include <iostream>
+#include <iterator>
+struct Platform {occa::properties kernelInfo;} object,*platform=&object;
+int main(){
+ const std::string interpolationHeader((std::istreambuf_iterator<char>(std::cin)),std::istreambuf_iterator<char>());
+'''+insertion+'''
+ std::cout<<occa::assembleKernelHeader(platform->kernelInfo);
+}
+'''
+        (path/'routing.cpp').write_text(routing)
+        subprocess.run(['g++','-std=c++11',str(path/'routing.cpp'),
+                        '-I'+str(occa_root/'include'),'-L'+str(occa_root/'lib'),
+                        '-Wl,-rpath,'+str(occa_root/'lib'),'-locca',
+                        '-o',str(path/'routing')],check=True)
+        assembled=subprocess.run([str(path/'routing')],input=header,capture_output=True,text=True,check=True).stdout
+        assert 'const dfloat c_I[15][8]' in assembled
+        # Reproduce the previous property's silent omission using real OCCA.
+        (path/'broken-routing.cpp').write_text(routing.replace('platform->kernelInfo["headers"].asArray();',''))
+        subprocess.run(['g++','-std=c++11',str(path/'broken-routing.cpp'),
+                        '-I'+str(occa_root/'include'),'-L'+str(occa_root/'lib'),
+                        '-Wl,-rpath,'+str(occa_root/'lib'),'-locca',
+                        '-o',str(path/'broken-routing')],check=True)
+        broken=subprocess.run([str(path/'broken-routing')],input=header,capture_output=True,text=True,check=True).stdout
+        assert 'const dfloat c_I' not in broken
+        header=assembled
         (path/'fixed.okl').write_text(defines.replace('using dfloat=double;using dlong=long;','#define dfloat double\n#define dlong long')+includes+header+native)
         with (path/'fixed.cu').open('w') as output:
             subprocess.run([str(parser),'translate','-m','CUDA',str(path/'fixed.okl')],stdout=output,check=True)
