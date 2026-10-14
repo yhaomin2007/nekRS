@@ -4,8 +4,8 @@ import re, subprocess, tempfile
 root=Path(__file__).resolve().parents[1]
 repo=root.parents[1]
 terms=(root/'bubbleColumn2Terms.hpp').read_text()
-block=terms[terms.index('  auto mesh = nrs->meshV;',terms.index('// Suppress UG pressure')):]
-block=block[:block.index('  o_rhoM.resize')]
+block=terms[terms.index('  if (p.gasPressureInletMaskEnabled) {'):]
+block=block[:block.index('  o_gradPStrong.resize')]
 kernel=(repo/'src/platform/linAlg/kernels/axmyVector.okl').read_text()
 kernel=kernel.replace('@kernel ', '').replace('@ restrict ', '')
 kernel=re.sub(r'; @tile\(p_blockSize, @outer, @inner\)', '',kernel)
@@ -14,7 +14,7 @@ cpp=r'''
 #include <cassert>
 using dlong=long;using dfloat=double;
 #define p_NVec 3
-struct Memory {std::vector<double> v;void copyFrom(std::vector<double> x){v=x;}} o_ugPressureWeight;
+struct Memory {std::vector<double> v;void resize(long n){v.resize(n);} void copyFrom(const double *x,long n){v.assign(x,x+n);}} o_gasPressureInletMask;
 struct Mesh {long Nelements=2,Nlocal=10;int Nfaces=3,Nfp=2;
  int EToB[6]={1,0,3,0,2,3};
  long vmapM[12]={0,1,2,3,4,5,6,7,8,9,4,5};int oogs=0;};
@@ -28,13 +28,14 @@ namespace oogs {void startFinish(Memory &m,int,int,int,int op,int){
   m.v[pair[0]]=m.v[pair[1]]=value;
  }
 }}
+struct {int gasPressureInletMaskEnabled=1;} p;
 void makeMask(){long offset=12;
 '''+block+r'''
 }
 '''+kernel+r'''
 int main(){Mesh mesh;Nrs app{&mesh};nrs=&app;makeMask();
  double raw[36],masked[36];for(int i=0;i<36;i++)raw[i]=masked[i]=i+1;
- axmyVector(10,12,0,1.,o_ugPressureWeight.v.data(),masked);
+ axmyVector(10,12,0,1.,o_gasPressureInletMask.v.data(),masked);
  for(int c=0;c<3;c++)for(int n=0;n<12;n++){
   bool blocked=n==0||n==1||n==6;
   assert(masked[c*12+n]==(blocked?0:raw[c*12+n]));
@@ -46,8 +47,7 @@ with tempfile.TemporaryDirectory() as t:
  f=Path(t)/'mask.cpp';f.write_text(cpp)
  subprocess.run(['g++','-std=c++17','-Wall','-Wextra','-Werror','-Wno-unknown-pragmas',str(f),'-o',str(Path(t)/'mask')],check=True)
  subprocess.run([str(Path(t)/'mask')],check=True)
-assert 'o_liquidAcceleration,\n                           o_gradPForUG,' in terms
-assert 'o_gradP,\n' not in terms[terms.index('  buildEquationTermsKernel('):terms.index('  buildEquationTermsKernel(')+2500]
+assert 'o_liquidAcceleration,\n                           o_gradP,' in terms
 for path in ['src/solver/fluid/fluidSolver.hpp','src/solver/scalar/scalarSolver.hpp','src/solver/scalar/scalarSolver.cpp']:
  text=(repo/path).read_text()
  for removed in ['postPressure','solveDeferred','deferSolve','userRhs']:

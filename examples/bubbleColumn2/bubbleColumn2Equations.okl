@@ -1,5 +1,6 @@
 @kernel void reconstructGasVelocity(const dlong N,
                                     const dlong offset,
+                                    const int lowAlphaCutoffEnabled,
                                     const dfloat alphaFloor,
                                     @ restrict const dfloat *alpha,
                                     @ restrict const dfloat *ugx,
@@ -9,10 +10,10 @@
 {
   for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
     const dfloat a = alpha[n] < 0.0 ? 0.0 : (alpha[n] > 1.0 ? 1.0 : alpha[n]);
-    const dfloat inverseAlpha = a > alphaFloor ? 1.0 : 0.0;
-    ug[n + 0 * offset] = ugx[n] * inverseAlpha;
-    ug[n + 1 * offset] = ugy[n] * inverseAlpha;
-    ug[n + 2 * offset] = ugz[n] * inverseAlpha;
+    const dfloat activeWeight = (!lowAlphaCutoffEnabled || a > alphaFloor) ? 1.0 : 0.0;
+    ug[n + 0 * offset] = ugx[n] * activeWeight;
+    ug[n + 1 * offset] = ugy[n] * activeWeight;
+    ug[n + 2 * offset] = ugz[n] * activeWeight;
   }
 }
 
@@ -49,6 +50,7 @@
 
 @kernel void postProcessGasVelocity(
     const dlong N,
+    const int lowAlphaCutoffEnabled,
     const dfloat smoothMaskEnabled,
     const dfloat velocityClipEnabled,
     const dfloat velocityMaximum,
@@ -62,18 +64,18 @@
 {
   for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
     dfloat weight = 1.0;
-    if (smoothMaskEnabled != 0.0 && alpha[n] <= alphaCutoff) {
+    if (lowAlphaCutoffEnabled && smoothMaskEnabled != 0.0 && alpha[n] <= alphaCutoff) {
       weight = 0.0;
-    } else if (smoothMaskEnabled != 0.0 && alpha[n] < alphaFullyActive) {
+    } else if (lowAlphaCutoffEnabled && smoothMaskEnabled != 0.0 && alpha[n] < alphaFullyActive) {
       const dfloat ramp =
           (alpha[n] - alphaCutoff) / (alphaFullyActive - alphaCutoff);
       weight = ramp * ramp * (3.0 - 2.0 * ramp);
     }
     const dfloat a = alpha[n] < 0.0 ? 0.0 : (alpha[n] > 1.0 ? 1.0 : alpha[n]);
-    const dfloat inverseAlpha = a > alphaFloor ? 1.0 : 0.0;
-    dfloat ux = weight * ugx[n] * inverseAlpha;
-    dfloat uy = weight * ugy[n] * inverseAlpha;
-    dfloat uz = weight * ugz[n] * inverseAlpha;
+    const dfloat activeWeight = (!lowAlphaCutoffEnabled || a > alphaFloor) ? 1.0 : 0.0;
+    dfloat ux = weight * ugx[n] * activeWeight;
+    dfloat uy = weight * ugy[n] * activeWeight;
+    dfloat uz = weight * ugz[n] * activeWeight;
     const dfloat speed = sqrt(ux * ux + uy * uy + uz * uz);
     const dfloat clipScale = (velocityClipEnabled != 0.0 && speed > velocityMaximum)
         ? velocityMaximum / speed
@@ -84,29 +86,6 @@
   }
 }
 
-@kernel void initializeUniform(const dlong N,
-                             const dlong offset,
-                             const dfloat alphaInitial,
-                             const dfloat gasInitialVelocity,
-                             @ restrict dfloat *alpha,
-                             @ restrict dfloat *ugx,
-                             @ restrict dfloat *ugy,
-                             @ restrict dfloat *ugz,
-                             @ restrict dfloat *uv)
-{
-  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
-    // Uniform initial gas state with initially stationary liquid.
-    const dfloat a = alphaInitial;
-    const dfloat ugVertical = gasInitialVelocity;
-    alpha[n] = a;
-    ugx[n] = 0.0;
-    ugy[n] = 0.0;
-    ugz[n] = ugVertical;
-    uv[n + 0 * offset] = 0.0;
-    uv[n + 1 * offset] = 0.0;
-    uv[n + 2 * offset] = a * ugVertical;
-  }
-}
 
 // Original smooth bottom plume; initially stationary liquid, qg=alpha*ug.
 @kernel void initializePlume(const dlong N,
@@ -231,8 +210,6 @@
                                 @ restrict const dfloat *uv,
                                 @ restrict const dfloat *ug,
                                 @ restrict const dfloat *ul,
-                                @ restrict const dfloat *gradAlpha,
-                                @ restrict const dfloat *divQg,
                                 @ restrict const dfloat *gradUg,
                                 @ restrict const dfloat *virtualMassRelativeAcceleration,
                                 @ restrict const dfloat *liquidAcceleration,
@@ -246,7 +223,6 @@
                                 @ restrict dfloat *ugSource,
                                 @ restrict dfloat *dragLambda,
                                 @ restrict dfloat *mixtureInterphaseAcceleration,
-                                @ restrict dfloat *gasDragSource,
                                 @ restrict dfloat *mixtureDragSource)
 {
   for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
@@ -255,7 +231,7 @@
     const dfloat a = (aRaw < 0.0) ? 0.0 : ((aRaw > 1.0) ? 1.0 : aRaw);
     const dfloat beta = 1.0 - a;
     const dfloat betaSafe = (beta > alphaFloor) ? beta : alphaFloor;
-    const dfloat gasActive = (a >= alphaFloor) ? 1.0 : 0.0;
+    const dfloat gasActive = 1.0;
     const dfloat rhoM = beta * rhoLiquid + a * rhoGas;
     const dfloat pressureMobility = beta / rhoLiquid + a / rhoGas;
     const dfloat rhoPressure = 1.0 / pressureMobility;
@@ -292,21 +268,8 @@
     driftStress[n + 7 * offset] = driftScale * dz * dy;
     driftStress[n + 8 * offset] = driftScale * dz * dz;
 
-    // NekRS supplies native dealiased A_m(alpha)=u_v.grad(alpha). Recover the
-    // conservative gas continuity equation with assembled user-side operators.
-    alphaSource[n] = uv[n + 0 * offset] * gradAlpha[n + 0 * offset]
-                     + uv[n + 1 * offset] * gradAlpha[n + 1 * offset]
-                     + uv[n + 2 * offset] * gradAlpha[n + 2 * offset]
-                     - divQg[n];
-
-    // Cancel mixture convection of UG, replace by gas advective convection.
-    dfloat gasAdvection[3];
-    for (int i = 0; i < 3; ++i) {
-      gasAdvection[i] = 0.0;
-      for (int j = 0; j < 3; ++j)
-        gasAdvection[i] += (uv[n + j * offset] - ug[n + j * offset])
-                          * gradUg[n + (3 * i + j) * offset];
-    }
+    // Alpha and material UG convection are supplied by cubature transport.
+    alphaSource[n] = 0.0;
 
     // alpha*tau_g with a Newtonian Stokes stress. Its divergence is added
     // outside this pointwise kernel after applying the SEM divergence.
@@ -323,7 +286,7 @@
     // OpenFOAM Schiller-Naumann dispersed-gas drag.
     const dfloat magUr = sqrt(urx * urx + ury * ury + urz * urz);
     // Freeze a direction-preserving limiter only for drag. Both the drag
-    // coefficient and force use the limited slip; transported qg is untouched.
+    // coefficient and force use the limited slip; transported UG is untouched.
     const dfloat magGasVolumeSlip = sqrt(dx * dx + dy * dy + dz * dz);
     const dfloat dragSlipFactor =
         (dragSlipLimitEnabled != 0.0 && magGasVolumeSlip > dragSlipMaximum)
@@ -334,24 +297,20 @@
         : 0.44 * Re;
     const dfloat Ki = 0.75 * CdRe * muLiquid
                       / (bubbleDiameter * bubbleDiameter);
-    // M_D/rho_g = alpha*Ki/rho_g*(u_l-u_g). Since q_g=alpha*u_g,
-    // The reconstructed liquid feedback is also placed on the implicit diagonal.
+    // Freeze Ki and liquid velocity; only -Ki*UG/rhoEff is implicit.
     const dfloat dragRate = (a >= dragAlphaCutoff && dragEnabled != 0.0)
         ? dragEnabled * Ki * dragSlipFactor / rhoGas : 0.0;
-    // u_l=(u_v-q_g)/beta: retain the q_g dependence implicitly as well.
-    // M_D/rho_g = (dragRate/beta)*(alpha*u_v-q_g).
-    dragLambda[n] = dragRate / betaSafe;
     // Move -C*rho_l*D_g(ug)/Dt to the left, then divide by rhoEff.
     // Native scalar BDF advances ug, including its own matching history.
     const dfloat addedDensity = virtualMassEnabled * virtualMassCoefficient * rhoLiquid;
     const dfloat rhoEff = rhoGas + addedDensity;
     const dfloat forceScale = rhoGas / rhoEff;
+    dragLambda[n] = forceScale * dragRate;
     for (int i = 0; i < 3; ++i) {
       const dlong id = n + i * offset;
       const dfloat gravity = i == 0 ? gravityX : (i == 1 ? gravityY : gravityZ);
-      ugSource[id] = gasActive * (gasAdvection[i]
-          + forceScale * (-gasPressureEnabled * gradP[id] / rhoGas
-                          + gravity + dragRate * (ul[id] - ug[id]))
+      ugSource[id] = gasActive * (forceScale * (-gasPressureEnabled * gradP[id] / rhoGas
+                          + gravity + dragRate * ul[id])
           + addedDensity / rhoEff * liquidAcceleration[id]);
     }
 
@@ -366,7 +325,6 @@
     for (int i = 0; i < 3; ++i) {
       const dlong id = n + i * offset;
       const dfloat gasDrag = dragRate * (ul[id] - ug[id]);
-      gasDragSource[id] = gasActive * forceScale * gasDrag;
       mixtureDragSource[id] = mixtureDragEnabled != 0.0
           ? a * (1.0 - rhoGas / rhoLiquid) * gasDrag : 0.0;
     }
@@ -439,11 +397,8 @@
     dfloat driftAccelerationY = 0.0;
     dfloat driftAccelerationZ = 0.0;
     if (driftStressEnabled != 0.0) {
-      // The drift-stress divergence is the only mixture-momentum source that
-      // uses u_g. Suppress it wherever the gas phase is numerically absent.
-      // This second mask prevents differentiation of neighboring nonzero
-      // drift stress from leaking a gas-dependent source into alpha < floor.
-      const dfloat gasActive = (alpha[n] >= alphaFloor) ? 1.0 : 0.0;
+      // As in method1, alpha enters the stress; do not mask its divergence.
+      const dfloat gasActive = 1.0;
       driftAccelerationX = -gasActive * divDriftStress[n + 0 * offset];
       driftAccelerationY = -gasActive * divDriftStress[n + 1 * offset];
       driftAccelerationZ = -gasActive * divDriftStress[n + 2 * offset];
@@ -460,18 +415,6 @@
 
 // Replace only the user approximation to native advection. Conservative flux,
 // pressure, gravity, physical gas stress and interphase sources are unchanged.
-@kernel void correctAdvectionCancellation(const dlong N, const dlong offset,
-                                          @ restrict const dfloat *uv,
-                                          @ restrict const dfloat *grad,
-                                          @ restrict const dfloat *nativeAdvection,
-                                          @ restrict dfloat *source)
-{
-  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
-    source[n] += nativeAdvection[n]
-        - uv[n] * grad[n] - uv[n + offset] * grad[n + offset]
-        - uv[n + 2 * offset] * grad[n + 2 * offset];
-  }
-}
 
 @kernel void buildMixtureStressCorrection(const dlong N, const dlong offset,
                                           const dfloat rhoLiquid, const dfloat rhoGas,
@@ -548,11 +491,13 @@
 }
 
 @kernel void addGasStress(const dlong N, const dfloat alphaFloor,
-                         const dfloat rhoEff,
-                         @ restrict const dfloat *alpha,
-                         @ restrict const dfloat *divStress,
-                         @ restrict dfloat *source)
+                          const dfloat rhoEff,
+                          @ restrict const dfloat *alpha,
+                          @ restrict const dfloat *divStress,
+                          @ restrict dfloat *source)
 {
-  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner))
-    if (alpha[n] > alphaFloor) source[n] += divStress[n] / (alpha[n] * rhoEff);
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    const dfloat aSafe = alpha[n] > alphaFloor ? alpha[n] : alphaFloor;
+    source[n] += divStress[n] / (aSafe * rhoEff);
+  }
 }

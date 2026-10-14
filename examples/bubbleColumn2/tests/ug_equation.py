@@ -58,10 +58,29 @@ int main(){
  virtualMassEnabled=0;
 '''+call+r'''
  assert(std::abs(ugSource[0]-10)<1e-12);
+
+ // Paired VM and drag use one physical coefficient; only UG is normalized.
+ virtualMassEnabled=.4;dragEnabled=1;alpha[0]=.02;ul[0]=.1;ug[0]=.3;
+ gradP[0]=-12;liquidAcceleration[0]=2;virtualMassRelativeAcceleration[0]=-.7;
+'''+call+r'''
+
+ double added=.4*.5*rhoLiquid,effective=rhoGas+added;
+ assert(std::abs(ugSource[0]-(12+added*2)/effective-dragLambda[0]*ul[0])<1e-12);
+ double physicalDrag=dragLambda[0]*effective/rhoGas*(ul[0]-ug[0]);
+ double physicalVm=added/rhoGas*virtualMassRelativeAcceleration[0];
+ assert(std::abs(mixtureInterphaseAcceleration[0]-.02*(1-rhoGas/rhoLiquid)*(physicalDrag+physicalVm))<1e-10);
+ assert(std::abs(mixtureDragSource[0]-.02*(1-rhoGas/rhoLiquid)*physicalDrag)<1e-10);
+ // At zero alpha, UG remains a transported velocity just as in method1.
+ alpha[0]=0;
+'''+call+r'''
+
+ assert(dragLambda[0]>0 && std::isfinite(ugSource[0]));
+ assert(mixtureInterphaseAcceleration[0]==0);
+ virtualMassEnabled=0;dragEnabled=0;alpha[0]=.01;
  // Native mixture convection cancellation leaves gas advective convection.
  uv[0]=.2;ug[0]=.3;gradUg[0]=.4;gradP[0]=0;
 '''+call+r'''
- assert(std::abs(ugSource[0]-(.2-.3)*.4)<1e-12);
+ assert(ugSource[0]==0);
  // Derived flux and liquid reconstruction preserve volume average.
  double a[2]={.02,0},gas[6]={.4,0,0,0,.3,0},q[6]={},mix[6]={.008,0,0,0,.006,0},liquid[6]={};
  buildGasFlux(1,2,a,gas,q);buildLiquidVelocity(1,2,1e-6,a,mix,q,liquid);
@@ -78,7 +97,7 @@ with tempfile.TemporaryDirectory() as t:
 terms=(root/'bubbleColumn2Terms.hpp').read_text()
 par=(root/'bubbleColumn2.par').read_text();bc=(root/'bubbleColumn2Boundary.oudf').read_text()
 assert 'scalars = ALPHA, UGX, UGY, UGZ' in par
-assert 'scalar ugz' in bc and '? p_UG_INLET : 0.0' in bc
+assert 'scalar ugz' in bc and '? bc->usrwrk[bc->idxVol] * p_UG_INLET : 0.0' in bc
 assert 'o_solution("qgx")' not in terms and 'o_solution("ugx")' in terms
-assert 'o_ugSource' in terms and 'o_gradUg.slice' in terms
+assert 'o_ugSource' in terms and 'evaluateGasCubatureTransport(false)' in terms
 print('UG actual-kernel/native-BDF checks: added inertia/history, pressure, convection, flux/liquid reconstruction, stress and BC/storage wiring passed.')

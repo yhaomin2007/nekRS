@@ -1,116 +1,121 @@
-# bubbleColumn2: method 2 with gas velocity scalars
+# bubbleColumn2: method2 with method1 scalar transport
 
-Native velocity is the volume average `um=(1-alpha)*ul+alpha*ug`, with native
-zero-divergence projection. Scalars/checkpoint fields are now `ALPHA,UGX,UGY,UGZ`.
-Gas flux `qg=alpha*ug` is derived for conservative alpha transport, liquid
-reconstruction, force evaluation and conservation diagnostics; it is not solved.
-Density-averaged `bubbleColumn` and `bubbleColumn2_ext` are unchanged.
-NekRS core and scalars-first / pressure / mixture-velocity ordering are unchanged.
+The native velocity is the volume average
+`UM=(1-alpha)*UL+alpha*UG`, with `div(UM)=0`.
+`UL=(UM-alpha*UG)/(1-alpha)` uses denominator protection near alpha=1.
+The checkpoint scalars are `ALPHA,UGX,UGY,UGZ`; `qg=alpha*UG` is derived.
+NekRS core and scalar / pressure / velocity solve ordering are unchanged.
+Method1 and other cases are unchanged by this update.
 
-## Gas velocity equation and virtual mass
+## Alpha and gas velocity
 
-The physical gas acceleration equation is
+The scalar transport follows method1 at the synchronization commit:
 
-`rho_g D_g(ug)/Dt = -grad(p) + rho_g g + Ki(ul-ug)
-                    + div(alpha*tau_g)/alpha
-                    + c (D_l(ul)/Dt - D_g(ug)/Dt)`
+- Alpha uses direct cubature differentiation of the product `alpha*UG`,
+  projected to GLL and assembled with lumped-mass weights. This represents
+  `d(alpha)/dt + div(alpha*UG) = numerical diffusion/regularization`.
+- UG uses cubature `UG.grad(UG)`, not `div(UG tensor UG)`.
+- The exact native mixture-advection contribution is canceled in each scalar
+  RHS with matching mass assembly; native scalar velocity pointers still refer
+  to UM. There is no temporary replacement of the fluid velocity.
+- All scalar nonlinear sources/advection use EXT1, using separate scalar EXT
+  coefficient storage. Native BDF history/order and fluid EXT are retained.
+- Gas drag uses the native scalar implicit reaction: `lambda=Ki/rhoEff`,
+  with lagged `Ki` and `UL`; the explicit RHS contains `lambda*UL` and the
+  left side contains `lambda*UG`. Mixture drag remains a full explicit slip
+  force, with its existing independent switch/ramp/cutoff/limiter.
+- UG is retained at zero/dilute alpha by default, as in method1.
+  `gasVelocityLowAlphaCutoffEnabled=1` enables the optional hard/smooth mask;
+  magnitude clipping remains independent. Physical stress uses
+  `div(alpha*tau_g)/(max(alpha,alphaFloor)*rhoEff)`.
 
-where `c=virtualMassEnabled*ramp*C_VM*rho_l`. Move the gas material acceleration
-in VM to the left:
+Conservative cubature transport is the fixed case implementation. Set
+`cubaturePolynomialOrder >= 2*polynomialOrder` (example: 14 for degree 7).
+The copied user interpolation-header helper supplies missing native `c_I`
+combinations without modifying installed NekRS files. Fixed mesh, four native
+scalars with `transportCoeff=1`, and no scalar subcycling are required.
 
-`(rho_g+c) D_g(ug)/Dt = -grad(p) + rho_g g + Ki(ul-ug)
-                       + div(alpha*tau_g)/alpha + c*a_l_lagged`.
+`alphaExplicitFilterModes` / `alphaExplicitFilterStrength` configure the same
+standalone bubble-basis filter as method1. After each scalar advancement the
+sequence is filter alpha, mass assembly, reapply scalar Dirichlet values, then
+optional clipping. Strength 0 disables this filter; HPFRT remains independent.
+The example uses one mode at strength 0.05, diffusion 1e-5, and HPFRT one mode
+at scaling 10 for alpha/UG, matching method1. Filtering is not a positivity
+limiter and need not preserve gas volume on curved elements. Conservation CSV
+accounts for filter and clipping volume changes separately.
 
-The implemented normalized equation divides by `rhoEff=rho_g+c`. Native scalar
-BDF then advances UG and its native UG history, which is algebraically the same
-as multiplying the BDF current/history terms by rhoEff. No explicit negative
-gas acceleration is included in the UG source, and no artificial damping
-(diagonal-only) approximation is used. All gas physical forces, including
-pressure, gravity, drag and stress, use the same effective inertia. The
-explicit convection correction cancels native mixture convection and inserts
-`ug.grad(ug)` rather than the old conservative `div(qg*ug)` momentum flux.
-Alpha still uses conservative `div(alpha*ug)` with exact native-advection
-cancellation. `transportCoeff=1` is required for all four normalized scalars.
-Numerical scalar diffusion and HPFRT retain their configured UG units.
+## Initial and boundary conditions
 
-This is a semiimplicit, segregated formulation: liquid material acceleration
-is lagged; the VM contribution to volume-mixture momentum remains the existing
-explicit completed-step acceleration-difference source. Mixture pressure
-mobility remains `beta/rho_l+alpha/rho_g`. Thus this is not a jointly implicit
-VM treatment of both phases/mixture and does not guarantee a larger stable dt.
-Do not count the old explicit gas-VM relative-acceleration source again in UG.
+Fresh starts use the same plume alpha/UG fields and parameters as method1:
 
-## Virtual mass controls
-
-```ini
-[CASEDATA]
-virtualMassEnabled = 1.0
-virtualMassCoefficient = 0.5
-virtualMassTimeDerivativeOrder = 2
-virtualMassStartStep = 100
-virtualMassRampStep = 1000
+```
+f = 0.5*(1-tanh((z-initialPlumeHeight)/initialPlumeThickness))
+alpha = alphaInlet*f
+UG = (0,0,gasInitialVelocity*f)
+UL = 0
+UM = alpha*UG
 ```
 
-VM is off for steps <= start. Positive ramp duration R applies
-`min(1,(step-start)/R)` afterward, reaching full strength at start+R; R=0
-activates immediately. Both gas added inertia and the paired mixture VM source
-use that factor. History is collected while VM is enabled, even during delay.
+The last line is deliberately the volume average, rather than method1's density
+average. The example uses alphaInlet=0.016667, gasInitialVelocity=0.3,
+height=0.05 and thickness=0.01. The obsolete uniformInitialCondition/alphaInitial
+path is removed. Restart files take precedence over fresh initialization.
+Only UG checkpoints are compatible; old QG fields cannot be read as velocity.
 
-`virtualMassTimeDerivativeOrder=1/2` controls the completed-step liquid
-acceleration and explicit mixture VM diagnostic/history derivative. Order 2
-uses three-level variable-step backward differences, with coefficients
-`((2h+k)/(h(h+k)), -(h+k)/(hk), h/(k(h+k)))`. Startup/restart uses order 1 until
-sufficient history exists. The implicit gas derivative uses the native BDF
-selected by `timeStepper`, not this liquid-history option. Default VM remains off.
-Native EXT extrapolation remains for explicit liquid/mixture source parts.
+At the inlet alpha=alphaInlet, UGz=gasInletVelocity and
+UMz=alphaInlet*gasInletVelocity. Both velocities are zero on walls. Shared
+inlet/wall rim nodes have wall precedence using the same nodal boundary mask as
+method1. The outlet keeps its existing pressure and zero-Neumann scalar types.
 
-## Pressure, drag and boundaries
+UG pressure remains lagged. `gasPressureGradientMethod=0/1` selects assembled
+strong / mass-normalized weak **volume** gradient; it is not a new-pressure or
+full native phase-pressure boundary correction. Optional exponential filtering
+uses `gasPressureGradientFilterEnabled/Weight`. `gasPressureInletMaskEnabled=1`
+suppresses UG pressure forcing only on inlet nodes (including shared copies);
+the outlet remains active. Defaults match method1: strong, unfiltered, unmasked.
 
-Gas pressure remains lagged, with a strong gradient source divided by rhoEff;
-it is suppressed only on inlet surface nodes (boundary ID 1), including shared
-copies. Outlet (ID 2), wall-only and interior nodes retain pressure forcing.
-Existing inlet/outlet/wall boundary types remain. The UG inlet is
-`(0,0,gasInletVelocity)`; mixture inlet is `(0,0,alphaInlet*gasInletVelocity)`.
-Wall UG is zero and outlet is scalar zeroNeumann.
+## Virtual mass consistency
 
-Drag remains fully explicit in gas and mixture. Old-state gas drag acceleration
-is divided by rhoEff, while physical volume-mixture drag retains its original
-weight. Drag alone is held fixed in EXT history; other source terms are not.
-`mixtureDragEnabled`, `dragEnabled`, `dragAlphaCutoff`, `dragSlipLimitEnabled`,
-`dragSlipMaximum` and `mixtureDragRampEnabled/StartStep/Steps` remain available.
-There is no drag under-relaxation or implicit drag. Mixture drag ramp is separate
-from VM ramp. Inertia does not remove every explicit-drag or coupling constraint.
+Define one physical coefficient for both equations:
 
-## Initialization and checkpoint compatibility
+`c = virtualMassEnabled * ramp(step) * virtualMassCoefficient * rhoLiquid`.
 
-```ini
-uniformInitialCondition = 1
-alphaInitial = 0.016667
-gasInitialVelocity = 0.3
-initialPlumeHeight = 0.05
-initialPlumeThickness = 0.01
+UG solves the normalized semiimplicit equation
+
+```
+(rhoGas+c) * Dg(UG)/Dt = -gradP + rhoGas*g + Ki*(UL-UG)
+                         + div(alpha*tau_g)/alpha + c*aL_lagged
 ```
 
-Uniform mode initializes alpha and UG directly, with `um_z=alpha*ug_z`.
-`uniformInitialCondition=0` uses the original smooth bottom profile
-`f=0.5*(1-tanh((z-height)/thickness))`, `alpha=alphaInlet*f`,
-`ug_z=gasInletVelocity*f`, and `um_z=alpha*ug_z`. Horizontal velocities are zero;
-both modes initially have stationary liquid. Restart skips initialization.
-The low-alpha mask and velocity clipping now act directly on UG; qg masking
-conservation diagnostics still measure changes in the derived alpha*ug flux.
+The gas BDF time derivative uses native UG histories; its own acceleration is
+not added again as an explicit VM source. All gas physical forces use the same
+`rhoEff=rhoGas+c`. Numerical diffusion/HPFRT remain in their configured UG units.
 
-**Old ALPHA,QGX,QGY,QGZ checkpoints cannot be read as UG checkpoints.**
-Start fresh for this formulation; only use checkpoints produced by this UG case.
-Fields 2/3/4 in new files contain gas velocity, not gas flux. Exports of ug/ul
-vectors and the derived-flux conservation diagnostics remain available.
-Diffusion subtraction keys are now `subtractUgxDiffusion`,
-`subtractUgyDiffusion`, `subtractUgzDiffusion` (default 0).
+UM retains the explicit physical volume-mixture source
 
-## Validation
+`alpha*(1-rhoGas/rhoLiquid)*(c/rhoGas)*(aL_lagged-aG_lagged)`.
 
-Serial tests under `tests/` compile the actual case kernels. `ug_equation.py`
-also invokes the actual native scalar BDF forcing kernel to check effective
-inertia and matching time histories. Tests cover direct UG pressure, convection,
-flux/liquid reconstruction, physical stress, initialization, masks, explicit
-drag histories, step ramps and variable-dt VM histories. They do not replace
-full NekRS MPI/GPU compilation and coupled-flow stability testing.
+Do not divide this UM source by rhoEff or omit it as if UM were a density
+average. Its liquid acceleration comes from the same completed-step history
+field used in UG. The gas history and liquid history use the same selected
+first/second-order variable-dt derivative and current material convection.
+`virtualMassTimeDerivativeOrder=1` matches method1's liquid-history derivative;
+2 remains available, with first-order startup until enough samples exist.
+The implicit gas derivative order is controlled by native `timeStepper`.
+
+`virtualMassStartStep=S` leaves VM off through S;
+`virtualMassRampStep=R>0` gives `min(1,(step-S)/R)` afterward, and R=0 activates
+immediately. History is collected during the delay when VM is enabled.
+The default is VM on, coefficient 0.5, no delay/ramp, matching method1's
+activation. UM remains explicit with native fluid EXT, while scalar explicit
+parts use EXT1. Physical coefficients are paired; the coupled equations are
+not solved implicitly together. Pressure mobility remains
+`(1-alpha)/rhoLiquid + alpha/rhoGas`. Stability at larger dt is not established.
+
+## Verification
+
+Tests under `tests/` exercise actual kernels/native BDF forcing, cubature
+transport and high-degree quadrature, shared-node cancellation, initialization,
+inlet rim agreement, dilute UG, implicit gas drag, explicit mixture drag/ramp,
+VM histories/coefficient pairing, alpha postprocessing and interpolation fallback.
+Full NekRS MPI/GPU build and flow stability require a run on the target system.

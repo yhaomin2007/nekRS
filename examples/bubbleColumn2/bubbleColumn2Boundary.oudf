@@ -2,10 +2,12 @@ void udfDirichlet(bcData *bc)
 {
   if (isField("fluid velocity")) {
     if (bc->id == 1) {
-      // Phase-volume averaged inlet velocity; the liquid inlet velocity is zero.
+      // Volume-averaged inlet; initially stationary liquid.
       bc->uxFluid = 0.0;
       bc->uyFluid = 0.0;
-      bc->uzFluid = p_ALPHA_INLET * p_UG_INLET;
+      // Uniform inlet; shared inlet/wall rim nodes retain wall precedence.
+      bc->uzFluid = bc->usrwrk[bc->idxVol]
+                    * p_ALPHA_INLET * p_UG_INLET;
     } else if (bc->id == 3) {
       bc->uxFluid = 0.0;
       bc->uyFluid = 0.0;
@@ -23,6 +25,7 @@ void udfDirichlet(bcData *bc)
   } else if (isField("scalar ugy")) {
     bc->sScalar = 0.0;
   } else if (isField("scalar ugz")) {
-    bc->sScalar = (bc->id == 1) ? p_UG_INLET : 0.0;
+    bc->sScalar = (bc->id == 1)
+        ? bc->usrwrk[bc->idxVol] * p_UG_INLET : 0.0;
   }
 }

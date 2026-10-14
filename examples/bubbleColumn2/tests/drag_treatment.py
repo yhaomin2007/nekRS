@@ -1,4 +1,4 @@
-"""Serial checks of actual frozen-drag kernel and EXT-history helper; requires g++."""
+"""Implicit gas drag and explicit mixture drag/history checks; requires g++."""
 from pathlib import Path
 import re
 import subprocess
@@ -8,12 +8,12 @@ root = Path(__file__).resolve().parents[1]
 terms = (root / 'bubbleColumn2Terms.hpp').read_text()
 udf = (root / 'bubbleColumn2.udf').read_text()
 for obsolete in ('frozenDragEnabled', 'mixtureImplicitDragEnabled',
-                 'implicitGasDrag', 'implicitMixtureDrag', 'o_mixtureDragDiagonal',
+                 'implicitMixtureDrag', 'o_mixtureDragDiagonal',
                  'o_mixtureDragRate', 'addMixtureStressAndSplitDrag',
                  'mixtureDragRelaxation', 'relaxMixtureDrag', 'o_relaxedMixtureDragSource',
                  'mixtureDragRampStartTime', 'mixtureDragRampDuration'):
     assert obsolete not in terms + udf
-assert 'userImplicitLinearTerm' not in udf
+assert 'userImplicitLinearTerm = &bubbleColumn2::implicitGasDrag' in udf
 helper = terms.split('inline void freezeDragHistory()')[1].split('inline void addExplicitSources')[0]
 okl = (root / 'bubbleColumn2Equations.okl').read_text()
 kernel = okl.split('@kernel void buildEquationTerms')[1].split('@kernel')[0]
@@ -68,17 +68,18 @@ cpp += '\nint main(){\n' + setup + r'''
  alpha[0]=.05; uv[0]=.2; ug[0]=1; ul[0]=(.2-.05)/.95;
 '''
 cpp += call + r'''
- const double gas=gasDragSource[0];
+ const double gas=dragLambda[0]*(ul[0]-ug[0]);
  assert(gas<0);
- assert(std::abs(ugSource[0]-gas)<1e-12);
+ assert(std::abs(ugSource[0]-dragLambda[0]*ul[0])<1e-12);
+ assert(std::abs(ugSource[0]-dragLambda[0]*ug[0]-gas)<1e-12);
  assert(std::abs(mixtureInterphaseAcceleration[0]-.05*.999*gas)<1e-12);
  assert(std::abs(mixtureDragSource[0]-.05*.999*gas)<1e-12);
  assert(dragLambda[0]>0);
 '''
 for parameter, value, assertion in [
-    ('mixtureDragEnabled', '0', 'assert(gasDragSource[0]<0 && mixtureDragSource[0]==0 && mixtureInterphaseAcceleration[0]==0);'),
-    ('dragEnabled', '0', 'assert(gasDragSource[0]==0 && mixtureDragSource[0]==0 && dragLambda[0]==0);'),
-    ('dragAlphaCutoff', '.1', 'assert(gasDragSource[0]==0 && mixtureDragSource[0]==0 && dragLambda[0]==0);')]:
+    ('mixtureDragEnabled', '0', 'assert(dragLambda[0]>0 && mixtureDragSource[0]==0 && mixtureInterphaseAcceleration[0]==0);'),
+    ('dragEnabled', '0', 'assert(ugSource[0]==0 && mixtureDragSource[0]==0 && dragLambda[0]==0);'),
+    ('dragAlphaCutoff', '.1', 'assert(ugSource[0]==0 && mixtureDragSource[0]==0 && dragLambda[0]==0);')]:
     variant = list(call.removesuffix(';').removeprefix('buildEquationTerms(').removesuffix(')').split(','))
     names = [arg.strip().split()[-1].lstrip('*') for arg in args]
     variant[names.index(parameter)] = value
@@ -102,13 +103,14 @@ cpp += r'''
   for(int i=0;i<3;++i){
    double sg=0,su=0,ng=0,nu=0;
    for(int j=0;j<3;++j){sg+=weights[j]*scalar.o_EXT.v[8*j+2*(i+1)];su+=weights[j]*fluid.o_EXT.v[6*j+2*i];ng+=weights[j]*10*(step-j);nu+=weights[j]*20*(step-j);}
-   assert(std::abs(sg-(d*(i+1)+ng))<1e-10);
+   // Scalar histories are untouched: gas drag is an implicit reaction.
+   assert(scalar.o_EXT.v[2*(i+1)]==o_gasDragSource.v[2*i]+10*step);
    assert(std::abs(su-(.999*d*(i+1)+nu))<1e-10);
   }
   assert(scalar.o_EXT.v[0]==100+step);
   for(int j=2;j>=1;--j){for(int i=0;i<8;++i)scalar.o_EXT.v[8*j+i]=scalar.o_EXT.v[8*(j-1)+i];for(int i=0;i<6;++i)fluid.o_EXT.v[6*j+i]=fluid.o_EXT.v[6*(j-1)+i];}
  }
- puts("Explicit paired drag, switches/cutoff, startup, EXT1/2/3 and other-source preservation passed.");
+ puts("Implicit UG drag, explicit physical mixture drag, switches/cutoff, startup, mixture EXT1/2/3 and scalar-history preservation passed.");
 }
 '''
 with tempfile.TemporaryDirectory() as folder:
