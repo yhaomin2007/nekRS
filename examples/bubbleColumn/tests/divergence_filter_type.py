@@ -1,4 +1,4 @@
-"""Exercise actual filter callback: both selections honor explicit strength."""
+"""Exercise actual filter callback: explicit modal strength."""
 from pathlib import Path
 import subprocess
 import tempfile
@@ -22,7 +22,7 @@ struct LA {void fill(long n,double x,Mem m){std::fill(m.a,m.a+n,x);}} la;
 struct Platform {LA *linAlg;} obj{&la},*platform=&obj;
 struct Mesh {long Nlocal=2,Nelements=1;} mesh;
 struct Nrs {Mesh *meshV;long fieldOffset;} nr{&mesh,4},*nrs=&nr;
-struct Parameters {double divergenceFilterEnabled,divergenceFilterStrength;int divergenceFilterType;} p;
+struct Parameters {double divergenceFilterStrength;} p;
 double scratch[12],matrix[1];
 Mem o_validationMassFlux{scratch},o_divFilterMatrix{matrix};
 int calls;double usedStrength;
@@ -38,18 +38,16 @@ void launchKernel(const char*,long,Mem,double s,long offset,Mem input,Mem output
 '''
 main = r'''
 int main(){
- for(int enabled=0;enabled<=1;++enabled)
- for(int type=0;type<=1;++type)
  for(double s:{0.,.25,1.}){
   double values[]={1.,3.,99.,99.};Mem q{values};calls=0;
-  p.divergenceFilterEnabled=enabled;p.divergenceFilterType=type;p.divergenceFilterStrength=s;
+  p.divergenceFilterStrength=s;
   filterDivergence(q);
-  double effective=enabled?s:0.;
+  double effective=s;
   assert(std::abs(values[0]-(1.+effective))<1e-14);
   assert(std::abs(values[1]-(3.-effective))<1e-14);
   assert(values[2]==99.&&values[3]==99.);
-  assert(calls==enabled);
-  if(enabled)assert(usedStrength==s);
+  assert(calls==(s>0.));
+  if(s>0.)assert(usedStrength==s);
  }
 }
 '''
@@ -58,4 +56,4 @@ with tempfile.TemporaryDirectory() as directory:
     (path/'check.cpp').write_text(prefix+'inline void filterDivergence('+body+main)
     subprocess.run(['g++','-std=c++11',str(path/'check.cpp'),'-o',str(path/'check')],check=True)
     subprocess.run([str(path/'check')],check=True)
-print('Actual filter callback: disabled unchanged, both types honor strength 0/.25/1; padding preserved.')
+print('Actual filter callback: strength 0 unchanged, strengths .25/1 honored; padding preserved.')

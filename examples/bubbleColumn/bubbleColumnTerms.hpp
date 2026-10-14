@@ -59,10 +59,8 @@ struct Parameters {
   int mixtureDivergenceMethod = 0;
   int mixtureDivergenceEnabled = 1;
   int divergenceComparisonInterval = 10;
-  dfloat divergenceFilterEnabled;
-  int divergenceFilterType = 0; // 0: legacy relaxed, 1: explicit modal; same operator
-  int divergenceFilterModes;
-  dfloat divergenceFilterStrength;
+  int divergenceFilterModes = 1;
+  dfloat divergenceFilterStrength = 0.25;
   dfloat divergenceExtrapolationEnabled;
   dfloat divergenceRampEnabled;
   int divergenceRampSteps;
@@ -283,17 +281,13 @@ inline void allocate()
   nekrsCheck(platform->options.compareArgs("MOVING MESH", "TRUE"),
              platform->comm.mpiComm(), EXIT_FAILURE,
              "%s", "Direct UG advection requires a fixed mesh.\n");
-  nekrsCheck(p.divergenceFilterEnabled != 0.0
-                 && (p.divergenceFilterStrength < 0.0
+  nekrsCheck(p.divergenceFilterStrength < 0.0
                      || p.divergenceFilterStrength > 1.0
-                     || !std::isfinite(p.divergenceFilterStrength)),
+                     || !std::isfinite(p.divergenceFilterStrength),
              platform->comm.mpiComm(),
              EXIT_FAILURE,
              "divergenceFilterStrength must be in [0,1], but is %g\n",
              p.divergenceFilterStrength);
-  nekrsCheck(p.divergenceFilterType < 0 || p.divergenceFilterType > 1,
-             platform->comm.mpiComm(), EXIT_FAILURE,
-             "%s", "divergenceFilterType must be 0 (legacy relaxed) or 1 (explicit modal).\n");
   nekrsCheck(p.gasTransportMethod < 0 || p.gasTransportMethod > 1,
              platform->comm.mpiComm(), EXIT_FAILURE,
              "%s", "gasTransportMethod must be 0 (GLL) or 1 (cubature).\n");
@@ -528,14 +522,14 @@ inline void allocate()
   o_qgMaskDelta.resize(3 * offset);
   platform->linAlg->fill(nrs->meshV->Nlocal, 1.0, o_surfaceOne);
 
-  if (p.divergenceFilterEnabled != 0.0) {
+  if (p.divergenceFilterStrength > 0.0) {
     o_divFilterMatrix = lowPassFilterSetup(nrs->meshV, p.divergenceFilterModes);
   }
 }
 
 inline void filterDivergence(deviceMemory<dfloat>& o_divergence)
 {
-  if (p.divergenceFilterEnabled == 0.0) {
+  if (p.divergenceFilterStrength == 0.0) {
     return;
   }
 
@@ -547,7 +541,7 @@ inline void filterDivergence(deviceMemory<dfloat>& o_divergence)
   // Initialize the first output component with q_raw so that it becomes
   //   q_filtered = q_raw - strength * (q_raw - F(q_raw)).
   // The two unused components remain zero.
-  // Both selections use the same explicit modal operator. Strength one
+  // Explicit modal low-pass. Strength one
   // directly replaces q with F(q); smaller strengths retain part of q.
   const dfloat strength = p.divergenceFilterStrength;
   platform->linAlg->fill(3 * offset, 0.0, o_validationMassFlux);
@@ -1259,7 +1253,7 @@ inline void updateProperties(double)
   // Apply the same modal filter to the selected target for either method.
   // Preserve raw method0/method1/difference exports and statistics above.
   filterDivergence(o_divSource);
-  if (p.divergenceFilterEnabled != 0.0) assembleDivergence(o_divSource);
+  assembleDivergence(o_divSource);
   nrs->fluid->o_prop.slice(0 * nrs->fieldOffset, nrs->fieldOffset).copyFrom(o_muM);
   nrs->fluid->o_prop.slice(1 * nrs->fieldOffset, nrs->fieldOffset).copyFrom(o_rhoM);
 }

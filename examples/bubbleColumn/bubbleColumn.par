@@ -115,12 +115,9 @@ gasTransportMethod = 1
 mixtureDivergenceEnabled = 1
 # Raw method0/method1/difference statistics in log and comparison CSV.
 divergenceComparisonInterval = 10
-divergenceFilterEnabled = 0
-# 0: legacy relaxed low-pass; 1: explicit modal low-pass (same operator).
-# Both apply (1-strength)*d + strength*F(d); strength=1 applies full F(d).
-divergenceFilterType = 0
-# Filter the recovered alpha-RHS target after reconstruction.
-# Raw method0/method1/difference exports and statistics remain unfiltered.
+# Explicit modal low-pass: d_filtered=(1-strength)*d+strength*F(d).
+# Strength 0 leaves d unchanged; 1 uses full F(d).
+# Pressure uses the filtered/assembled target; comparison fields remain raw.
 divergenceFilterModes = 1
 divergenceFilterStrength = 0.25
 divergenceExtrapolationEnabled = 0.0

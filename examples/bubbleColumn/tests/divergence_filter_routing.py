@@ -30,7 +30,7 @@ Mem o_muM{mu},o_rhoM{rho};
 struct Fluid { Mem o_prop{props}; } fluid;
 struct Mesh { long Nlocal=2; } mesh;
 struct Nrs { Mesh *meshV; Fluid *fluid; long fieldOffset=2; } nrsObject{&mesh,&fluid},*nrs=&nrsObject;
-struct Parameters { int mixtureDivergenceMethod; double divergenceFilterEnabled; } p;
+struct Parameters { int mixtureDivergenceMethod; double divergenceFilterStrength; } p;
 int filterCalls,assemblyCalls;
 void postProcessGasFlux() {}
 void evaluatePointwiseTerms() {}
@@ -38,7 +38,7 @@ void buildDivergenceFromAlphaBdf(Mem out) {out.a[0]=2.;out.a[1]=6.;}
 void buildDivergenceFromAlphaRhs(Mem out) {out.a[0]=1.;out.a[1]=3.;}
 void assembleDivergence(Mem) {++assemblyCalls;}
 void filterDivergence(Mem out) {
- if(!p.divergenceFilterEnabled)return;
+ if(!p.divergenceFilterStrength)return;
  ++filterCalls;
  // Emulate modal smoothing and the filter's destructive shared scratch use.
  std::fill(scratch,scratch+6,-999.);
@@ -49,7 +49,7 @@ void filterDivergence(Mem out) {
 main = '''
 int main() {
  for(int method=0;method<=1;++method) for(int enabled=0;enabled<=1;++enabled) {
-   p.mixtureDivergenceMethod=method;p.divergenceFilterEnabled=enabled;
+   p.mixtureDivergenceMethod=method;p.divergenceFilterStrength=enabled;
    filterCalls=assemblyCalls=0;
    std::fill(comparison,comparison+6,123.);
    updateProperties(0.);
@@ -59,7 +59,7 @@ int main() {
    double factor=method?2.:1.;
    assert(std::abs(target[0]-factor*(enabled?1.25:1.))<1e-14);
    assert(std::abs(target[1]-factor*(enabled?2.75:3.))<1e-14);
-   assert(filterCalls==enabled && assemblyCalls==2+enabled);
+   assert(filterCalls==enabled && assemblyCalls==3);
    assert(props[0]==4. && props[1]==5. && props[2]==6. && props[3]==7.);
  }
 }
