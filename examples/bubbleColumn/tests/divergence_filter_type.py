@@ -32,7 +32,9 @@ void launchKernel(const char*,long,Mem,double s,long offset,Mem input,Mem output
  for(int field=0;field<3;++field){
   long o=field*offset;double mean=.5*(input.a[o]+input.a[o+1]);
   double a=input.a[o],b=input.a[o+1];
-  output.a[o]+=-s*(a-mean);output.a[o+1]+=-s*(b-mean);
+  // Emulate a matrix whose modal weights already contain the user strength.
+  mean=a+p.divergenceFilterStrength*(mean-a);
+  output.a[o]+=-s*(a-mean);output.a[o+1]+=-s*p.divergenceFilterStrength*(b-.5*(a+b));
  }
 }
 '''
@@ -47,7 +49,7 @@ int main(){
   assert(std::abs(values[1]-(3.-effective))<1e-14);
   assert(values[2]==99.&&values[3]==99.);
   assert(calls==(s>0.));
-  if(s>0.)assert(usedStrength==s);
+  if(s>0.)assert(usedStrength==1.);
  }
 }
 '''

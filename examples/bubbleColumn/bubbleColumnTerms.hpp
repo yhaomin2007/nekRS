@@ -70,6 +70,19 @@ struct Parameters {
 };
 
 static Parameters p;
+
+// Convert the full low-pass matrix F_1 to F_s in one dimension. Applying
+// F_s tensor F_s tensor F_s reproduces explicit modal filtering; blending
+// the completed three-dimensional result would give different weights.
+inline void weightExplicitFilterMatrix(std::vector<dfloat>& matrix, int nq, dfloat strength)
+{
+  for (int i = 0; i < nq; ++i) {
+    for (int j = 0; j < nq; ++j) {
+      matrix[i * nq + j] = strength * matrix[i * nq + j]
+          + (i == j ? 1.0 - strength : 0.0);
+    }
+  }
+}
 static deviceMemory<dfloat> o_gasTransportFields;
 static deviceMemory<dfloat> o_gasCubatureFields;
 static deviceMemory<dfloat> o_gasCubatureProducts;
@@ -524,6 +537,11 @@ inline void allocate()
 
   if (p.divergenceFilterStrength > 0.0) {
     o_divFilterMatrix = lowPassFilterSetup(nrs->meshV, p.divergenceFilterModes);
+    const int nq = nrs->meshV->N + 1;
+    std::vector<dfloat> matrix(nq * nq);
+    o_divFilterMatrix.copyTo(matrix.data());
+    weightExplicitFilterMatrix(matrix, nq, p.divergenceFilterStrength);
+    o_divFilterMatrix.copyFrom(matrix.data());
   }
 }
 
@@ -536,20 +554,15 @@ inline void filterDivergence(deviceMemory<dfloat>& o_divergence)
   const dlong Nlocal = nrs->meshV->Nlocal;
   const dlong offset = nrs->fieldOffset;
 
-  // vectorFilterRTHex3D computes
-  //   output += -strength * (input - F(input)).
-  // Initialize the first output component with q_raw so that it becomes
-  //   q_filtered = q_raw - strength * (q_raw - F(q_raw)).
+  // Strength is already incorporated into the one-dimensional matrix.
+  // The kernel factor must be one: output=q-(q-F_s^tensor(q))=F_s^tensor(q).
   // The two unused components remain zero.
-  // Explicit modal low-pass. Strength one
-  // directly replaces q with F(q); smaller strengths retain part of q.
-  const dfloat strength = p.divergenceFilterStrength;
   platform->linAlg->fill(3 * offset, 0.0, o_validationMassFlux);
   o_validationMassFlux.copyFrom(o_divergence, Nlocal, 0, 0);
   launchKernel("core-vectorFilterRTHex3D",
                nrs->meshV->Nelements,
                o_divFilterMatrix,
-               strength,
+               1.0,
                offset,
                o_validationMassFlux,
                o_validationMassFlux);
