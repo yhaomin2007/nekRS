@@ -1,4 +1,4 @@
-"""Exercise actual filter callback: off, relaxed and full low-pass selection."""
+"""Exercise actual filter callback: both selections honor explicit strength."""
 from pathlib import Path
 import subprocess
 import tempfile
@@ -44,12 +44,12 @@ int main(){
   double values[]={1.,3.,99.,99.};Mem q{values};calls=0;
   p.divergenceFilterEnabled=enabled;p.divergenceFilterType=type;p.divergenceFilterStrength=s;
   filterDivergence(q);
-  double effective=enabled?(type==1?1.:s):0.;
+  double effective=enabled?s:0.;
   assert(std::abs(values[0]-(1.+effective))<1e-14);
   assert(std::abs(values[1]-(3.-effective))<1e-14);
   assert(values[2]==99.&&values[3]==99.);
   assert(calls==enabled);
-  if(enabled)assert(usedStrength==(type==1?1.:s));
+  if(enabled)assert(usedStrength==s);
  }
 }
 '''
@@ -58,4 +58,4 @@ with tempfile.TemporaryDirectory() as directory:
     (path/'check.cpp').write_text(prefix+'inline void filterDivergence('+body+main)
     subprocess.run(['g++','-std=c++11',str(path/'check.cpp'),'-o',str(path/'check')],check=True)
     subprocess.run([str(path/'check')],check=True)
-print('Actual filter callback: disabled unchanged, relaxed strength honored, full explicit ignores strength; padding preserved.')
+print('Actual filter callback: disabled unchanged, both types honor strength 0/.25/1; padding preserved.')
