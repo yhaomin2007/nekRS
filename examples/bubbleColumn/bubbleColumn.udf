@@ -1,4 +1,5 @@
 #include "bubbleColumnTerms.hpp"
+#include "bubbleColumnCubature.hpp"
 
 #ifdef __okl__
 #include "bubbleColumn.oudf"
@@ -20,6 +21,13 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   // the variable 1/rho_m coefficient in the pressure projection.
   platform->options.setArgs("LOWMACH", "FALSE");
   platform->options.setArgs("FLUID PRESSURE ELLIPTIC COEFF FIELD", "TRUE");
+  // Core registrations copy platform->kernelInfo after setup0. OCCA emits
+  // literal headers after its includes, so this supplies only missing c_I.
+  int N = 0, cubN = 0;
+  platform->options.getArgs("POLYNOMIAL DEGREE", N);
+  platform->options.getArgs("CUBATURE POLYNOMIAL DEGREE", cubN);
+  const auto interpolationHeader = bubbleColumn::missingCubatureInterpolationHeader(N, cubN);
+  if (!interpolationHeader.empty()) platform->kernelInfo["headers"] += interpolationHeader;
   auto &p = bubbleColumn::p;
   platform->par->extract("casedata", "rholiquid", p.rhoLiquid);
   platform->par->extract("casedata", "rhogas", p.rhoGas);
