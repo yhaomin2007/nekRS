@@ -14,6 +14,8 @@ UG reconstruction and pressure/drag/gravity/VM sources are not switched off at l
 
 mixtureDivergenceEnabled=1 supplies the target calculated from the actual alpha equation RHS; 0 imposes zero divergence. divergenceRampEnabled and divergenceRampSteps retain the cosine startup ramp. Optional divergence filtering remains available.
 
+Set divergenceFilterEnabled=1 to filter the reconstructed target. divergenceFilterType=0 retains the relaxed low-pass `(1-s)*d+s*F(d)`, with s=divergenceFilterStrength. divergenceFilterType=1 directly applies the full explicit low-pass `F(d)` and ignores strength. Both use the same element-local Legendre modal filter, controlled by divergenceFilterModes, followed by mass-weighted shared-node assembly. Filtering precedes optional divergence extrapolation and ramp; raw diagnostic fields remain unfiltered. Defaults retain filtering disabled and type 0. Filtering changes the imposed continuity target and does not provide cross-element smoothing.
+
 The RHS is recovered from native scalar o_JwF by removing its BDF history load. This preserves the actual EXT/source/native-convection cancellation and HPF contribution. Native weak diffusion is evaluated on the pre-clipping solved alpha, then the BDF clipping-rate correction is added. At imposed alpha Dirichlet nodes, boundary evolution replaces the interior equation. Add native mixture advection of updated alpha, multiply by (rhoLiquid-rhoGas)/rhoM and assemble to obtain the target.
 
 The BDF alternative remains an exported diagnostic only; there is no longer a selectable mixtureDivergenceMethod. Raw recovered-RHS, raw BDF, actual pressure target and their signed difference are exported in the div checkpoint.

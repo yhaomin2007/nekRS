@@ -116,6 +116,9 @@ mixtureDivergenceEnabled = 1
 # Raw method0/method1/difference statistics in log and comparison CSV.
 divergenceComparisonInterval = 10
 divergenceFilterEnabled = 0
+# 0: relaxed low-pass (1-strength)*d + strength*F(d).
+# 1: full explicit low-pass F(d); ignores divergenceFilterStrength.
+divergenceFilterType = 0
 # Filter the recovered alpha-RHS target after reconstruction.
 # Raw method0/method1/difference exports and statistics remain unfiltered.
 divergenceFilterModes = 1

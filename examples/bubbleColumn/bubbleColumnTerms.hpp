@@ -60,6 +60,7 @@ struct Parameters {
   int mixtureDivergenceEnabled = 1;
   int divergenceComparisonInterval = 10;
   dfloat divergenceFilterEnabled;
+  int divergenceFilterType = 0; // 0: relaxed low-pass, 1: full explicit low-pass
   int divergenceFilterModes;
   dfloat divergenceFilterStrength;
   dfloat divergenceExtrapolationEnabled;
@@ -283,12 +284,17 @@ inline void allocate()
              platform->comm.mpiComm(), EXIT_FAILURE,
              "%s", "Direct UG advection requires a fixed mesh.\n");
   nekrsCheck(p.divergenceFilterEnabled != 0.0
+                 && p.divergenceFilterType == 0
                  && (p.divergenceFilterStrength < 0.0
-                     || p.divergenceFilterStrength > 1.0),
+                     || p.divergenceFilterStrength > 1.0
+                     || !std::isfinite(p.divergenceFilterStrength)),
              platform->comm.mpiComm(),
              EXIT_FAILURE,
              "divergenceFilterStrength must be in [0,1], but is %g\n",
              p.divergenceFilterStrength);
+  nekrsCheck(p.divergenceFilterType < 0 || p.divergenceFilterType > 1,
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "%s", "divergenceFilterType must be 0 (relaxed) or 1 (full explicit low-pass).\n");
   nekrsCheck(p.gasTransportMethod < 0 || p.gasTransportMethod > 1,
              platform->comm.mpiComm(), EXIT_FAILURE,
              "%s", "gasTransportMethod must be 0 (GLL) or 1 (cubature).\n");
@@ -542,12 +548,15 @@ inline void filterDivergence(deviceMemory<dfloat>& o_divergence)
   // Initialize the first output component with q_raw so that it becomes
   //   q_filtered = q_raw - strength * (q_raw - F(q_raw)).
   // The two unused components remain zero.
+  // Type 1 directly replaces q with F(q); its strength is always one.
+  const dfloat strength = p.divergenceFilterType == 1
+      ? 1.0 : p.divergenceFilterStrength;
   platform->linAlg->fill(3 * offset, 0.0, o_validationMassFlux);
   o_validationMassFlux.copyFrom(o_divergence, Nlocal, 0, 0);
   launchKernel("core-vectorFilterRTHex3D",
                nrs->meshV->Nelements,
                o_divFilterMatrix,
-               p.divergenceFilterStrength,
+               strength,
                offset,
                o_validationMassFlux,
                o_validationMassFlux);
