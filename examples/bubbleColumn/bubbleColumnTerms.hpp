@@ -6,7 +6,7 @@
 #include <iomanip>
 #include <vector>
 
-#include "lowPassFilter.hpp"
+#include "explicitFilter.hpp"
 #include "opSEM.hpp"
 
 namespace bubbleColumn
@@ -71,18 +71,6 @@ struct Parameters {
 
 static Parameters p;
 
-// Convert the full low-pass matrix F_1 to F_s in one dimension. Applying
-// F_s tensor F_s tensor F_s reproduces explicit modal filtering; blending
-// the completed three-dimensional result would give different weights.
-inline void weightExplicitFilterMatrix(std::vector<dfloat>& matrix, int nq, dfloat strength)
-{
-  for (int i = 0; i < nq; ++i) {
-    for (int j = 0; j < nq; ++j) {
-      matrix[i * nq + j] = strength * matrix[i * nq + j]
-          + (i == j ? 1.0 - strength : 0.0);
-    }
-  }
-}
 static deviceMemory<dfloat> o_gasTransportFields;
 static deviceMemory<dfloat> o_gasCubatureFields;
 static deviceMemory<dfloat> o_gasCubatureProducts;
@@ -125,7 +113,6 @@ static deviceMemory<dfloat> o_divPrevious;
 static deviceMemory<dfloat> o_divOlder;
 static deviceMemory<dfloat> o_divExtrapolated;
 static int divergenceHistoryCount = 0;
-static occa::memory o_divFilterMatrix;
 static deviceMemory<dfloat> o_alphaDiffusionFlux;
 static deviceMemory<dfloat> o_alphaDiffusionDivergence;
 static deviceMemory<dfloat> o_ugDiffusionDivergence;
@@ -204,6 +191,7 @@ static occa::kernel buildOutletRampFactorKernel;
 
 inline void registerKernels(deviceKernelProperties &kernelInfo)
 {
+  userExplicitFilter::registerKernels(kernelInfo);
   const std::string diagnosticsRequest = "bubbleColumn::diagnostics";
   if (platform->options.compareArgs("REGISTER ONLY", "TRUE")) {
     platform->kernelRequests.add(diagnosticsRequest, "bubbleColumnDiagnostics.okl", kernelInfo);
@@ -535,38 +523,15 @@ inline void allocate()
   o_qgMaskDelta.resize(3 * offset);
   platform->linAlg->fill(nrs->meshV->Nlocal, 1.0, o_surfaceOne);
 
-  if (p.divergenceFilterStrength > 0.0) {
-    o_divFilterMatrix = lowPassFilterSetup(nrs->meshV, p.divergenceFilterModes);
-    const int nq = nrs->meshV->N + 1;
-    std::vector<dfloat> matrix(nq * nq);
-    o_divFilterMatrix.copyTo(matrix.data());
-    weightExplicitFilterMatrix(matrix, nq, p.divergenceFilterStrength);
-    o_divFilterMatrix.copyFrom(matrix.data());
-  }
+  nekrsCheck(p.divergenceFilterModes < 1 || p.divergenceFilterModes > nrs->meshV->N - 1,
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "%s", "divergenceFilterModes must be in [1,N-1].\n");
 }
 
 inline void filterDivergence(deviceMemory<dfloat>& o_divergence)
 {
-  if (p.divergenceFilterStrength == 0.0) {
-    return;
-  }
-
-  const dlong Nlocal = nrs->meshV->Nlocal;
-  const dlong offset = nrs->fieldOffset;
-
-  // Strength is already incorporated into the one-dimensional matrix.
-  // The kernel factor must be one: output=q-(q-F_s^tensor(q))=F_s^tensor(q).
-  // The two unused components remain zero.
-  platform->linAlg->fill(3 * offset, 0.0, o_validationMassFlux);
-  o_validationMassFlux.copyFrom(o_divergence, Nlocal, 0, 0);
-  launchKernel("core-vectorFilterRTHex3D",
-               nrs->meshV->Nelements,
-               o_divFilterMatrix,
-               1.0,
-               offset,
-               o_validationMassFlux,
-               o_validationMassFlux);
-  o_divergence.copyFrom(o_validationMassFlux, Nlocal, 0, 0);
+  userExplicitFilter::explicitFilterApply("mixtureDivergence", nrs->meshV,
+      p.divergenceFilterModes, p.divergenceFilterStrength, o_divergence);
 }
 
 inline void assembleDivergence(deviceMemory<dfloat>& o_divergence)
@@ -1245,8 +1210,7 @@ inline void updateProperties(double)
   const dlong offset = nrs->fieldOffset;
 
   // Cache both assembled raw targets independently before selecting/filtering.
-  // filterDivergence uses o_validationMassFlux as scratch, so do not keep
-  // either candidate in that workspace across the filter call.
+  // Filtering is in-place; raw comparison fields are stored independently.
   buildDivergenceFromAlphaBdf(o_divSource);
   auto rawMethod1 = o_divComparison.slice(offset, offset);
   rawMethod1.copyFrom(o_divSource, Nlocal);

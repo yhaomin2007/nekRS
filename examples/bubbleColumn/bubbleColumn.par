@@ -115,8 +115,8 @@ gasTransportMethod = 1
 mixtureDivergenceEnabled = 1
 # Raw method0/method1/difference statistics in log and comparison CSV.
 divergenceComparisonInterval = 10
-# Nek5000-style explicit modal low-pass: d_filtered=(F_s tensor F_s tensor F_s)*d.
-# Strength sets the highest 1D mode attenuation: sigma_N=1-strength.
+# User explicitFilterApply: Legendre bubble-basis tensor filter.
+# Modes: 1..N-1. Strength sets highest 1D mode attenuation: sigma_N=1-strength.
 # Lower selected modes receive parabolic attenuation; 0 leaves d unchanged.
 # Pressure uses the filtered/assembled target; comparison fields remain raw.
 divergenceFilterModes = 1
