@@ -18,11 +18,17 @@ Divergence uses the standalone user module explicitFilter.hpp / explicitFilter.o
 
 To reuse the module in another v26 case, include explicitFilter.hpp, call userExplicitFilter::registerKernels(kernelInfo) during UDF_LoadKernels, then call userExplicitFilter::explicitFilterApply(tag, mesh, modes, strength, field). Register the kernel for the case polynomial degree; fields may be padded or scalar slices with at least mesh Nlocal entries. The module performs element-local filtering only; the caller handles gather-scatter as needed. Matrices are cached by tag and rebuilt when mesh, degree, modes or strength changes.
 
-The RHS is recovered from native scalar o_JwF by removing its BDF history load. This preserves the actual EXT/source/native-convection cancellation and HPF contribution. Native weak diffusion is evaluated on the pre-clipping solved alpha, then the BDF clipping-rate correction is added. At imposed alpha Dirichlet nodes, boundary evolution replaces the interior equation. Add native mixture advection of updated alpha, multiply by (rhoLiquid-rhoGas)/rhoM and assemble to obtain the target.
+The RHS is recovered from native scalar o_JwF by removing its BDF history load. This preserves the actual EXT/source/native-convection cancellation and HPF contribution. Native weak diffusion is evaluated on the pre-clipping solved alpha, then the BDF filtering/clipping-rate correction is added. At imposed alpha Dirichlet nodes, boundary evolution replaces the interior equation. Add native mixture advection of updated alpha, multiply by (rhoLiquid-rhoGas)/rhoM and assemble to obtain the target.
 
 The BDF alternative remains an exported diagnostic only; there is no longer a selectable mixtureDivergenceMethod. Raw recovered-RHS, raw BDF, actual pressure target and their signed difference are exported in the div checkpoint.
 
 The pressure target still uses predicted mixture advection before the pressure-corrected U exists. Thus recovering the alpha RHS consistently does not make the whole pressure/gas coupling implicit or establish exact final total-mass continuity. Pressure does not correct UG within the same step.
+
+## Alpha explicit filter
+
+alphaExplicitFilterModes and alphaExplicitFilterStrength configure the same standalone bubble-basis module on alpha after each scalar solve, before density/divergence/pressure evaluation. Strength 0 disables it; the example enables one mode at strength 0.05. Existing HPFRT regularization remains independent and can be combined with this filter. The sequence is solve alpha, explicit filter, shared-node assembly, reapply prescribed scalar boundaries, then optional clipping. UG is not explicitly filtered.
+
+Divergence recovery uses weak diffusion on the original implicit alpha solution and adds g0/dt*(alpha_postprocessed-alpha_solved), including filtering and clipping. Conservation CSV records filter and clipping volume changes separately and accounts for both in corrected cumulative balances. The filter is not a positivity limiter or generally volume-preserving on curved elements. Filtering acts once per scalar advancement; in the current one-pass case this is once per timestep.
 
 ## Verification
 

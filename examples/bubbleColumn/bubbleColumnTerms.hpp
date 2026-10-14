@@ -24,6 +24,8 @@ struct Parameters {
   dfloat gravity[3];
   dfloat alphaFloor;
   dfloat alphaClippingEnabled;
+  int alphaExplicitFilterModes = 1;
+  dfloat alphaExplicitFilterStrength = 0.0;
   dfloat alphaMinimum;
   dfloat alphaMaximum;
   dfloat subtractAlphaDiffusion;
@@ -83,8 +85,8 @@ static deviceMemory<dfloat> o_gasUrst;
 static deviceMemory<dfloat> o_alphaGasAdvection;
 static deviceMemory<dfloat> o_alphaMixtureAdvection;
 static deviceMemory<dfloat> o_alphaMixtureRhs;
-static deviceMemory<dfloat> o_alphaClipRate;
-static deviceMemory<dfloat> o_alphaBeforeClip;
+static deviceMemory<dfloat> o_alphaPostprocessRate;
+static deviceMemory<dfloat> o_alphaBeforePostprocess;
 static deviceMemory<dfloat> o_alphaConservativeFlux;
 static deviceMemory<dfloat> o_ug;
 static deviceMemory<dfloat> o_ul;
@@ -160,6 +162,8 @@ static dfloat validationPreviousGasBoundaryFlux = 0.0;
 static dfloat validationPreviousMassBoundaryFlux = 0.0;
 static dfloat cumulativeGasBoundaryIntegral = 0.0;
 static dfloat cumulativeMassBoundaryIntegral = 0.0;
+static dfloat alphaFilterDeltaVolume = 0.0;
+static dfloat cumulativeAlphaFilterDeltaVolume = 0.0;
 static dfloat alphaClipDeltaVolume = 0.0;
 static dfloat cumulativeAlphaClipDeltaVolume = 0.0;
 static dfloat qgMaskDeltaIntegral[3] = {0.0, 0.0, 0.0};
@@ -395,9 +399,9 @@ inline void allocate()
   o_alphaGasAdvection.resize(nrs->scalar->fieldOffsetSum);
   o_alphaMixtureAdvection.resize(nrs->scalar->fieldOffsetSum);
   o_alphaMixtureRhs.resize(offset);
-  o_alphaClipRate.resize(offset);
-  o_alphaBeforeClip.resize(offset);
-  platform->linAlg->fill(offset, 0.0, o_alphaClipRate);
+  o_alphaPostprocessRate.resize(offset);
+  o_alphaBeforePostprocess.resize(offset);
+  platform->linAlg->fill(offset, 0.0, o_alphaPostprocessRate);
   o_alphaConservativeFlux.resize(3 * offset);
   o_ul.resize(3 * offset);
   o_ulPrevious.resize(3 * offset);
@@ -523,6 +527,11 @@ inline void allocate()
   o_qgMaskDelta.resize(3 * offset);
   platform->linAlg->fill(nrs->meshV->Nlocal, 1.0, o_surfaceOne);
 
+  nekrsCheck(p.alphaExplicitFilterModes < 1 || p.alphaExplicitFilterModes > nrs->meshV->N - 1
+                 || !std::isfinite(p.alphaExplicitFilterStrength)
+                 || p.alphaExplicitFilterStrength < 0.0 || p.alphaExplicitFilterStrength > 1.0,
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "%s", "Alpha explicit filter requires modes in [1,N-1] and strength in [0,1].\n");
   nekrsCheck(p.divergenceFilterModes < 1 || p.divergenceFilterModes > nrs->meshV->N - 1,
              platform->comm.mpiComm(), EXIT_FAILURE,
              "%s", "divergenceFilterModes must be in [1,N-1].\n");
@@ -909,32 +918,42 @@ inline void postProcessGasFlux()
   cumulativeQgMaskDeltaMagnitudeIntegral += qgMaskDeltaMagnitudeIntegral;
 }
 
-inline void clipAlpha(double, int)
+inline void postProcessAlpha(double time, int)
 {
-  alphaClipDeltaVolume = 0.0;
-  o_alphaBeforeClip.copyFrom(nrs->scalar->o_solution("alpha"), nrs->meshV->Nlocal);
-  platform->linAlg->fill(nrs->meshV->Nlocal, 0.0, o_alphaClipRate);
-  if (p.alphaClippingEnabled == 0.0) {
-    return;
-  }
-
   const dlong Nlocal = nrs->meshV->Nlocal;
   const MPI_Comm comm = platform->comm.mpiComm();
   auto alpha = nrs->scalar->o_solution("alpha");
-  const dfloat volumeBefore = platform->linAlg->innerProd(
+  // Retain the actual implicit solution for weak diffusion recovery. The
+  // subsequent BDF correction includes both explicit filtering and clipping.
+  o_alphaBeforePostprocess.copyFrom(alpha, Nlocal);
+  platform->linAlg->fill(Nlocal, 0.0, o_alphaPostprocessRate);
+  alphaFilterDeltaVolume = 0.0;
+  alphaClipDeltaVolume = 0.0;
+  if (p.alphaExplicitFilterStrength == 0.0 && p.alphaClippingEnabled == 0.0) return;
+  dfloat volumeBefore = platform->linAlg->innerProd(
       Nlocal, nrs->meshV->o_LMM, alpha, comm);
-
-  o_alphaClipRate.copyFrom(alpha, Nlocal);
-  clipAlphaKernel(Nlocal,
-                  p.alphaMinimum,
-                  p.alphaMaximum,
-                  alpha);
-  const dfloat volumeAfter = platform->linAlg->innerProd(
-      Nlocal, nrs->meshV->o_LMM, alpha, comm);
+  if (p.alphaExplicitFilterStrength > 0.0) {
+    userExplicitFilter::explicitFilterApply("alpha", nrs->meshV,
+        p.alphaExplicitFilterModes, p.alphaExplicitFilterStrength, alpha);
+    assembleDivergence(alpha);
+    // Reimpose prescribed scalar boundary values after direct field filtering.
+    nrs->scalar->applyDirichlet(time);
+    const dfloat volumeAfter = platform->linAlg->innerProd(
+        Nlocal, nrs->meshV->o_LMM, alpha, comm);
+    alphaFilterDeltaVolume = volumeAfter - volumeBefore;
+    cumulativeAlphaFilterDeltaVolume += alphaFilterDeltaVolume;
+    volumeBefore = volumeAfter;
+  }
+  if (p.alphaClippingEnabled != 0.0) {
+    clipAlphaKernel(Nlocal, p.alphaMinimum, p.alphaMaximum, alpha);
+    const dfloat volumeAfter = platform->linAlg->innerProd(
+        Nlocal, nrs->meshV->o_LMM, alpha, comm);
+    alphaClipDeltaVolume = volumeAfter - volumeBefore;
+    cumulativeAlphaClipDeltaVolume += alphaClipDeltaVolume;
+  }
+  o_alphaPostprocessRate.copyFrom(o_alphaBeforePostprocess, Nlocal);
   platform->linAlg->axpby(Nlocal, nrs->g0 / nrs->dt[0], alpha,
-      -nrs->g0 / nrs->dt[0], o_alphaClipRate);
-  alphaClipDeltaVolume = volumeAfter - volumeBefore;
-  cumulativeAlphaClipDeltaVolume += alphaClipDeltaVolume;
+      -nrs->g0 / nrs->dt[0], o_alphaPostprocessRate);
 }
 
 inline void clipMixtureVelocity()
@@ -1135,12 +1154,12 @@ inline void buildDivergenceFromAlphaRhs(deviceMemory<dfloat>& o_divergence)
   // Use the native weak diffusion stiffness with its negative RHS sign.
   launchKernel("core-weakLaplacianHex3D", nrs->meshV->Nelements, 1,
       o_scalarFieldOffsetScan, nrs->meshV->o_ggeo, nrs->meshV->o_D,
-      nrs->scalar->o_diffusionCoeff("alpha"), o_alphaBeforeClip,
+      nrs->scalar->o_diffusionCoeff("alpha"), o_alphaBeforePostprocess,
       o_alphaDiffusionDivergence);
   oogs::startFinish(o_alphaDiffusionDivergence, 1, 0, ogsDfloat, ogsAdd, nrs->meshV->oogs);
   platform->linAlg->axmy(Nlocal, -1.0, nrs->meshV->o_invLMM, o_alphaDiffusionDivergence);
   platform->linAlg->axpby(Nlocal, 1.0, o_alphaDiffusionDivergence, 1.0, o_alphaMixtureRhs);
-  platform->linAlg->axpby(Nlocal, 1.0, o_alphaClipRate, 1.0, o_alphaMixtureRhs);
+  platform->linAlg->axpby(Nlocal, 1.0, o_alphaPostprocessRate, 1.0, o_alphaMixtureRhs);
   // At Dirichlet nodes the imposed boundary replaces the evolution equation.
   auto &solver = nrs->scalar->ellipticSolver[index];
   if (solver->Nmasked()) {
@@ -1552,6 +1571,7 @@ inline void writeValidationChecks(double time, int tstep)
     // this completed step, so cumulative postprocessing corrections begin
     // after the same baseline state.
     cumulativeAlphaClipDeltaVolume = 0.0;
+    cumulativeAlphaFilterDeltaVolume = 0.0;
     for (int i = 0; i < 3; ++i) {
       cumulativeQgMaskDeltaIntegral[i] = 0.0;
     }
@@ -1577,13 +1597,14 @@ inline void writeValidationChecks(double time, int tstep)
           << "total_mass_flux_outlet_outward,total_mass_flux_all_boundaries,"
           << "total_mass_balance_residual,total_mass_balance_relative,"
           << "alpha_clip_delta_volume,alpha_clip_cumulative_volume,"
+          << "alpha_filter_delta_volume,alpha_filter_cumulative_volume,"
           << "qg_mask_delta_integral_x,qg_mask_delta_integral_y,"
           << "qg_mask_delta_integral_z,qg_mask_delta_magnitude_integral,"
           << "qg_mask_cumulative_integral_x,qg_mask_cumulative_integral_y,"
           << "qg_mask_cumulative_integral_z,qg_mask_cumulative_magnitude_integral,"
           << "gas_boundary_flux_cumulative,gas_cumulative_error_raw,"
-          << "gas_cumulative_error_clip_corrected,mass_boundary_flux_cumulative,"
-          << "mass_cumulative_error_raw,mass_cumulative_error_clip_corrected\n";
+          << "gas_cumulative_error_postprocess_corrected,mass_boundary_flux_cumulative,"
+          << "mass_cumulative_error_raw,mass_cumulative_error_postprocess_corrected\n";
     }
     validationInitialized = true;
     return;
@@ -1616,12 +1637,12 @@ inline void writeValidationChecks(double time, int tstep)
                                     - validationInitialGasVolume
                                     + cumulativeGasBoundaryIntegral;
   const dfloat gasCumulativeErrorCorrected =
-      gasCumulativeError - cumulativeAlphaClipDeltaVolume;
+      gasCumulativeError - cumulativeAlphaClipDeltaVolume - cumulativeAlphaFilterDeltaVolume;
   const dfloat massCumulativeError = state.totalMass
                                      - validationInitialTotalMass
                                      + cumulativeMassBoundaryIntegral;
   const dfloat massClipCorrection =
-      (p.rhoGas - p.rhoLiquid) * cumulativeAlphaClipDeltaVolume;
+      (p.rhoGas - p.rhoLiquid) * (cumulativeAlphaClipDeltaVolume + cumulativeAlphaFilterDeltaVolume);
   const dfloat massCumulativeErrorCorrected =
       massCumulativeError - massClipCorrection;
 
@@ -1652,6 +1673,8 @@ inline void writeValidationChecks(double time, int tstep)
                    << massResidual << ',' << massRelative << ','
                    << alphaClipDeltaVolume << ','
                    << cumulativeAlphaClipDeltaVolume << ','
+                   << alphaFilterDeltaVolume << ','
+                   << cumulativeAlphaFilterDeltaVolume << ','
                    << qgMaskDeltaIntegral[0] << ','
                    << qgMaskDeltaIntegral[1] << ','
                    << qgMaskDeltaIntegral[2] << ','

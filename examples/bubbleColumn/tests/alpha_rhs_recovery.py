@@ -32,7 +32,9 @@ int main() {
    // Solve (150*M + K) alpha_new = load, K is a weak stiffness matrix.
    const double a=300.02,b=-.02,c=-.02,d=750.02,det=a*d-b*c;
    double solved[2]={(load[0]*d-b*load[1])/det,(a*load[1]-c*load[0])/det};
-   double clipped[2]={solved[0]<0?0:solved[0],solved[1]<0?0:solved[1]};
+   // An explicit field filter changes the solved field before clipping.
+   double filtered[2]={solved[0]+.01,solved[1]-.02};
+   double clipped[2]={filtered[0]<0?0:filtered[0],filtered[1]<0?0:filtered[1]};
    double hist[6]={clipped[0],clipped[1],old[0],old[1],old[2],old[3]},rhs[2];
    recoverAlphaRhs(n,0,o,2,100.,mass,load,hist,coeff,rhs);
    double weak[2]={.02*(solved[0]-solved[1]),.02*(solved[1]-solved[0])};
@@ -56,5 +58,5 @@ with tempfile.TemporaryDirectory() as directory:
     path=Path(directory);(path/'check.cpp').write_text(cpp)
     subprocess.run(['g++','-std=c++17',str(path/'check.cpp'),'-o',str(path/'check')],check=True)
     subprocess.run([str(path/'check')],check=True)
-print('Actual native forcing/RHS recovery: EXT1/EXT2, HPF, weak diffusion, clipping '
+print('Actual native forcing/RHS recovery: EXT1/EXT2, HPF, weak diffusion, filtering/clipping '
       'and imposed boundary correction match the alpha BDF update.')

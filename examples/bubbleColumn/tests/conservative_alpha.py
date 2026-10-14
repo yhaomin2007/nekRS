@@ -65,6 +65,6 @@ reconstruction = case.split('inline void buildDivergenceFromAlphaRhs')[1].split(
     'inline void buildDivergenceFromAlphaBdf')[0]
 assert 'recoverAlphaRhsKernel' in reconstruction
 assert 'core-weakLaplacianHex3D' in reconstruction
-assert 'o_alphaBeforeClip' in reconstruction
+assert 'o_alphaBeforePostprocess' in reconstruction
 print('Actual nodal flux product and core EXT1/EXT2 native-advection cancellation '
       'pass unequal shared-node mass assembly. Direct RHS reconstruction routing checked.')

@@ -69,6 +69,11 @@ gasInitialVelocity = 0.3
 gravityX = 0.0
 gravityY = 0.0
 gravityZ = -9.81
+# Explicit filter of solved alpha each step, before clipping/properties/pressure.
+# Uses the user bubble-basis module; independent of native HPFRT regularization.
+# Strength 0 disables this filter. Modes: 1..N-1.
+alphaExplicitFilterModes = 1
+alphaExplicitFilterStrength = 0.05
 alphaFloor = 1e-6
 alphaClipEnabled = 1.0
 alphaMinimum = 0.0

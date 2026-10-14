@@ -56,6 +56,8 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   platform->par->extract("casedata", "gravityz", p.gravity[2]);
   platform->par->extract("casedata", "alphafloor", p.alphaFloor);
   platform->par->extract("casedata", "alphaclippenabled", p.alphaClippingEnabled);
+  platform->par->extract("casedata", "alphaexplicitfiltermodes", p.alphaExplicitFilterModes);
+  platform->par->extract("casedata", "alphaexplicitfilterstrength", p.alphaExplicitFilterStrength);
   platform->par->extract("casedata", "alphaminimum", p.alphaMinimum);
   platform->par->extract("casedata", "alphamaximum", p.alphaMaximum);
   platform->par->extract(
@@ -126,7 +128,7 @@ void UDF_Setup()
 
   bubbleColumn::initializeHistory();
   nrs->userSource = &bubbleColumn::addExplicitSources;
-  nrs->postScalar = &bubbleColumn::clipAlpha;
+  nrs->postScalar = &bubbleColumn::postProcessAlpha;
   nrs->scalar->userImplicitLinearTerm = &bubbleColumn::implicitGasDrag;
   nrs->userProperties = &bubbleColumn::updateProperties;
   nrs->userDivergence = &bubbleColumn::updateDivergence;
