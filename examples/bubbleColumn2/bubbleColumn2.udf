@@ -41,6 +41,17 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   p.ugInitial = p.ugInlet;
   platform->par->extract("casedata", "uginitial", p.ugInitial);
   platform->par->extract("casedata", "gasinitialvelocity", p.ugInitial);
+  platform->par->extract("casedata", "prescribedgasvelocityenabled", p.prescribedGasVelocityEnabled);
+  nekrsCheck(p.prescribedGasVelocityEnabled != 0 && p.prescribedGasVelocityEnabled != 1,
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "%s", "prescribedGasVelocityEnabled must be 0 or 1.\n");
+  if (p.prescribedGasVelocityEnabled) {
+    // Retain the UG fields for output/restart, but skip their native solves,
+    // forcing, regularization and Dirichlet updates (including wall UG=0).
+    for (const auto *sid : {"01", "02", "03"}) {
+      platform->options.setArgs(std::string("SCALAR") + sid + " SOLVER", "NONE");
+    }
+  }
   platform->par->extract("casedata", "initialplumeheight", p.initialPlumeHeight);
   platform->par->extract("casedata", "initialplumethickness", p.initialPlumeThickness);
   nekrsCheck(!(std::isfinite(p.initialPlumeHeight) && p.initialPlumeHeight >= 0.0
@@ -150,6 +161,13 @@ void UDF_Setup()
     nekrsCheck(it == nrs->scalar->nameToIndex.end() || it->second != i,
                platform->comm.mpiComm(), EXIT_FAILURE,
                "Expected scalar %s at index %d\n", names[i], i);
+    if (bubbleColumn2::p.prescribedGasVelocityEnabled && i > 0) {
+      // Native setup skips coefficient initialization for inactive scalars.
+      platform->linAlg->fill(nrs->meshV->Nlocal, 1.0,
+                            nrs->scalar->o_transportCoeff(names[i]));
+      platform->linAlg->fill(nrs->meshV->Nlocal, 0.0,
+                            nrs->scalar->o_diffusionCoeff(names[i]));
+    }
     auto range = platform->linAlg->minMax(nrs->meshV->Nlocal,
         {nrs->scalar->o_transportCoeff(names[i])}, platform->comm.mpiComm());
     nekrsCheck(std::abs(range[0].first - 1.0) > 1e-12 || std::abs(range[0].second - 1.0) > 1e-12,
@@ -166,17 +184,34 @@ void UDF_Setup()
         nrs->scalar->o_solution("alpha"), nrs->scalar->o_solution("ugx"),
         nrs->scalar->o_solution("ugy"), nrs->scalar->o_solution("ugz"), nrs->fluid->o_U);
   }
+  if (bubbleColumn2::p.prescribedGasVelocityEnabled) {
+    const dlong Nlocal = nrs->meshV->Nlocal;
+    const dfloat ug = bubbleColumn2::p.ugInitial;
+    platform->linAlg->fill(Nlocal, 0.0, nrs->scalar->o_solution("ugx"));
+    platform->linAlg->fill(Nlocal, 0.0, nrs->scalar->o_solution("ugy"));
+    platform->linAlg->fill(Nlocal, ug, nrs->scalar->o_solution("ugz"));
+    if (platform->options.getArgs("RESTART FILE NAME").empty()) {
+      // Fresh starts retain the alpha plume and stationary initial liquid.
+      platform->linAlg->fill(3 * nrs->fieldOffset, 0.0, nrs->fluid->o_U);
+      platform->linAlg->axpby(Nlocal, ug, nrs->scalar->o_solution("alpha"),
+          0.0, nrs->fluid->o_U.slice(2 * nrs->fieldOffset, nrs->fieldOffset));
+    }
+    if (platform->comm.mpiRank() == 0)
+      printf("bubbleColumn2 prescribed UG: uniform (0,0,%g) m/s; UG solves and UG boundary updates disabled; alpha and UM still solved\n", ug);
+  }
   bubbleColumn2::initializeHistory();
   nrs->userSource = &bubbleColumn2::addExplicitSources;
-  if (platform->comm.mpiRank() == 0)
+  if (platform->comm.mpiRank() == 0 && !bubbleColumn2::p.prescribedGasVelocityEnabled)
     printf("bubbleColumn2 UG: scalars-first order; conservative cubature alpha and material UG transport; scalar EXT1; UM divergence zero\n");
-  if (platform->comm.mpiRank() == 0 && bubbleColumn2::p.virtualMassEnabled != 0.0)
+  if (platform->comm.mpiRank() == 0 && !bubbleColumn2::p.prescribedGasVelocityEnabled && bubbleColumn2::p.virtualMassEnabled != 0.0)
     printf("bubbleColumn2 virtual mass: implicit gas material inertia, lagged liquid acceleration order=%d, startStep=%d rampStep=%d; UM VM explicit; history collected during delay\n",
            bubbleColumn2::p.virtualMassTimeDerivativeOrder, bubbleColumn2::p.virtualMassStartStep,
            bubbleColumn2::p.virtualMassRampStep);
   if (platform->comm.mpiRank() == 0)
-    printf("bubbleColumn2 drag: UG/UM semi-implicit with lagged coefficient; UM uses solved UG; "
-           "UM reaction uses native velocity implicit callback; pressure coefficient unchanged\n");
+    printf("bubbleColumn2 drag: %s; UM reaction uses native velocity implicit callback; pressure coefficient unchanged\n",
+           bubbleColumn2::p.prescribedGasVelocityEnabled
+               ? "UG prescribed; UM semi-implicit with lagged coefficient and prescribed UG"
+               : "UG/UM semi-implicit with lagged coefficient; UM uses solved UG");
   if (bubbleColumn2::p.mixtureDragRampEnabled != 0.0 && platform->comm.mpiRank() == 0)
     printf("bubbleColumn2 mixture drag ramp: startStep=%d rampSteps=%d; "
            "linear step ramp of both semi-implicit UM drag parts\n",

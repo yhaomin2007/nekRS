@@ -19,6 +19,7 @@ struct Parameters {
   dfloat alphaInlet;
   dfloat ugInlet;
   dfloat ugInitial = 0.0;
+  int prescribedGasVelocityEnabled = 0;
   dfloat initialPlumeHeight = 0.05;
   dfloat initialPlumeThickness = 0.01;
   dfloat gravity[3];
@@ -434,7 +435,7 @@ inline void reconstructGasVelocity()
 {
   reconstructGasVelocityKernel(nrs->meshV->Nlocal,
                                nrs->fieldOffset,
-                               p.gasVelocityLowAlphaCutoffEnabled,
+                               p.prescribedGasVelocityEnabled ? 0.0 : p.gasVelocityLowAlphaCutoffEnabled,
                                p.alphaFloor,
                                nrs->scalar->o_solution("alpha"),
                                nrs->scalar->o_solution("ugx"),
@@ -766,8 +767,9 @@ inline void postProcessGasVelocity()
 {
   const dlong Nlocal = nrs->meshV->Nlocal;
   const dlong offset = nrs->fieldOffset;
-  if ((!p.gasVelocityLowAlphaCutoffEnabled || p.smoothGasVelocityMaskEnabled == 0.0)
-      && p.gasVelocityClipEnabled == 0.0) {
+  if (p.prescribedGasVelocityEnabled
+      || ((!p.gasVelocityLowAlphaCutoffEnabled || p.smoothGasVelocityMaskEnabled == 0.0)
+          && p.gasVelocityClipEnabled == 0.0)) {
     for (int i = 0; i < 3; ++i) {
       qgMaskDeltaIntegral[i] = 0.0;
     }
@@ -1084,15 +1086,15 @@ inline void addExplicitSources(double)
   nrs->scalar->o_explicitTerms("alpha").copyFrom(o_alphaSource, Nlocal);
   // Gas momentum remains material-velocity form: subtract UG.grad(UG),
   // not div(UG tensor UG). Alpha has already received -div(alpha*UG).
-  evaluateGasCubatureTransport(false);
+  if (!p.prescribedGasVelocityEnabled) evaluateGasCubatureTransport(false);
   const char *names[4] = {"alpha", "ugx", "ugy", "ugz"};
-  for (int i = 0; i < 3; ++i) {
+  for (int i = 0; i < (p.prescribedGasVelocityEnabled ? 0 : 3); ++i) {
     auto source = o_ugSource.slice(i * offset, offset);
     platform->linAlg->axpby(Nlocal, -1.0,
         o_gasTransport.slice((i + 1) * offset, offset), 1.0, source);
     nrs->scalar->o_explicitTerms(names[i + 1]).copyFrom(source, Nlocal);
   }
-  for (int i = 0; i < 4; ++i) {
+  for (int i = 0; i < (p.prescribedGasVelocityEnabled ? 1 : 4); ++i) {
     evaluateNativeAlphaAdvection(o_nativeTransportAdvection, true, names[i], true);
     const int index = nrs->scalar->nameToIndex.at(names[i]);
     platform->linAlg->axpby(Nlocal, 1.0,

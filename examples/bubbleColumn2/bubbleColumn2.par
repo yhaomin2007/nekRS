@@ -69,6 +69,9 @@ alphaInlet = 0.016667
 gasInletVelocity = 0.3
 # Initial UG plume peak (m/s), multiplied by the axial tanh profile.
 gasInitialVelocity = 0.3
+# Diagnostic: 1 holds UG=(0,0,gasInitialVelocity) uniformly and skips UG solves.
+# Alpha and UM still advance. UG wall BCs, masking and clipping are bypassed.
+prescribedGasVelocityEnabled = 0
 gravityX = 0.0
 gravityY = 0.0
 gravityZ = -9.81

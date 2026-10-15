@@ -160,3 +160,24 @@ transport and high-degree quadrature, shared-node cancellation, initialization,
 inlet rim agreement, dilute UG, implicit gas drag, semi-implicit mixture drag/ramp and direct native velocity reaction,
 VM histories/coefficient pairing, alpha postprocessing and interpolation fallback.
 Full NekRS MPI/GPU build and flow stability require a run on the target system.
+
+### Prescribed uniform gas velocity diagnostic
+
+Set `prescribedGasVelocityEnabled = 1` in `[CASEDATA]` to hold
+`UG = (0, 0, gasInitialVelocity)` everywhere, including the boundaries and
+zero-alpha cells. The three UG scalar solvers are disabled through native
+`SOLVER = NONE`; UG boundary updates, regularization, low-alpha masking and
+clipping cannot change the prescribed field. Alpha retains its existing
+conservative cubature transport, diffusion and filters. Pressure and UM still
+advance, including their configured drag and explicit virtual mass terms.
+This is a prescribed transport test, with gas velocity imposed through walls
+rather than the usual gas wall condition.
+
+On fresh starts alpha keeps its plume profile and UM is initialized as
+`alpha * UG` (initial UL zero). On restart only UG is replaced; alpha and UM
+are retained. Use a fresh start to test whether oscillations develop from
+smooth alpha. For the initial diagnostic use `virtualMassEnabled = 0` and
+match `gasInletVelocity` to `gasInitialVelocity`. The log prints the constant
+UG and confirms that its solves are disabled; no UG residuals are expected.
+Set `prescribedGasVelocityEnabled = 0` (default) to restore normal UG solves
+and plume UG initialization.
