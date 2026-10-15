@@ -119,7 +119,8 @@ gasVelocityLowAlphaCutoffEnabled = 0
 smoothGasVelocityMaskEnabled = 0.0
 # Scalar sources/convection use EXT1; native BDF order and fluid EXT are unchanged.
 # Alpha uses cubature div(alpha*UG); UG uses cubature UG.grad(UG).
-# Gas drag is an implicit reaction with lagged liquid velocity; mixture drag stays explicit.
+# UG drag uses lagged UM and implicit UG; UM drag uses solved UG and implicit UM.
+# Coefficients are lagged; UM VM remains explicit. Requires max(D*dt/g0)<1.
 # 0 disables only mixture drag; implicit UG drag and virtual mass are retained.
 mixtureDragEnabled = 1.0
 # Optional linear ramp of mixture drag only, based on native timestep count.

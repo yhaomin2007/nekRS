@@ -61,15 +61,16 @@ int main(){
 
  // Paired VM and drag use one physical coefficient; only UG is normalized.
  virtualMassEnabled=.4;dragEnabled=1;alpha[0]=.02;ul[0]=.1;ug[0]=.3;
+ uv[0]=(1-alpha[0])*ul[0]+alpha[0]*ug[0];
  gradP[0]=-12;liquidAcceleration[0]=2;virtualMassRelativeAcceleration[0]=-.7;
 '''+call+r'''
 
  double added=.4*.5*rhoLiquid,effective=rhoGas+added;
- assert(std::abs(ugSource[0]-(12+added*2)/effective-dragLambda[0]*ul[0])<1e-12);
- double physicalDrag=dragLambda[0]*effective/rhoGas*(ul[0]-ug[0]);
+ assert(std::abs(ugSource[0]-(12+added*2)/effective-dragLambda[0]*uv[0])<1e-12);
+ double physicalDrag=dragLambda[0]*effective/rhoGas*(uv[0]-ug[0]);
  double physicalVm=added/rhoGas*virtualMassRelativeAcceleration[0];
- assert(std::abs(mixtureInterphaseAcceleration[0]-.02*(1-rhoGas/rhoLiquid)*(physicalDrag+physicalVm))<1e-10);
- assert(std::abs(mixtureDragSource[0]-.02*(1-rhoGas/rhoLiquid)*physicalDrag)<1e-10);
+ assert(std::abs(mixtureInterphaseAcceleration[0]-.02*(1-rhoGas/rhoLiquid)*physicalVm)<1e-10);
+ assert(std::abs(mixtureDragRate[0]*(uv[0]-ug[0])-.02*(1-rhoGas/rhoLiquid)*physicalDrag)<1e-10);
  // At zero alpha, UG remains a transported velocity just as in method1.
  alpha[0]=0;
 '''+call+r'''

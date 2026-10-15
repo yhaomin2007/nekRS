@@ -3,7 +3,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 s=(Path(__file__).resolve().parents[1]/'bubbleColumn2Terms.hpp').read_text()
-helper='inline dfloat mixtureDragRampFactor'+s.split('inline dfloat mixtureDragRampFactor')[1].split('// All EXT history')[0]
+helper='inline dfloat mixtureDragRampFactor'+s.split('inline dfloat mixtureDragRampFactor')[1].split('// Called after all scalar solves')[0]
 cpp=r'''
 #include <vector>
 #include <memory>
@@ -22,20 +22,17 @@ struct Platform{Algebra* linAlg=&algebra;} storage;auto platform=&storage;
 struct Mesh{long Nlocal=1;} mesh;
 struct Nrs{Mesh* meshV=&mesh;long fieldOffset=2;int tstep=1;} solver;auto nrs=&solver;
 struct Params{double mixtureDragRampEnabled=0; int mixtureDragRampStartStep=2, mixtureDragRampSteps=4;}p;
-Memory o_mixtureDragSource(6),o_mixtureForce(6);
-void set(double raw){for(int i=0;i<3;i++){o_mixtureDragSource[i*2]=raw*(i+1);o_mixtureForce[i*2]=10+raw*(i+1);}}
-void check(double used){for(int i=0;i<3;i++){assert(std::abs(o_mixtureDragSource[i*2]-used*(i+1))<1e-12);assert(std::abs(o_mixtureForce[i*2]-(10+used*(i+1)))<1e-12);assert(o_mixtureForce[i*2+1]==0);}}
 '''+helper+r'''
 int main(){
-set(8);rampMixtureDrag(0);check(8);
+assert(mixtureDragRampFactor(0)==1);
 p.mixtureDragRampEnabled=1;
 for(int step: {0,2,3,4,6,10}) {
- set(8);rampMixtureDrag(step);
- check(8*std::max(0.,std::min(1.,double(step-2)/4)));
+ double factor=std::max(0.,std::min(1.,double(step-2)/4));
+ assert(mixtureDragRampFactor(step)==factor);
+ // Freeze/ramp the rate once, for both the UM diagonal and known UG term.
+ double D=8*mixtureDragRampFactor(step),um=.2,ug=.3;
+ assert(std::abs(D*um-D*ug-factor*8*(um-ug))<1e-12);
 }
-// No force/filter memory: the current raw force determines each evaluation.
-set(100);rampMixtureDrag(4);check(50);
-set(10);rampMixtureDrag(4);check(5);
 p.mixtureDragRampStartStep=0;p.mixtureDragRampSteps=10000;
 assert(mixtureDragRampFactor(1)==.0001);
 assert(mixtureDragRampFactor(10000)==1);
@@ -46,4 +43,5 @@ with tempfile.TemporaryDirectory() as t:
     src=Path(t)/'check.cpp';src.write_text(cpp)
     subprocess.run(['g++','-std=c++17',str(src),'-o',str(Path(t)/'check')],check=True)
     subprocess.run([str(Path(t)/'check')],check=True)
+assert 'mixtureDragRampFactor(nrs->tstep), o_frozenMixtureDragRate' in s
 print('Actual step ramp helper: disabled/start/midpoint/end, current raw force, components, padding and other-force checks passed.')

@@ -20,10 +20,15 @@ The scalar transport follows method1 at the synchronization commit:
   to UM. There is no temporary replacement of the fluid velocity.
 - All scalar nonlinear sources/advection use EXT1, using separate scalar EXT
   coefficient storage. Native BDF history/order and fluid EXT are retained.
-- Gas drag uses the native scalar implicit reaction: `lambda=Ki/rhoEff`,
-  with lagged `Ki` and `UL`; the explicit RHS contains `lambda*UL` and the
-  left side contains `lambda*UG`. Mixture drag remains a full explicit slip
-  force, with its existing independent switch/ramp/cutoff/limiter.
+- Gas drag uses the native scalar implicit reaction with lagged coefficient
+  and alpha: `lambdaG=Ki/(beta*rhoEff)`. The RHS contains `lambdaG*UM_old`;
+  the LHS contains `lambdaG*UG_new`. This also retains the reconstructed
+  liquid-velocity dependence on UG implicitly.
+- UM drag uses `D*(UM_new-UG_new)`, where
+  `D=rampDrag*alpha*(1/rhoGas-1/rhoLiquid)*Ki/beta`. D is frozen at source
+  assembly, including its cutoff/limiter/ramp, and UG is taken after its scalar
+  solve and postprocessing. Its UM reaction is negative on the LHS. The
+  explicit mixture source contains VM, drift and other forces, with no drag.
 - UG is retained at zero/dilute alpha by default, as in method1.
   `gasVelocityLowAlphaCutoffEnabled=1` enables the optional hard/smooth mask;
   magnitude clipping remains independent. Physical stress uses
@@ -43,6 +48,40 @@ The example uses one mode at strength 0.05, diffusion 1e-5, and HPFRT one mode
 at scaling 10 for alpha/UG, matching method1. Filtering is not a positivity
 limiter and need not preserve gas volume on curved elements. Conservation CSV
 accounts for filter and clipping volume changes separately.
+
+## Semi-implicit mixture drag and projection
+
+Let `aBdf=g0/dt`, and let `F0` be the complete native mass-weighted BDF/EXT
+forcing assembled with mixture drag excluded. Immediately before the fluid
+solve, the case folds the UM reaction into the current mass coefficient:
+
+```
+chi = 1-D/aBdf
+rhoPressureSolve = rhoPressure*chi
+Fsolve = (F0 - mass*D*UG_new)/chi
+```
+
+The native velocity operator then has diagonal
+`aBdf*rhoPressureSolve = rhoPressure*(aBdf-D)`, while its forcing becomes
+`rhoPressure*(F0-mass*D*UG_new)`. The native pressure operator uses the matching
+mobility `1/rhoPressureSolve = Bp/chi`, where
+`Bp=beta/rhoLiquid+alpha/rhoGas`. Dynamic viscosity and the pressure unknown
+are unchanged. This is algebraic reaction normalization, not a change to the
+phase densities or VM inertia. All existing BDF/EXT contributions, including
+explicit VM and regularization, retain their physical loads. No core hooks
+are added: the case uses the existing `preFluid` callback and public forcing.
+
+The source-stage D is stored independently of property/monitor scratch fields.
+An unmodified forcing snapshot prevents repeated fluid stages from applying
+the normalization twice. The previous explicit drag/EXT-history freezing is
+removed; no artificial positive damping is substituted for the physical sign.
+
+The case stops if `max(D*dt/g0)>=1`, because this split would otherwise make
+the normalized pressure/velocity mass coefficient nonpositive. A positive
+coefficient is necessary, not a guarantee of stability. UG and UM are still
+segregated, and this does not make their pressure/drag coupling fully implicit.
+There are no explicit/implicit drag switches. `mixtureDragEnabled`, its step
+ramp, `dragAlphaCutoff` and the drag slip limiter remain available.
 
 ## Initial and boundary conditions
 
@@ -107,15 +146,16 @@ The implicit gas derivative order is controlled by native `timeStepper`.
 `virtualMassRampStep=R>0` gives `min(1,(step-S)/R)` afterward, and R=0 activates
 immediately. History is collected during the delay when VM is enabled.
 The default is VM on, coefficient 0.5, no delay/ramp, matching method1's
-activation. UM remains explicit with native fluid EXT, while scalar explicit
+activation. UM VM remains explicit with native fluid EXT, while scalar explicit
 parts use EXT1. Physical coefficients are paired; the coupled equations are
-not solved implicitly together. Pressure mobility remains
-`(1-alpha)/rhoLiquid + alpha/rhoGas`. Stability at larger dt is not established.
+not solved implicitly together. The base pressure mobility remains
+`(1-alpha)/rhoLiquid + alpha/rhoGas`; the drag-normalized fluid solve uses
+`Bp/chi` as described above. Stability at larger dt is not established.
 
 ## Verification
 
 Tests under `tests/` exercise actual kernels/native BDF forcing, cubature
 transport and high-degree quadrature, shared-node cancellation, initialization,
-inlet rim agreement, dilute UG, implicit gas drag, explicit mixture drag/ramp,
+inlet rim agreement, dilute UG, implicit gas drag, semi-implicit mixture drag/ramp and native projection normalization,
 VM histories/coefficient pairing, alpha postprocessing and interpolation fallback.
 Full NekRS MPI/GPU build and flow stability require a run on the target system.
