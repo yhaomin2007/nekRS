@@ -113,9 +113,9 @@ static deviceMemory<dfloat> o_alphaSource;
 static deviceMemory<dfloat> o_ugSource;
 static deviceMemory<dfloat> o_dragLambda;
 static deviceMemory<dfloat> o_mixtureDragRate, o_frozenMixtureDragRate;
-static deviceMemory<dfloat> o_rhoPressureSolve, o_fluidForcingBeforeDrag;
+static deviceMemory<dfloat> o_mixtureDragDiagonal, o_fluidForcingBeforeDrag;
 static bool fluidForcingSnapshotValid = false;
-static occa::kernel normalizeMixtureDragKernel;
+static occa::kernel splitMixtureDragKernel;
 static deviceMemory<dfloat> o_mixtureInterphaseAcceleration;
 static deviceMemory<dfloat> o_mixtureForce;
 static deviceMemory<dfloat> o_monitorMagnitude;
@@ -197,7 +197,7 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
   if (platform->options.compareArgs("REGISTER ONLY", "TRUE")) {
     platform->kernelRequests.add(request, fileName, kernelInfo);
   } else {
-    normalizeMixtureDragKernel = platform->kernelRequests.load(request, "normalizeMixtureDrag");
+    splitMixtureDragKernel = platform->kernelRequests.load(request, "splitMixtureDrag");
     vectorMagnitudeKernel = platform->kernelRequests.load(request, "vectorMagnitude");
     buildMixtureStressCorrectionKernel = platform->kernelRequests.load(request, "buildMixtureStressCorrection");
     addMixtureStressCorrectionKernel = platform->kernelRequests.load(request, "addMixtureStressCorrection");
@@ -377,7 +377,8 @@ inline void allocate()
   o_dragLambda.resize(offset);
   o_mixtureDragRate.resize(offset);
   o_frozenMixtureDragRate.resize(offset);
-  o_rhoPressureSolve.resize(offset);
+  o_mixtureDragDiagonal.resize(offset);
+  platform->linAlg->fill(offset, 0.0, o_mixtureDragDiagonal);
   o_fluidForcingBeforeDrag.resize(nrs->fluid->fieldOffsetSum);
   platform->linAlg->fill(offset, 0.0, o_frozenMixtureDragRate);
   o_mixtureInterphaseAcceleration.resize(3 * offset);
@@ -1032,8 +1033,8 @@ inline dfloat mixtureDragRampFactor(int step)
 }
 
 // Called after all scalar solves/properties and before native pressure/velocity.
-// D*(UM_new-UG_new) has a negative UM reaction on the LHS. Fold it into
-// rhoSolve=rhoPressure*(1-D/aBdf) so the pressure solve sees the same diagonal.
+// Keep rhoPressure unchanged. Supply -rhoPressure*D through the native
+// velocity implicit-linear-term callback; pressure retains its native split.
 inline void prepareMixtureDrag(double, int)
 {
   const dlong Nlocal = nrs->meshV->Nlocal;
@@ -1051,10 +1052,15 @@ inline void prepareMixtureDrag(double, int)
     fluidForcingSnapshotValid = true;
   }
   reconstructGasVelocity();
-  normalizeMixtureDragKernel(Nlocal, offset, aBdf, nrs->meshV->o_LMM,
+  splitMixtureDragKernel(Nlocal, offset, nrs->meshV->o_LMM,
       o_rhoPressure, o_frozenMixtureDragRate, o_ug, o_fluidForcingBeforeDrag,
-      o_rhoPressureSolve, nrs->fluid->o_JwF);
-  nrs->fluid->o_prop.slice(offset, offset).copyFrom(o_rhoPressureSolve, Nlocal);
+      o_mixtureDragDiagonal, nrs->fluid->o_JwF);
+
+}
+
+inline occa::memory implicitMixtureDrag(double)
+{
+  return o_mixtureDragDiagonal;
 }
 
 inline void addExplicitSources(double)

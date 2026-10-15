@@ -497,26 +497,23 @@
   }
 }
 
-// Absorb -rhoPressure*D into the BDF mass coefficient, including pressure.
-// The input forcing is the complete mass-weighted native BDF/EXT load with
-// mixture drag excluded. Reusing an unmodified snapshot makes repeated fluid
-// stages idempotent; VM and all other explicit forcing retain their full load.
-@kernel void normalizeMixtureDrag(const dlong N, const dlong offset,
-                                  const dfloat aBdf,
-                                  @ restrict const dfloat *mass,
-                                  @ restrict const dfloat *rhoPressure,
-                                  @ restrict const dfloat *rate,
-                                  @ restrict const dfloat *ug,
-                                  @ restrict const dfloat *baseForcing,
-                                  @ restrict dfloat *rhoSolve,
-                                  @ restrict dfloat *forcing)
+// Direct native velocity reaction: source D*(UM-UG) corresponds to
+// -rhoPressure*D on the velocity LHS and -D*UG on the acceleration RHS.
+// Keep the original rhoPressure and its native pressure operator unchanged.
+@kernel void splitMixtureDrag(const dlong N, const dlong offset,
+                              @ restrict const dfloat *mass,
+                              @ restrict const dfloat *rhoPressure,
+                              @ restrict const dfloat *rate,
+                              @ restrict const dfloat *ug,
+                              @ restrict const dfloat *baseForcing,
+                              @ restrict dfloat *diagonal,
+                              @ restrict dfloat *forcing)
 {
   for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
-    const dfloat chi = 1.0 - rate[n] / aBdf;
-    rhoSolve[n] = rhoPressure[n] * chi;
+    diagonal[n] = -rhoPressure[n] * rate[n];
     for (int i = 0; i < 3; ++i) {
       const dlong id = n + i * offset;
-      forcing[id] = (baseForcing[id] - mass[n] * rate[n] * ug[id]) / chi;
+      forcing[id] = baseForcing[id] - mass[n] * rate[n] * ug[id];
     }
   }
 }

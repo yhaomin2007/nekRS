@@ -18,8 +18,7 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   //   u_v = (1-alpha) u_l + alpha u_g.
   // For incompressible phases without phase change, div(u_v)=0 exactly.
   // NekRS uses 1/rho in its pressure operator, so the property callback stores
-  // rho_p = 1 / ((1-alpha)/rho_l + alpha/rho_g). The preFluid callback
-  // folds the semi-implicit UM drag reaction into this base coefficient.
+  // rho_p = 1 / ((1-alpha)/rho_l + alpha/rho_g), unchanged by implicit drag.
   platform->options.setArgs("LOWMACH", "FALSE");
   platform->options.setArgs("FLUID PRESSURE ELLIPTIC COEFF FIELD", "TRUE");
   // Core registrations copy platform->kernelInfo after setup0. OCCA emits
@@ -177,7 +176,7 @@ void UDF_Setup()
            bubbleColumn2::p.virtualMassRampStep);
   if (platform->comm.mpiRank() == 0)
     printf("bubbleColumn2 drag: UG/UM semi-implicit with lagged coefficient; UM uses solved UG; "
-           "UM reaction included in pressure and velocity coefficients\n");
+           "UM reaction uses native velocity implicit callback; pressure coefficient unchanged\n");
   if (bubbleColumn2::p.mixtureDragRampEnabled != 0.0 && platform->comm.mpiRank() == 0)
     printf("bubbleColumn2 mixture drag ramp: startStep=%d rampSteps=%d; "
            "linear step ramp of both semi-implicit UM drag parts\n",
@@ -185,6 +184,7 @@ void UDF_Setup()
   nrs->postScalar = &bubbleColumn2::postProcessAlpha;
   nrs->scalar->userImplicitLinearTerm = &bubbleColumn2::implicitGasDrag;
   nrs->preFluid = &bubbleColumn2::prepareMixtureDrag;
+  nrs->fluid->userImplicitLinearTerm = &bubbleColumn2::implicitMixtureDrag;
   nrs->userProperties = &bubbleColumn2::updateProperties;
   nrs->userDivergence = &bubbleColumn2::enforceZeroDivergence;
 }

@@ -6,7 +6,7 @@ def serial(s):
  s=s.replace('@kernel ','').replace('@ restrict ','')
  return re.sub(r'; @tile\(p_blockSize, @outer, @inner\)','',s)
 eq=(case/'bubbleColumn2Equations.okl').read_text()
-k=serial('@kernel void normalizeMixtureDrag('+eq.split('@kernel void normalizeMixtureDrag(')[1])
+k=serial('@kernel void splitMixtureDrag('+eq.split('@kernel void splitMixtureDrag(')[1])
 t=(case/'bubbleColumn2Terms.hpp').read_text()
 hook='inline void prepareMixtureDrag'+t.split('inline void prepareMixtureDrag')[1].split('inline void addExplicitSources')[0]
 cpp=r'''
@@ -23,6 +23,7 @@ using dfloat=double;using dlong=long;
 #define p_nBDF 2
 #define p_nEXT 2
 '''+k
+cpp+=serial((repo/'src/platform/linAlg/kernels/axpbyz.okl').read_text())
 for name in ['sumMakef','pressureRhsHex3D','velocityRhsHex3D']:
  cpp+=serial((repo/f'src/solver/fluid/kernels/{name}.okl').read_text())
 cpp+=r'''
@@ -33,18 +34,19 @@ struct Mem {
  Mem slice(long off,long){auto m=*this;m.start+=off;return m;}
  void copyFrom(Mem other,long n){std::copy(other.ptr(),other.ptr()+n,ptr());}
 };
+namespace occa {using memory=Mem;}
 struct Comm{int mpiComm(){return 0;}};
 struct LA{double max(long n,Mem m,int){return *std::max_element(m.ptr(),m.ptr()+n);}} la;
 struct Platform{LA *linAlg=&la;Comm comm;} obj;auto platform=&obj;
 struct Mesh{long Nlocal=3;Mem o_LMM{3};} mesh;
 struct Fluid{long fieldOffsetSum=15;Mem o_JwF{15},o_prop{10};} fluid;
 struct Nrs{Mesh *meshV=&mesh;Fluid *fluid=&::fluid;long fieldOffset=5;double g0=1.5,dt[1]={.01};} app;auto nrs=&app;
-Mem o_frozenMixtureDragRate(3),o_rhoPressure(3),o_rhoPressureSolve(3),o_ug(15),o_fluidForcingBeforeDrag(15);
+Mem o_frozenMixtureDragRate(3),o_rhoPressure(3),o_mixtureDragDiagonal(3),o_ug(15),o_fluidForcingBeforeDrag(15);
 bool fluidForcingSnapshotValid=false;
 void reconstructGasVelocity(){}
 #define nekrsCheck(test,...) do{if(test)throw std::runtime_error("invalid drag diagonal");}while(0)
-void normalizeMixtureDragKernel(long n,long o,double a,Mem mass,Mem rho,Mem rate,Mem ug,Mem base,Mem rs,Mem f){
- normalizeMixtureDrag(n,o,a,mass.ptr(),rho.ptr(),rate.ptr(),ug.ptr(),base.ptr(),rs.ptr(),f.ptr());
+void splitMixtureDragKernel(long n,long o,Mem mass,Mem rho,Mem rate,Mem ug,Mem base,Mem diag,Mem f){
+ splitMixtureDrag(n,o,mass.ptr(),rho.ptr(),rate.ptr(),ug.ptr(),base.ptr(),diag.ptr(),f.ptr());
 }
 '''+hook+r'''
 bool close(double x,double y){return std::abs(x-y)<1e-11*std::max(1.,std::max(std::abs(x),std::abs(y)));}
@@ -53,12 +55,13 @@ int main(){
  double mass[3]={2,5,3},rho[3]={2,4,9};
  double state[30]={},adv[30]={},fu[30]={},bf[15]={},bdf[2]={2,-.5};
  double gp[15]={},gradDiv[15]={},curl[15]={},mu[3]={.1,.2,.3};
- double velrhs[15]={},prhs[15]={},inverseRho[3]={};
+ double velrhs[15]={},prhs[15]={},inverseRho[3]={},lambda[3]={};
  for(int extOrder:{1,2}) for(int vm:{0,1}) for(int drag:{0,1}){
   double ext[2]={extOrder==1?1.:2.,extOrder==1?0.:-1.};
   fluidForcingSnapshotValid=false;
   for(int n=0;n<N;++n){
    mesh.o_LMM.ptr()[n]=mass[n];o_rhoPressure.ptr()[n]=rho[n];
+   fluid.o_prop.ptr()[O+n]=rho[n];
    o_frozenMixtureDragRate.ptr()[n]=drag*(n==0?0.:(n==1?4.:10.));
   }
   for(int c=0;c<3;++c)for(int n=0;n<N;++n){
@@ -72,20 +75,22 @@ int main(){
   std::copy(bf,bf+15,fluid.o_JwF.ptr());
   prepareMixtureDrag(.1,1);
   for(int n=0;n<N;++n){
-   double D=o_frozenMixtureDragRate.ptr()[n],chi=1-D/150.;
-   assert(close(fluid.o_prop.ptr()[O+n],rho[n]*chi));
+   double D=o_frozenMixtureDragRate.ptr()[n];
+   assert(fluid.o_prop.ptr()[O+n]==rho[n]);
    inverseRho[n]=1/fluid.o_prop.ptr()[O+n];
    // Dynamic BDF diagonal is exactly the original diagonal minus rho*D.
-   assert(close(150.*fluid.o_prop.ptr()[O+n],rho[n]*(150.-D)));
+   assert(close(implicitMixtureDrag(.1).ptr()[n],-rho[n]*D));
   }
+  axpbyz(N,150.,fluid.o_prop.ptr()+O,1.,implicitMixtureDrag(.1).ptr(),lambda);
+  for(int n=0;n<N;++n)assert(close(lambda[n],rho[n]*(150.-o_frozenMixtureDragRate.ptr()[n])));
   velocityRhsHex3D(N,O,fluid.o_prop.ptr()+O,fluid.o_JwF.ptr(),gradDiv,gp,velrhs);
   pressureRhsHex3D(N,O,mu,inverseRho,fluid.o_JwF.ptr(),curl,gradDiv,prhs);
   for(int c=0;c<3;++c)for(int n=0;n<N;++n){
-   int id=n+c*O;double D=o_frozenMixtureDragRate.ptr()[n],chi=1-D/150.;
+   int id=n+c*O;double D=o_frozenMixtureDragRate.ptr()[n];
    double rhs=bf[id]-mass[n]*D*o_ug.ptr()[id];
    assert(close(velrhs[id],rho[n]*rhs+gp[id]));
-   assert(close(chi*prhs[id],rhs-mu[n]/rho[n]*curl[id]));
-   double expected=rhs/chi;
+   assert(close(prhs[id],rhs-mu[n]/rho[n]*curl[id]));
+   double expected=rhs;
    assert(close(fluid.o_JwF.ptr()[id],expected));
    if(!drag)assert(fluid.o_JwF.ptr()[id]==bf[id]);
   }
@@ -95,7 +100,7 @@ int main(){
   for(int i=0;i<15;++i)assert(fluid.o_JwF.ptr()[i]==first[i]);
   o_ug.ptr()[1]+=.1;prepareMixtureDrag(.1,1);
   double D=o_frozenMixtureDragRate.ptr()[1];
-  assert(close(fluid.o_JwF.ptr()[1],(bf[1]-mass[1]*D*o_ug.ptr()[1])/(1-D/150.)));
+  assert(close(fluid.o_JwF.ptr()[1],bf[1]-mass[1]*D*o_ug.ptr()[1]));
  }
  for(double invalid:{150.,200.}){
   o_frozenMixtureDragRate.ptr()[1]=invalid;
@@ -115,4 +120,10 @@ assert 'fluidForcingSnapshotValid = false;' in forcing
 assert 'freezeDragHistory' not in t
 order=(repo/'src/app/nrs/nrs.cpp').read_text().split('bool nrs_t::runInnerStep')[1]
 assert order.index('scalar->solve(')<order.index('evaluateProperties(timeNew)')<order.index('preFluid(timeNew, tstep)')<order.index('fluid->solve(')
-print('Actual preFluid/native BDF+pressure+velocity: reaction diagonal, full VM/EXT/BDF forcing preserved, variable rho/mass, pressure mobility, repeated stages, updated UG and diagonal guard passed.')
+udf=(case/'bubbleColumn2.udf').read_text()
+assert 'nrs->fluid->userImplicitLinearTerm = &bubbleColumn2::implicitMixtureDrag;' in udf
+assert 'o_prop' not in hook and 'chi' not in hook
+core=(repo/'src/solver/fluid/fluidSolver.cpp').read_text()
+assert 'userImplicitLinearTerm' not in core.split('void fluidSolver_t::solvePressure')[1].split('void fluidSolver_t::solveVelocity')[0]
+assert 'userImplicitLinearTerm(time)' in core.split('void fluidSolver_t::solveVelocity')[1]
+print('Actual preFluid/native BDF+pressure+velocity: reaction diagonal, full VM/EXT/BDF forcing preserved, variable rho/mass, unchanged density/pressure mobility, native callback, repeated stages, updated UG and diagonal guard passed.')

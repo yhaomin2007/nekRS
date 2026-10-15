@@ -1,4 +1,4 @@
-"""Implicit gas drag and explicit mixture drag/history checks; requires g++."""
+"""Semi-implicit gas and mixture drag checks; requires g++."""
 from pathlib import Path
 import re
 import subprocess
@@ -8,7 +8,7 @@ root = Path(__file__).resolve().parents[1]
 terms = (root / 'bubbleColumn2Terms.hpp').read_text()
 udf = (root / 'bubbleColumn2.udf').read_text()
 for obsolete in ('frozenDragEnabled', 'mixtureImplicitDragEnabled',
-                 'implicitMixtureDrag', 'o_mixtureDragDiagonal', 'addMixtureStressAndSplitDrag',
+'addMixtureStressAndSplitDrag',
                  'mixtureDragRelaxation', 'relaxMixtureDrag', 'o_relaxedMixtureDragSource',
                  'mixtureDragRampStartTime', 'mixtureDragRampDuration'):
     assert obsolete not in terms + udf
