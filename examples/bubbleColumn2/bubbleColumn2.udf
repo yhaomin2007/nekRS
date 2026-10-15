@@ -193,8 +193,9 @@ void UDF_Setup()
     if (platform->options.getArgs("RESTART FILE NAME").empty()) {
       // Fresh starts retain the alpha plume and stationary initial liquid.
       platform->linAlg->fill(3 * nrs->fieldOffset, 0.0, nrs->fluid->o_U);
+      auto o_umZ = nrs->fluid->o_U.slice(2 * nrs->fieldOffset, nrs->fieldOffset);
       platform->linAlg->axpby(Nlocal, ug, nrs->scalar->o_solution("alpha"),
-          0.0, nrs->fluid->o_U.slice(2 * nrs->fieldOffset, nrs->fieldOffset));
+          0.0, o_umZ);
     }
     if (platform->comm.mpiRank() == 0)
       printf("bubbleColumn2 prescribed UG: uniform (0,0,%g) m/s; UG solves and UG boundary updates disabled; alpha and UM still solved\n", ug);

@@ -36,7 +36,7 @@ struct Mem {
 };
 struct LA {
  void fill(long n,double a,Mem m) { for(long i=0;i<n;++i)(*m.v)[m.off+i]=a; }
- void axpby(long n,double a,Mem x,double b,Mem y) {
+ void axpby(long n,double a,const Mem& x,double b,Mem& y) {
    for(long i=0;i<n;++i)(*y.v)[y.off+i]=a*(*x.v)[x.off+i]+b*(*y.v)[y.off+i];
  }
 };
@@ -81,4 +81,14 @@ with tempfile.TemporaryDirectory() as tmp:
     exe = Path(tmp) / 'test'
     subprocess.run(['c++', '-std=c++17', str(src), '-o', str(exe)], check=True)
     subprocess.run([str(exe)], check=True)
+    # The original temporary slice must fail with the native output-reference contract.
+    broken = cpp.replace('0.0, o_umZ);',
+        '0.0, nrs->fluid->o_U.slice(2 * nrs->fieldOffset, nrs->fieldOffset));')
+    assert broken != cpp
+    src.write_text(broken)
+    rejected = subprocess.run(['c++', '-std=c++17', str(src), '-o', str(exe)],
+                              capture_output=True, text=True)
+    assert rejected.returncode != 0, 'Temporary output slice unexpectedly compiled'
+    assert 'reference' in rejected.stderr
+
 print('PASS: prescribed UG fresh/restart/disabled paths, native solve/BC skip and active alpha forcing')
