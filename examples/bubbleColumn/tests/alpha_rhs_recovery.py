@@ -22,8 +22,8 @@ using dfloat=double;using dlong=long;
 '''+kernels+forcing+'''
 int main() {
  const int n=2,o=2;double mass[2]={2,5},rho[2]={1,1},coeff[2]={2,-.5};
- double old[4]={.01,.02,.012,.025},adv[4]={.3,.7,-.2,.1};
- // Source includes cancellation, physical gas transport and HPF at each level.
+ double old[4]={.01,.02,.012,.025},adv[4]={0,0,0,0};
+ // Alpha has zero native advection; RHS contains physical UG flux and HPF.
  double physical[4]={-2.,.5,-.4,.2},hpf[4]={-.03,.02,.01,-.04},fu[4];
  for(int i=0;i<4;++i)fu[i]=adv[i]+physical[i]+hpf[i];
  for(int extrapolate=0;extrapolate<2;++extrapolate) {

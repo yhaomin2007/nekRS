@@ -20,7 +20,7 @@ main = '''
 int main() {
   double mass[1]={2}, rho[4]={1,1,1,1}, bdf[2]={2,-.5};
   double state[8]={.2,.3,.4,.5,.1,.2,.3,.4};
-  double adv[8]={.6,.7,.8,.9,2,3,4,5};
+  double adv[8]={0,.7,.8,.9,0,3,4,5};
   double rhs[8]={-.1,1,2,3,-4,-5,-6,-7}, bf[4]={};
   double scalarExt[2]={1,0}, fluidExt[2]={2,-1};
   for(int f=0;f<4;++f) {
@@ -47,4 +47,4 @@ assert 'o_scalarCoeffEXT.resize(nEXT)' in case
 assert 'nrs->o_coeffEXT.copyFrom' not in case
 assert 'nrs->scalar->o_relUrst = nrs->fluid->o_relUrst;' in case
 assert 'nrs->scalar->o_U = nrs->fluid->o_U;' in case
-print('Native forcing: EXT1 applies latest convection/RHS to all four scalars; BDF and fluid EXT preserved. Native advector is mixture U; gas RHS uses latest UG.')
+print('Native forcing: EXT1 applies latest convection/RHS to all four scalars; BDF and fluid EXT preserved. Native UG advector is mixture U; alpha native advection is zero and gas RHS uses latest UG.')

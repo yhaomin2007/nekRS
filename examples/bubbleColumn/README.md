@@ -1,6 +1,6 @@
-# Density-averaged method1: mixture convection with gas RHS replacement
+# Density-averaged method1: conservative UG transport of alpha
 
-The native solver transports ALPHA/UGX/UGY/UGZ using mixture velocity U. The user RHS adds back the identical native mixture advection operator for each scalar and replaces it with conservative cubature div(alpha*UG) for alpha and cubature UG.grad(UG) for gas velocity. UG remains a transported velocity, not QG. Gas drag and effective virtual-mass inertia remain semi-implicit; pressure and liquid acceleration remain lagged.
+Alpha has no native mixture convection or matching RHS cancellation: its device-only advection compute flag is disabled before the first timestep. Host compute stays enabled, retaining the alpha Helmholtz solve, diffusion, HPFRT and boundary conditions. Native alpha advection histories are zero-initialized and remain zero. The alpha RHS directly supplies conservative cubature div(alpha*UG). UGX/UGY/UGZ retain native mixture convection plus identical RHS cancellation, replaced by cubature UG.grad(UG). UG remains transported velocity, not QG. Gas drag and effective virtual-mass inertia remain semi-implicit; pressure and liquid acceleration remain lagged.
 
 At degree N, set cubaturePolynomialOrder >= 2*N because the conservative kernel differentiates the sampled product. The example N=7 uses order 14 (15 Gauss points). Scalar explicit histories use EXT1; native fluid/BDF integration is unchanged.
 
@@ -18,7 +18,7 @@ Divergence uses the standalone user module explicitFilter.hpp / explicitFilter.o
 
 To reuse the module in another v26 case, include explicitFilter.hpp, call userExplicitFilter::registerKernels(kernelInfo) during UDF_LoadKernels, then call userExplicitFilter::explicitFilterApply(tag, mesh, modes, strength, field). Register the kernel for the case polynomial degree; fields may be padded or scalar slices with at least mesh Nlocal entries. The module performs element-local filtering only; the caller handles gather-scatter as needed. Matrices are cached by tag and rebuilt when mesh, degree, modes or strength changes.
 
-The RHS is recovered from native scalar o_JwF by removing its BDF history load. This preserves the actual EXT/source/native-convection cancellation and HPF contribution. Native weak diffusion is evaluated on the pre-clipping solved alpha, then the BDF filtering/clipping-rate correction is added. At imposed alpha Dirichlet nodes, boundary evolution replaces the interior equation. Add native mixture advection of updated alpha, multiply by (rhoLiquid-rhoGas)/rhoM and assemble to obtain the target.
+The RHS is recovered from native scalar o_JwF by removing its BDF history load. This preserves actual UG-flux/EXT/source and HPF contributions without any alpha mixture-convection cancellation. Native weak diffusion is evaluated on the pre-clipping solved alpha, then the BDF filtering/clipping-rate correction is added. At imposed alpha Dirichlet nodes, boundary evolution replaces the interior equation. For the continuity constraint only, evaluate mixture material advection of updated alpha using a separate enabled user mask (independent of the disabled native alpha transport mask), multiply by (rhoLiquid-rhoGas)/rhoM and assemble to obtain the target.
 
 The BDF alternative remains an exported diagnostic only; there is no longer a selectable mixtureDivergenceMethod. Raw recovered-RHS, raw BDF, actual pressure target and their signed difference are exported in the div checkpoint.
 
@@ -35,3 +35,5 @@ Divergence recovery uses weak diffusion on the original implicit alpha solution 
 Serial checks cover actual forcing recovery with HPF, weak diffusion, clipping and imposed boundary correction; native advection cancellation; gas/VM scaling and dilute forcing; plume initialization; uniform/rim boundary consistency; diagnostic kernels and conservative transport. Full GPU/MPI integration must be checked in the user's NekRS installation. Core files are not modified.
 
 METHOD1_AUDIT.md records the earlier pre-simplification snapshot and is retained as historical analysis.
+
+Obsolete alpha native/cancellation comparison columns were removed from conservation CSV. Mixture material advection remains in divergence reconstruction, not in the alpha transport RHS; UM also continues to affect solved UG through physical coupling.

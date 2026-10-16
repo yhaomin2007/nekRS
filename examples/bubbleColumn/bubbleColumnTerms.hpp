@@ -81,6 +81,7 @@ static occa::kernel gasInterpolateKernel, gasCubatureProductsKernel;
 static occa::kernel gasProjectKernel, alphaConservativeCubatureKernel;
 static deviceMemory<dfloat> o_gasAdvector;
 static deviceMemory<dfloat> o_scalarCoeffEXT;
+static deviceMemory<dlong> o_userAdvectionCompute;
 static deviceMemory<dfloat> o_gasUrst;
 static deviceMemory<dfloat> o_alphaGasAdvection;
 static deviceMemory<dfloat> o_alphaMixtureAdvection;
@@ -147,9 +148,6 @@ static deviceMemory<int> o_allBoundaryIDs;
 static deviceMemory<dfloat> o_validationGasDiffusiveFlux;
 static deviceMemory<dfloat> o_validationMassFlux;
 static deviceMemory<dfloat> o_validationDivQg;
-static deviceMemory<dfloat> o_alphaUserAdvectionDiagnostic;
-static deviceMemory<dfloat> o_alphaNativeAdvectionDiagnostic;
-static int alphaAdvectionDiagnosticStep = -1;
 static deviceMemory<dfloat> o_qgBeforeMask;
 static deviceMemory<dfloat> o_qgMaskDelta;
 static std::ofstream validationFile;
@@ -521,8 +519,6 @@ inline void allocate()
   o_validationGasDiffusiveFlux.resize(3 * offset);
   o_validationMassFlux.resize(3 * offset);
   o_validationDivQg.resize(offset);
-  o_alphaUserAdvectionDiagnostic.resize(offset);
-  o_alphaNativeAdvectionDiagnostic.resize(nrs->scalar->fieldOffsetSum);
   o_qgBeforeMask.resize(3 * offset);
   o_qgMaskDelta.resize(3 * offset);
   platform->linAlg->fill(nrs->meshV->Nlocal, 1.0, o_surfaceOne);
@@ -793,7 +789,7 @@ inline void evaluateNativeAlphaAdvection(deviceMemory<dfloat> &o_advection,
                  mesh->o_cubDiffInterpT,
                  mesh->o_cubInterpT,
                  mesh->o_cubProjectT,
-                 nrs->scalar->o_compute + alphaIndex,
+                 static_cast<occa::memory>(o_userAdvectionCompute) + alphaIndex,
                  nrs->scalar->o_fieldOffsetScan + alphaIndex,
                  nrs->scalar->vFieldOffset,
                  nrs->scalar->vCubatureOffset,
@@ -808,7 +804,7 @@ inline void evaluateNativeAlphaAdvection(deviceMemory<dfloat> &o_advection,
                  0,
                  mesh->o_vgeo,
                  mesh->o_D,
-                 nrs->scalar->o_compute + alphaIndex,
+                 static_cast<occa::memory>(o_userAdvectionCompute) + alphaIndex,
                  nrs->scalar->o_fieldOffsetScan + alphaIndex,
                  nrs->scalar->vFieldOffset,
                  nrs->scalar->o_S,
@@ -844,9 +840,26 @@ inline void prepareGasAdvection()
   o_gasAdvector.copyFrom(o_ug, 3 * offset);
 }
 
+inline void disableNativeAlphaAdvection()
+{
+  // Host compute controls solving/BC/HPF; device o_compute is used only by
+  // native scalar advection. Keep a separate enabled mask for user-side
+  // mixture material derivatives needed by the divergence constraint.
+  std::vector<dlong> flags(nrs->scalar->compute.begin(), nrs->scalar->compute.end());
+  o_userAdvectionCompute.resize(flags.size());
+  o_userAdvectionCompute.copyFrom(flags);
+  flags[nrs->scalar->nameToIndex.at("alpha")] = 0;
+  nrs->scalar->o_compute.copyFrom(flags.data());
+  // v26 device allocations zero-initialize private o_ADV and its histories.
+  // With alpha masked from the first step, these entries stay identically
+  // zero through native makeForcing/history lagging, including restarts.
+}
+
 inline void initializeHistory()
 {
-  // Native scalar transport remains mixture-based; user RHS replaces it.
+  disableNativeAlphaAdvection();
+  // Native UG transport remains mixture-based and is replaced in its RHS.
+  // Alpha native advection is disabled; only user conservative UG flux remains.
   nrs->scalar->o_U = nrs->fluid->o_U;
   nrs->scalar->o_Ue = nrs->fluid->o_Ue;
   nrs->scalar->o_relUrst = nrs->fluid->o_relUrst;
@@ -1116,7 +1129,9 @@ inline void addExplicitSources(double)
         o_gasTransport.slice((i + 1) * offset, offset), 1.0, source);
     nrs->scalar->o_explicitTerms(names[i + 1]).copyFrom(source, Nlocal);
   }
-  for (int i = 0; i < 4; ++i) {
+  // Cancel native mixture convection only for UG. Alpha has neither native
+  // convection nor a cancellation term.
+  for (int i = 1; i < 4; ++i) {
     evaluateNativeAlphaAdvection(o_alphaGasAdvection, true, names[i], true);
     const int index = nrs->scalar->nameToIndex.at(names[i]);
     platform->linAlg->axpby(Nlocal, 1.0,
@@ -1143,7 +1158,7 @@ inline void buildDivergenceFromAlphaRhs(deviceMemory<dfloat>& o_divergence)
   const int index = nrs->scalar->nameToIndex.at("alpha");
   const dlong alphaOffset = nrs->scalar->fieldOffsetScan[index];
   const int bdfOrder = std::min(nrs->tstep, static_cast<int>(nrs->o_coeffBDF.size()));
-  // Native o_JwF contains the actual explicit RHS (including cancellation,
+  // Native o_JwF contains the actual alpha explicit RHS (UG transport,
   // HPF and EXT history) plus the BDF history load. Remove only that history.
   recoverAlphaRhsKernel(Nlocal, alphaOffset, nrs->scalar->fieldOffsetSum,
       bdfOrder, 1.0 / nrs->dt[0], nrs->meshV->o_LMM,
@@ -1373,10 +1388,6 @@ struct ValidationState {
   dfloat alphaDivQgVolumeIntegral;
   dfloat alphaDivergenceTheoremDefect;
   dfloat alphaDivergenceTheoremRelative;
-  dfloat alphaNativeMixtureAdvectionVolumeIntegral;
-  dfloat alphaUserMixtureAdvectionVolumeIntegral;
-  dfloat alphaAdvectionCancellationDefect;
-  dfloat alphaAdvectionCancellationRelative;
   dfloat totalMassFluxInlet;
   dfloat totalMassFluxOutlet;
   dfloat totalMassFluxTotal;
@@ -1423,39 +1434,6 @@ inline ValidationState computeValidationState(int tstep)
     state.alphaDivQgVolumeIntegral = NAN;
     state.alphaDivergenceTheoremDefect = NAN;
     state.alphaDivergenceTheoremRelative = NAN;
-  }
-
-  // The native kernel and reconstructed user term were sampled together in
-  // userSource(). A NaN explicitly marks rows for which no matching sample is
-  // available instead of silently comparing fields from different steps.
-  if (alphaAdvectionDiagnosticStep == tstep) {
-    const int alphaIndex = nrs->scalar->nameToIndex.at("alpha");
-    const dlong alphaOffset = nrs->scalar->fieldOffsetScan[alphaIndex];
-    auto nativeAlphaAdvection =
-        o_alphaNativeAdvectionDiagnostic.slice(alphaOffset, Nlocal);
-    state.alphaNativeMixtureAdvectionVolumeIntegral =
-        platform->linAlg->innerProd(
-            Nlocal, nrs->meshV->o_LMM, nativeAlphaAdvection, comm);
-    state.alphaUserMixtureAdvectionVolumeIntegral =
-        platform->linAlg->innerProd(
-            Nlocal,
-            nrs->meshV->o_LMM,
-            o_alphaUserAdvectionDiagnostic,
-            comm);
-    state.alphaAdvectionCancellationDefect =
-        state.alphaNativeMixtureAdvectionVolumeIntegral
-        - state.alphaUserMixtureAdvectionVolumeIntegral;
-    dfloat cancellationScale = std::max(
-        std::abs(state.alphaNativeMixtureAdvectionVolumeIntegral),
-        std::abs(state.alphaUserMixtureAdvectionVolumeIntegral));
-    state.alphaAdvectionCancellationRelative =
-        std::abs(state.alphaAdvectionCancellationDefect)
-        / std::max(cancellationScale, 1.0e-30);
-  } else {
-    state.alphaNativeMixtureAdvectionVolumeIntegral = NAN;
-    state.alphaUserMixtureAdvectionVolumeIntegral = NAN;
-    state.alphaAdvectionCancellationDefect = NAN;
-    state.alphaAdvectionCancellationRelative = NAN;
   }
 
   // Build the diagnostic flux from the current completed-step alpha field.
@@ -1588,10 +1566,6 @@ inline void writeValidationChecks(double time, int tstep)
           << "gas_diffusive_flux_outlet_outward,gas_diffusive_flux_all_boundaries,"
           << "alpha_div_qg_volume_integral,alpha_divergence_theorem_defect,"
           << "alpha_divergence_theorem_relative,"
-          << "alpha_native_mixture_advection_volume_integral,"
-          << "alpha_user_mixture_advection_volume_integral,"
-          << "alpha_advection_cancellation_defect,"
-          << "alpha_advection_cancellation_relative,"
           << "gas_balance_residual,gas_balance_relative,"
           << "total_mass,dtotal_mass_dt,total_mass_flux_inlet_outward,"
           << "total_mass_flux_outlet_outward,total_mass_flux_all_boundaries,"
@@ -1661,10 +1635,6 @@ inline void writeValidationChecks(double time, int tstep)
                    << state.alphaDivQgVolumeIntegral << ','
                    << state.alphaDivergenceTheoremDefect << ','
                    << state.alphaDivergenceTheoremRelative << ','
-                   << state.alphaNativeMixtureAdvectionVolumeIntegral << ','
-                   << state.alphaUserMixtureAdvectionVolumeIntegral << ','
-                   << state.alphaAdvectionCancellationDefect << ','
-                   << state.alphaAdvectionCancellationRelative << ','
                    << gasResidual << ',' << gasRelative << ','
                    << state.totalMass << ',' << dTotalMassDt << ','
                    << state.totalMassFluxInlet << ','

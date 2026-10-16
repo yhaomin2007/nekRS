@@ -59,6 +59,7 @@ evaluation = case.split('inline void evaluatePointwiseTerms()')[1].split(
 assert 'evaluateGasCubatureTransport(true);' in evaluation
 forcing = case.split('inline void addExplicitSources(double)')[1].split(
     'inline void buildDivergenceFromAlphaRhs')[0]
+assert 'for (int i = 1; i < 4; ++i)' in forcing
 assert 'evaluateNativeAlphaAdvection(o_alphaGasAdvection, true, names[i], true);' in forcing
 assert '1.0, nrs->scalar->o_explicitTerms(names[i])' in forcing
 reconstruction = case.split('inline void buildDivergenceFromAlphaRhs')[1].split(
@@ -66,5 +67,5 @@ reconstruction = case.split('inline void buildDivergenceFromAlphaRhs')[1].split(
 assert 'recoverAlphaRhsKernel' in reconstruction
 assert 'core-weakLaplacianHex3D' in reconstruction
 assert 'o_alphaBeforePostprocess' in reconstruction
-print('Actual nodal flux product and core EXT1/EXT2 native-advection cancellation '
+print('Actual nodal flux product and UG core EXT1/EXT2 native-advection cancellation '
       'pass unequal shared-node mass assembly. Direct RHS reconstruction routing checked.')
