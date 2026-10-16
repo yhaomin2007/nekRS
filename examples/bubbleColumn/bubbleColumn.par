@@ -113,9 +113,12 @@ virtualMassEnabled = 1.0
 virtualMassCoefficient = 0.5
 # Native scalar convection uses mixture U; its exact contribution is canceled
 # in the RHS for UG only. Alpha native convection is disabled.
-# Alpha uses conservative cubature div(alpha*UG); UG uses UG.grad(UG).
+# Alpha uses selected conservative div(alpha*UG); UG uses cubature UG.grad(UG).
 # Scalar explicit terms use EXT1; diffusion and gas drag remain implicit.
 gasTransportMethod = 1
+# 1: form alpha*UG at GLL nodes, then assembled SEM strong divergence.
+# 2: conservative cubature flux differentiation (existing default).
+alphaTransportForm = 2
 # Target mixture divergence comes only from the actual alpha equation RHS.
 # 0 imposes div(U)=0; 1 enables the reconstructed target (optionally ramped).
 mixtureDivergenceEnabled = 1

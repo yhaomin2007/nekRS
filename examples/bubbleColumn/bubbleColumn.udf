@@ -102,6 +102,7 @@ void UDF_Setup0(MPI_Comm, setupAide &)
              "%s", "mixtureDivergenceEnabled must be 0 or 1.\n");
   platform->par->extract("casedata", "divergencecomparisoninterval", p.divergenceComparisonInterval);
   platform->par->extract("casedata", "divergencefiltermodes", p.divergenceFilterModes);
+  platform->par->extract("casedata", "alphatransportform", p.alphaTransportForm);
   platform->par->extract("casedata", "divergencefilterstrength", p.divergenceFilterStrength);
   platform->par->extract(
       "casedata", "divergenceextrapolationenabled", p.divergenceExtrapolationEnabled);

@@ -56,7 +56,8 @@ with tempfile.TemporaryDirectory() as directory:
 case = (root/'examples/bubbleColumn/bubbleColumnTerms.hpp').read_text()
 evaluation = case.split('inline void evaluatePointwiseTerms()')[1].split(
     'inline void evaluateNativeAlphaAdvection')[0]
-assert 'evaluateGasCubatureTransport(true);' in evaluation
+assert 'evaluateAlphaTransport();' in evaluation
+assert 'evaluateGasCubatureTransport(true);' in case.split('inline void evaluateAlphaTransport()')[1].split('inline void evaluatePointwiseTerms()')[0]
 forcing = case.split('inline void addExplicitSources(double)')[1].split(
     'inline void buildDivergenceFromAlphaRhs')[0]
 assert 'for (int i = 1; i < 4; ++i)' in forcing

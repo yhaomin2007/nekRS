@@ -259,7 +259,7 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
 inline void allocate()
 {
   const dlong offset = nrs->fieldOffset;
-  nekrsCheck(nrs->meshV->cubNq < 2 * nrs->meshV->N + 1,
+  nekrsCheck(p.alphaTransportForm == 2 && nrs->meshV->cubNq < 2 * nrs->meshV->N + 1,
              platform->comm.mpiComm(), EXIT_FAILURE,
              "%s", "Direct conservative flux differentiation requires cubaturePolynomialOrder >= 2*polynomialOrder.\n");
   for (const char *name : {"alpha", "ugx", "ugy", "ugz"}) {
@@ -297,9 +297,9 @@ inline void allocate()
   nekrsCheck(p.alphaCompressionMode < 0 || p.alphaCompressionMode > 2,
              platform->comm.mpiComm(), EXIT_FAILURE,
              "%s", "alphaCompressionMode must be 0 (off), 1 (explicit), or 2 (implicit).\n");
-  nekrsCheck(p.alphaTransportForm < 0 || p.alphaTransportForm > 2,
+  nekrsCheck(p.alphaTransportForm != 1 && p.alphaTransportForm != 2,
              platform->comm.mpiComm(), EXIT_FAILURE,
-             "%s", "alphaTransportForm must be 0 (split), 1 (nodal flux), or 2 (cubature flux).\n");
+             "%s", "alphaTransportForm must be 1 (SEM nodal flux) or 2 (cubature flux).\n");
   nekrsCheck(!std::isfinite(p.alphaCompressionInletThickness)
                  || p.alphaCompressionInletThickness < 0.0,
              platform->comm.mpiComm(), EXIT_FAILURE,
@@ -623,6 +623,27 @@ inline void evaluateGasCubatureTransport(bool conservativeAlpha = false)
   // Component zero is full div(alpha*UG) in conservative mode, compression otherwise.
 }
 
+inline void evaluateAlphaTransport()
+{
+  auto mesh = nrs->meshV;
+  const dlong offset = nrs->fieldOffset;
+  if (p.alphaTransportForm == 1) {
+    // Form the nodal product with the same frozen UG used by cubature.
+    // v26's normalized/assembled SEM divergence is strongDivergence(avg=true).
+    for (int i = 0; i < 3; ++i) {
+      auto flux = o_alphaConservativeFlux.slice(i * offset, offset);
+      flux.copyFrom(o_gasAdvector, mesh->Nlocal, 0, i * offset);
+      platform->linAlg->axmy(mesh->Nlocal, 1.0,
+          nrs->scalar->o_solution("alpha"), flux);
+    }
+    opSEM::strongDivergence(mesh, offset, o_alphaConservativeFlux, o_alphaSource, true);
+    platform->linAlg->scale(mesh->Nlocal, -1.0, o_alphaSource);
+  } else {
+    evaluateGasCubatureTransport(true);
+    platform->linAlg->axpby(mesh->Nlocal, -1.0, o_gasTransport, 0.0, o_alphaSource);
+  }
+}
+
 inline void evaluatePointwiseTerms()
 {
   auto mesh = nrs->meshV;
@@ -738,8 +759,7 @@ inline void evaluatePointwiseTerms()
                            o_alphaSource,
                            o_ugSource,
                            o_dragLambda);
-  evaluateGasCubatureTransport(true);
-  platform->linAlg->axpby(mesh->Nlocal, -1.0, o_gasTransport, 0.0, o_alphaSource);
+  evaluateAlphaTransport();
 
   // Smoothly increase the implicit mixture viscosity and all implicit scalar
   // diffusion coefficients near the outlet. Do not scale the explicit gas
