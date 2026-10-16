@@ -68,6 +68,13 @@ sumMakef(8,mass,10.,ext,bdf,0,8,8,rho,S,adv,source,out);
 for(int i=0;i<8;++i)assert(std::abs(out[i]-(10.*S[i]-.03))<1e-14);
 for(int i=0;i<8;++i)adv[i+8]=adv[i];
 }
+// The independent user mask still evaluates a nonzero UM.grad(alpha) for
+// divergence reconstruction, using the actual native GLL advection kernel.
+D[0]=-.5;D[1]=.5;D[2]=-.5;D[3]=.5;
+for(int i=0;i<81;++i)Urst[i]=0.;
+for(int i=0;i<8;++i){S[i]=.2+.01*(i%2?1.:-1.);Urst[i]=.7;}
+strongAdvectionVolumeScalarHex3D(1,1,0,geo,D,o_userAdvectionCompute.a.data(),offsets,8,S,Urst,rho,adv);
+for(int i=0;i<8;++i)assert(std::abs(adv[i]-.007)<1e-14);
 }
 '''
 with tempfile.TemporaryDirectory() as directory:

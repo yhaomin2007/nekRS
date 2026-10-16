@@ -10,6 +10,8 @@ def serial(s):
                   s.replace('@kernel ','').replace('@ restrict ',''))
 equations=(root/'examples/bubbleColumn/bubbleColumnEquations.okl').read_text()
 kernels=serial(equations.split('@kernel void reconstructGasVelocity')[0])
+kernels+=serial('@kernel void buildDivergenceFromAlphaRhs'+equations.split(
+    '@kernel void buildDivergenceFromAlphaRhs',1)[1].split('@kernel void buildOutletRampFactor',1)[0])
 forcing=serial((root/'src/solver/scalar/kernels/sumMakef.okl').read_text())
 cpp='''#include <cassert>
 #include <cmath>
@@ -51,6 +53,20 @@ int main() {
    alphaBoundaryRhs(1,ids,0,o,2,100.,1.5,hist,coeff,rhs);
    assert(rhs[0]==interior);
    assert(std::abs(rhs[1]-100.*(1.5*hist[1]-2.*hist[3]+.5*hist[5]))<1e-12);
+   // UM material advection belongs to the continuity target even though it
+   // no longer belongs to alpha transport. Compare actual RHS/BDF kernels.
+   double material[2]={.31,-.17},zero[2]={},divRhs[2],divBdf[2];
+   for(int i=0;i<n;++i)rhs[i]+=material[i];
+   buildDivergenceFromAlphaRhs(n,1000.,1.,clipped,rhs,zero,divRhs);
+   buildDivergenceFromAlphaBdf(n,0,o,2,100.,1.5,1000.,1.,hist,coeff,material,divBdf);
+   for(int i=0;i<n;++i){
+     double bdf=100.*(1.5*hist[i]-2.*hist[i+o]+.5*hist[i+2*o]);
+     double rhoM=1000.-999.*clipped[i];
+     assert(std::abs(divRhs[i]-divBdf[i])<1e-11);
+     assert(std::abs(divRhs[i]-999./rhoM*(bdf+material[i]))<1e-11);
+     // Continuum-form mixture continuity identity at the chosen predictor.
+     assert(std::abs(-999.*(bdf+material[i])+rhoM*divRhs[i])<1e-9);
+   }
  }
 }
 '''
@@ -58,5 +74,5 @@ with tempfile.TemporaryDirectory() as directory:
     path=Path(directory);(path/'check.cpp').write_text(cpp)
     subprocess.run(['g++','-std=c++17',str(path/'check.cpp'),'-o',str(path/'check')],check=True)
     subprocess.run([str(path/'check')],check=True)
-print('Actual native forcing/RHS recovery: EXT1/EXT2, HPF, weak diffusion, filtering/clipping '
-      'and imposed boundary correction match the alpha BDF update.')
+print('Actual alpha RHS and divergence kernels: EXT1/EXT2, HPF, weak diffusion, filtering/clipping, '
+      'boundary correction and nonzero UM material advection match BDF and the density continuity identity.')

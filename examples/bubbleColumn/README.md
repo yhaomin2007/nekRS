@@ -22,6 +22,8 @@ The RHS is recovered from native scalar o_JwF by removing its BDF history load. 
 
 The BDF alternative remains an exported diagnostic only; there is no longer a selectable mixtureDivergenceMethod. Raw recovered-RHS, raw BDF, actual pressure target and their signed difference are exported in the div checkpoint.
 
+The raw target is d_raw=(rhoLiquid-rhoGas)/rhoM * (D_t^BDF alpha_postprocessed + A_UMpred(alpha_postprocessed)). The recovered-RHS and independent BDF kernels are checked against each other with nonzero UM material advection and native alpha convection disabled, including weak diffusion, HPFRT, filtering/clipping and imposed boundary corrections. The final target may differ from this raw continuity identity because of divergence filtering, ramp or optional history extrapolation.
+
 The pressure target still uses predicted mixture advection before the pressure-corrected U exists. Thus recovering the alpha RHS consistently does not make the whole pressure/gas coupling implicit or establish exact final total-mass continuity. Pressure does not correct UG within the same step.
 
 ## Alpha explicit filter
