@@ -114,6 +114,11 @@ static deviceMemory<dfloat> o_divSource;
 // Cached raw method0, raw method1, and their signed difference.
 static deviceMemory<dfloat> o_divComparison;
 static deviceMemory<dfloat> o_divComparisonScratch;
+// Diagnostic only: advector used to construct this step's relUrst, and its
+// continuum-form continuity mismatch against the completed fluid solution.
+static deviceMemory<dfloat> o_mixtureAdvectorUsed;
+static deviceMemory<dfloat> o_divCouplingLag;
+static deviceMemory<dfloat> o_divCouplingGradAlpha;
 static deviceMemory<dfloat> o_divPrevious;
 static deviceMemory<dfloat> o_divOlder;
 static deviceMemory<dfloat> o_divExtrapolated;
@@ -180,6 +185,7 @@ static occa::kernel recoverAlphaRhsKernel;
 static occa::kernel alphaBoundaryRhsKernel;
 static occa::kernel fieldMagnitudeKernel;
 static occa::kernel gasPointwiseCflKernel;
+static occa::kernel divergenceCouplingLagKernel;
 static occa::kernel maskAlphaCompressionInletKernel;
 static occa::kernel clipAlphaKernel;
 static occa::kernel clipVectorMagnitudeKernel;
@@ -201,6 +207,7 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
   if (platform->options.compareArgs("REGISTER ONLY", "TRUE")) {
     platform->kernelRequests.add(diagnosticsRequest, "bubbleColumnDiagnostics.okl", kernelInfo);
   } else {
+    divergenceCouplingLagKernel = platform->kernelRequests.load(diagnosticsRequest, "divergenceCouplingLag");
     fieldMagnitudeKernel = platform->kernelRequests.load(diagnosticsRequest, "fieldMagnitude");
     gasPointwiseCflKernel = platform->kernelRequests.load(diagnosticsRequest, "gasPointwiseCfl");
   }
@@ -402,6 +409,10 @@ inline void allocate()
              EXIT_FAILURE,
              "validationOutputInterval must be positive, but is %d\n",
              p.validationOutputInterval);
+  o_mixtureAdvectorUsed.resize(3 * offset);
+  o_divCouplingGradAlpha.resize(3 * offset);
+  o_divCouplingLag.resize(offset);
+  platform->linAlg->fill(offset, 0.0, o_divCouplingLag);
   o_ug.resize(3 * offset);
   o_gasAdvector.resize(3 * offset);
   o_gasUrst.resize(3 * nrs->scalar->vCubatureOffset);
@@ -1157,6 +1168,9 @@ inline void subtractScalarDiffusion()
 
 inline void addExplicitSources(double)
 {
+  // nrs_t::computeUrst() has just used fluid->o_U (not o_Ue). Preserve the
+  // actual Cartesian advector before lagging/BC updates/the fluid solve.
+  o_mixtureAdvectorUsed.copyFrom(nrs->fluid->o_U, 3 * nrs->fieldOffset);
   prepareGasAdvection();
   evaluatePointwiseTerms();
   subtractScalarDiffusion();
@@ -1315,6 +1329,48 @@ inline void updateProperties(double)
   assembleDivergence(o_divSource);
   nrs->fluid->o_prop.slice(0 * nrs->fieldOffset, nrs->fieldOffset).copyFrom(o_muM);
   nrs->fluid->o_prop.slice(1 * nrs->fieldOffset, nrs->fieldOffset).copyFrom(o_rhoM);
+}
+
+// Evaluate before the optional emergency mixture-velocity limiter. This
+// measures the solved fluid update, not a subsequent limiter modification.
+inline void diagnoseDivergenceCoupling(double time, int tstep)
+{
+  if (tstep <= 0) return;
+  auto mesh = nrs->meshV;
+  const dlong N = mesh->Nlocal;
+  const auto comm = platform->comm.mpiComm();
+  auto alpha = nrs->scalar->o_solution("alpha");
+  // Recompute from the final postprocessed alpha; use dedicated scratch so
+  // the next-step physics and existing raw divergence exports are untouched.
+  opSEM::strongGrad(mesh, nrs->fieldOffset, alpha, o_divCouplingGradAlpha);
+  divergenceCouplingLagKernel(N, nrs->fieldOffset, p.rhoLiquid, p.rhoGas,
+      alpha, o_mixtureAdvectorUsed, nrs->fluid->o_U,
+      o_divCouplingGradAlpha, o_divCouplingLag);
+  if (tstep % p.divergenceComparisonInterval != 0) return;
+  const dfloat minimum = platform->linAlg->min(N, o_divCouplingLag, comm);
+  const dfloat maximum = platform->linAlg->max(N, o_divCouplingLag, comm);
+  const dfloat mean = platform->linAlg->innerProd(
+      N, mesh->o_LMM, o_divCouplingLag, comm) / mesh->volume;
+  o_divComparisonScratch.copyFrom(o_divCouplingLag, N);
+  platform->linAlg->axmy(N, 1.0, mesh->o_LMM, o_divComparisonScratch);
+  const dfloat rms = std::sqrt(std::max(static_cast<dfloat>(0.0),
+      platform->linAlg->innerProd(N, o_divComparisonScratch, o_divCouplingLag, comm)
+      / mesh->volume));
+  if (platform->comm.mpiRank() == 0) {
+    printf("divUmCouplingLag step=%d time=%.8e min=%.8e max=%.8e mean=%.8e rms=%.8e\n",
+           tstep, time, minimum, maximum, mean, rms);
+    static std::ofstream output;
+    if (!output.is_open()) {
+      std::ifstream previous("bubbleColumn_divergence_coupling.csv");
+      const bool header = previous.peek() == std::ifstream::traits_type::eof();
+      output.open("bubbleColumn_divergence_coupling.csv", std::ios::app);
+      if (header) output << "step,time,lag_min,lag_max,lag_mean,lag_rms\n";
+      output << std::scientific << std::setprecision(16);
+    }
+    output << tstep << ',' << time << ',' << minimum << ',' << maximum
+           << ',' << mean << ',' << rms << '\n';
+    output.flush();
+  }
 }
 
 inline void printDivergenceComparison(double time, int tstep)

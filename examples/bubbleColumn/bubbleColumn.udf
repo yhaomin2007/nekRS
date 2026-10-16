@@ -141,9 +141,9 @@ void UDF_Setup()
 
 void UDF_ExecuteStep(double time, int tstep)
 {
-  // Apply an emergency magnitude limiter immediately after the fluid solve so
-  // the bounded mixture velocity is used by diagnostics, output, and the next
-  // timestep/CFL evaluation.
+  // Measure the fluid update before optional emergency clipping.
+  bubbleColumn::diagnoseDivergenceCoupling(time, tstep);
+  // Use bounded velocity for the remaining diagnostics, output and next step.
   bubbleColumn::clipMixtureVelocity();
   if (tstep > 0) {
     bubbleColumn::updateDivergenceHistory();
@@ -193,7 +193,8 @@ void UDF_ExecuteStep(double time, int tstep)
 
     // Raw reconstructions are cached in userProperties before the fluid solve.
     // scalar00: raw method0; scalar01: raw method1; scalar02: actual target;
-    // scalar03: raw method0 - raw method1. No diagnostic scratch aliasing.
+    // scalar03: raw method0 - raw method1; scalar04: continuity coupling lag.
+    // No diagnostic scratch aliasing.
     std::vector<deviceMemory<dfloat>> divAlphaRhs = {
         bubbleColumn::o_divComparison.slice(0 * offset, nrs->meshV->Nlocal)};
     std::vector<deviceMemory<dfloat>> divAlphaBdf = {
@@ -202,9 +203,12 @@ void UDF_ExecuteStep(double time, int tstep)
         deviceMemory<dfloat>(nrs->fluid->o_div).slice(0, nrs->meshV->Nlocal)};
     std::vector<deviceMemory<dfloat>> divDifference = {
         bubbleColumn::o_divComparison.slice(2 * offset, nrs->meshV->Nlocal)};
+    std::vector<deviceMemory<dfloat>> divCouplingLag = {
+        bubbleColumn::o_divCouplingLag.slice(0, nrs->meshV->Nlocal)};
     nrs->writeToFile("div", time, nrs->meshV,
                      {{"scalar00", divAlphaRhs}, {"scalar01", divAlphaBdf},
-                      {"scalar02", divPressureTarget}, {"scalar03", divDifference}});
+                      {"scalar02", divPressureTarget}, {"scalar03", divDifference},
+                      {"scalar04", divCouplingLag}});
     nrs->copyToNek(time, tstep);
     nek::userchk();
   }

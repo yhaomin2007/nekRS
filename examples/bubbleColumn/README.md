@@ -47,3 +47,24 @@ Obsolete alpha native/cancellation comparison columns were removed from conserva
 ## Source-sign checks
 
 The source_signs.py regression exercises actual case kernels with physical limiting cases: hydrostatic liquid pressure must accelerate gas upward; implicit drag must reduce slip energy; common phase acceleration must be unchanged by VM; gas viscous stress must damp a sinusoidal velocity mode; positive drift-stress divergence must enter mixture momentum negatively; an upward moving decreasing-alpha front must generate positive mixture expansion. It also checks the native pressure target and velocity-RHS sign convention against an analytic expansion correction. These local tests do not establish stability or correctness of the complete GPU/MPI pressure solve and lagged two-phase coupling.
+
+## Continuity coupling lag diagnostic
+
+The div output adds scalar04 (VisIt s5), in 1/s:
+`delta_d = (rhoLiquid-rhoGas)/rhoM * (UM_used-UM_new) dot strongGrad(alpha_new)`.
+UM_used is copied at userSource entry from the actual fluid o_U used by
+nrs_t::computeUrst to construct o_relUrst. In the current implementation this
+is the step-start velocity, not fluid o_Ue. UM_new is the completed fluid solve
+before the optional emergency velocity limiter. Alpha is the current final
+postprocessed scalar; density uses the same [0,1] alpha clamp as the raw target.
+The gradient is a fresh assembled opSEM::strongGrad; this diagnostic has no
+filter, ramp, or feedback into the equations and is computed even with the
+mixture divergence target disabled. Initial output is zero.
+
+At divergenceComparisonInterval, the log line divUmCouplingLag and
+bubbleColumn_divergence_coupling.csv report global min/max, volume-weighted
+mean and RMS. Compare its magnitude and location with the existing raw target
+s1 and applied target s3. Large values identify a potentially significant
+lagged-velocity contribution, but do not establish causality. This nodal
+continuum-form diagnostic is not the exact difference of native cubature
+advection operators or the measured final divergence/projection residual.

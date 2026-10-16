@@ -6,7 +6,7 @@ import tempfile
 root = Path(__file__).resolve().parents[1]
 source = (root / 'bubbleColumnTerms.hpp').read_text()
 body = source.split('inline void updateProperties(double)')[1].split(
-    'inline void printDivergenceComparison')[0]
+    'inline void diagnoseDivergenceCoupling')[0]
 prefix = '''#include <cassert>
 #include <cmath>
 #include <algorithm>

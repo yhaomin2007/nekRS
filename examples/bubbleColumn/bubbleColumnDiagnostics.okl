@@ -41,3 +41,25 @@
 }
 
 
+
+// Continuum-form time-level mismatch, in 1/s. The density convention matches
+// the raw divergence reconstruction, including its alpha clamp for rho_m.
+@kernel void divergenceCouplingLag(const dlong N, const dlong fieldOffset,
+                                    const dfloat rhoLiquid, const dfloat rhoGas,
+                                    @ restrict const dfloat *alpha,
+                                    @ restrict const dfloat *advectorUsed,
+                                    @ restrict const dfloat *velocityNew,
+                                    @ restrict const dfloat *gradAlpha,
+                                    @ restrict dfloat *lag)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    const dfloat a = (alpha[n] < 0.0) ? 0.0 : ((alpha[n] > 1.0) ? 1.0 : alpha[n]);
+    const dfloat rho = (1.0 - a) * rhoLiquid + a * rhoGas;
+    dfloat mismatch = 0.0;
+    for (int c = 0; c < 3; ++c) {
+      const dlong id = n + c * fieldOffset;
+      mismatch += (advectorUsed[id] - velocityNew[id]) * gradAlpha[id];
+    }
+    lag[n] = (rhoLiquid - rhoGas) / rho * mismatch;
+  }
+}
