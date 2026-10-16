@@ -5,7 +5,7 @@ import tempfile
 
 case=Path(__file__).resolve().parents[1]
 source=(case/'bubbleColumnTerms.hpp').read_text()
-body=source.split('inline void evaluateAlphaTransport()')[1].split('inline void evaluatePointwiseTerms()')[0]
+body=source.split('inline void evaluateAlphaTransport()')[1].split('inline void filterGasPressureGradient()')[0]
 cpp=r'''
 #include <cassert>
 #include <algorithm>

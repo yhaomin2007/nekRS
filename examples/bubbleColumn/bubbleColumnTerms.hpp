@@ -48,6 +48,8 @@ struct Parameters {
   int gasPressureGradientMethod;
   dfloat gasPressureGradientFilterEnabled;
   dfloat gasPressureGradientFilterWeight;
+  int gasPressureGradientExplicitFilterModes = 1;
+  dfloat gasPressureGradientExplicitFilterStrength = 0.0;
   dfloat dragEnabled;
   dfloat bubbleDiameter;
   dfloat driftStressEnabled;
@@ -136,6 +138,7 @@ static deviceMemory<dfloat> o_monitorMagnitude;
 static deviceMemory<dfloat> o_gasPressureAccelerationActive;
 static deviceMemory<dfloat> o_gasPressureAccelerationInactive;
 static deviceMemory<dfloat> o_gasCfl;
+static deviceMemory<dfloat> o_gradPSpatial;
 static bool pressureGradientFilterInitialized = false;
 static int pressureGradientFilterStep = -1;
 static deviceMemory<dfloat> o_inverseGllSpacing;
@@ -259,6 +262,14 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
 inline void allocate()
 {
   const dlong offset = nrs->fieldOffset;
+  nekrsCheck(p.gasPressureGradientExplicitFilterModes < 1
+                 || p.gasPressureGradientExplicitFilterModes > nrs->meshV->N - 1
+                 || !std::isfinite(p.gasPressureGradientExplicitFilterStrength)
+                 || p.gasPressureGradientExplicitFilterStrength < 0.0
+                 || p.gasPressureGradientExplicitFilterStrength > 1.0,
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "%s", "UG pressure-gradient explicit filter requires modes in [1,N-1] and strength in [0,1].\n");
+  o_gradPSpatial.resize(3 * offset);
   nekrsCheck(p.alphaTransportForm == 2 && nrs->meshV->cubNq < 2 * nrs->meshV->N + 1,
              platform->comm.mpiComm(), EXIT_FAILURE,
              "%s", "Direct conservative flux differentiation requires cubaturePolynomialOrder >= 2*polynomialOrder.\n");
@@ -644,6 +655,23 @@ inline void evaluateAlphaTransport()
   }
 }
 
+inline void filterGasPressureGradient()
+{
+  const dlong offset = nrs->fieldOffset;
+  const auto &selected = p.gasPressureGradientMethod == 1 ? o_gradPWeak : o_gradPStrong;
+  // Always start from raw gradients: repeated properties/source evaluations
+  // must not repeatedly filter the already-filtered field or its history.
+  o_gradPSpatial.copyFrom(selected, 3 * offset);
+  if (p.gasPressureGradientExplicitFilterStrength == 0.0) return;
+  for (int i = 0; i < 3; ++i) {
+    auto component = o_gradPSpatial.slice(i * offset, offset);
+    userExplicitFilter::explicitFilterApply("ugPressureGradient", nrs->meshV,
+        p.gasPressureGradientExplicitFilterModes,
+        p.gasPressureGradientExplicitFilterStrength, component);
+    assembleDivergence(component);
+  }
+}
+
 inline void evaluatePointwiseTerms()
 {
   auto mesh = nrs->meshV;
@@ -693,8 +721,8 @@ inline void evaluatePointwiseTerms()
   platform->linAlg->axmyMany(
       mesh->Nlocal, mesh->dim, offset, 0, -1.0, mesh->o_invLMM, o_gradPWeak);
 
-  const auto &o_selectedGradP =
-      (p.gasPressureGradientMethod == 1) ? o_gradPWeak : o_gradPStrong;
+  filterGasPressureGradient();
+  const auto &o_selectedGradP = o_gradPSpatial;
 
   if (p.gasPressureGradientFilterEnabled == 0.0) {
     o_gradP.copyFrom(o_selectedGradP, 3 * offset);

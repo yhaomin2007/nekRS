@@ -26,6 +26,10 @@ The raw target is d_raw=(rhoLiquid-rhoGas)/rhoM * (D_t^BDF alpha_postprocessed +
 
 The pressure target still uses predicted mixture advection before the pressure-corrected U exists. Thus recovering the alpha RHS consistently does not make the whole pressure/gas coupling implicit or establish exact final total-mass continuity. Pressure does not correct UG within the same step.
 
+## UG pressure-gradient explicit filter
+
+Set gasPressureGradientExplicitFilterModes and gasPressureGradientExplicitFilterStrength to apply the standalone bubble-basis filter separately to all three selected pressure-gradient components. The example uses one mode at strength 0.05; strength 0 disables it. Sequence: compute raw strong/weak gradients, copy the selected field, spatial filter, shared-node assembly, optional existing temporal relaxation, then optional inlet mask. Raw diagnostic gradients stay unchanged. Each evaluation starts from raw gradients, preventing repeated filter application to cached history. This filters the gradient entering UG forcing only; it does not filter pressure or the native mixture momentum pressure term.
+
 ## Alpha explicit filter
 
 alphaExplicitFilterModes and alphaExplicitFilterStrength configure the same standalone bubble-basis module on alpha after each scalar solve, before density/divergence/pressure evaluation. Strength 0 disables it; the example enables one mode at strength 0.05. Existing HPFRT regularization remains independent and can be combined with this filter. The sequence is solve alpha, explicit filter, shared-node assembly, reapply prescribed scalar boundaries, then optional clipping. UG is not explicitly filtered.
