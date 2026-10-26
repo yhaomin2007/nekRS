@@ -123,7 +123,8 @@ gasTransportMethod = 1
 # 1: form alpha*UG at GLL nodes, then assembled SEM strong divergence.
 # 2: conservative cubature flux differentiation (existing default).
 alphaTransportForm = 2
-# Target mixture divergence comes only from the actual alpha equation RHS.
+# Target uses alpha conservative transport + numerical diffusion only.
+# HPFRT, explicit-filter/clipping rates and boundary BDF overrides are excluded.
 # 0 imposes div(U)=0; 1 enables the reconstructed target (optionally ramped).
 mixtureDivergenceEnabled = 1
 # Raw method0/method1/difference statistics in log and comparison CSV.

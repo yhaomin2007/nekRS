@@ -63,7 +63,7 @@ assert 'evaluateNativeAlphaAdvection' not in forcing
 assert 'o_alphaGasAdvection' not in case
 reconstruction = case.split('inline void buildDivergenceFromAlphaRhs')[1].split(
     'inline void buildDivergenceFromAlphaBdf')[0]
-assert 'recoverAlphaRhsKernel' in reconstruction
+assert 'extrapolateAlphaTransportRhsKernel' in reconstruction
 assert 'core-weakLaplacianHex3D' in reconstruction
 assert 'o_alphaBeforePostprocess' in reconstruction
 print('Actual nodal flux product and direct gas RHS with EXT1/EXT2 and zero native advection '

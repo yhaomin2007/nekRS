@@ -29,5 +29,5 @@ with tempfile.TemporaryDirectory() as t:
 properties=s.split('inline void updateProperties(double)')[1].split('inline occa::memory implicitGasDrag')[0]
 assert 'prepareGasAdvection' not in properties
 source=s.split('inline void addExplicitSources(double)')[1].split('inline void buildDivergenceFromAlphaRhs')[0]
-assert 'recoverAlphaRhsKernel' in s
+assert 'extrapolateAlphaTransportRhsKernel' in s
 print('Actual implicit callback: alpha has no reaction; UG drag remains switchable.')

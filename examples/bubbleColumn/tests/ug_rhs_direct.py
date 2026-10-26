@@ -29,7 +29,7 @@ void evaluatePointwiseTerms(){
  for(int c=0;c<3;++c)for(int n=0;n<3;++n){ugSource[c*5+n]=10*(c+1)+n;mixtureForce[c*5+n]=.5*c+n;}
  for(int n=0;n<3;++n)alphaSource[n]=-.1*(n+1);
 }
-void subtractScalarDiffusion(){}void evaluateMixtureForce(){}
+void subtractScalarDiffusion(){}void storeAlphaTransportRhs(){}void evaluateMixtureForce(){}
 void evaluateGasCubatureTransport(bool conservative){assert(!conservative);
  for(int c=0;c<3;++c)for(int n=0;n<3;++n)transport[(c+1)*5+n]=(c+1)+.25*n;
 }

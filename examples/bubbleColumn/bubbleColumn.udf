@@ -192,7 +192,8 @@ void UDF_ExecuteStep(double time, int tstep)
         "gradpWeak", time, nrs->meshV, {{"velocity", gradPWeak}});
 
     // Raw reconstructions are cached in userProperties before the fluid solve.
-    // scalar00: raw method0; scalar01: raw method1; scalar02: actual target;
+    // scalar00: raw transport/diffusion target; scalar01: full BDF target;
+    // scalar02: actual applied target;
     // scalar03: raw method0 - raw method1; scalar04: continuity coupling lag.
     // No diagnostic scratch aliasing.
     std::vector<deviceMemory<dfloat>> divAlphaRhs = {

@@ -1,34 +1,14 @@
-@kernel void recoverAlphaRhs(const dlong N, const dlong alphaOffset,
-                             const dlong historyOffset, const int order,
-                             const dfloat inverseDt,
-                             @ restrict const dfloat *mass,
-                             @ restrict const dfloat *forcing,
-                             @ restrict const dfloat *history,
-                             @ restrict const dfloat *coeff,
-                             @ restrict dfloat *rhs)
+// Explicit alpha transport history only; no HPF or BDF history load.
+@kernel void extrapolateAlphaTransportRhs(const dlong N, const dlong offset,
+                                         const int order,
+                                         @ restrict const dfloat *coeff,
+                                         @ restrict const dfloat *history,
+                                         @ restrict dfloat *rhs)
 {
   for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
-    dfloat oldTime = 0.0;
-    for (int j = 0; j < order; ++j)
-      oldTime += coeff[j] * history[n + alphaOffset + (j + 1) * historyOffset];
-    rhs[n] = forcing[n + alphaOffset] / mass[n] - inverseDt * oldTime;
-  }
-}
-
-@kernel void alphaBoundaryRhs(const dlong Nmasked,
-                              @ restrict const dlong *ids,
-                              const dlong alphaOffset, const dlong historyOffset,
-                              const int order, const dfloat inverseDt, const dfloat g0,
-                              @ restrict const dfloat *history,
-                              @ restrict const dfloat *coeff,
-                              @ restrict dfloat *rhs)
-{
-  for (dlong i = 0; i < Nmasked; ++i; @tile(p_blockSize, @outer, @inner)) {
-    const dlong n = ids[i];
-    dfloat value = g0 * history[n + alphaOffset];
-    for (int j = 0; j < order; ++j)
-      value -= coeff[j] * history[n + alphaOffset + (j + 1) * historyOffset];
-    rhs[n] = inverseDt * value;
+    dfloat value = 0.0;
+    for (int h = 0; h < order; ++h) value += coeff[h] * history[n + h * offset];
+    rhs[n] = value;
   }
 }
 

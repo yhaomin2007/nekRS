@@ -87,6 +87,10 @@ static deviceMemory<dlong> o_userAdvectionCompute;
 static deviceMemory<dfloat> o_gasUrst;
 static deviceMemory<dfloat> o_alphaMixtureAdvection;
 static deviceMemory<dfloat> o_alphaMixtureRhs;
+// Only user alpha transport and optional explicit diffusion compensation.
+// Kept separately from native forcing so HPF/BC/postprocessing cannot enter.
+static deviceMemory<dfloat> o_alphaTransportRhsHistory;
+static int alphaTransportHistoryStep = -1;
 static deviceMemory<dfloat> o_alphaPostprocessRate;
 static deviceMemory<dfloat> o_alphaBeforePostprocess;
 static deviceMemory<dfloat> o_alphaConservativeFlux;
@@ -110,7 +114,7 @@ static deviceMemory<dfloat> o_gradPDifference;
 static deviceMemory<dfloat> o_rhoM;
 static deviceMemory<dfloat> o_muM;
 static deviceMemory<dfloat> o_divSource;
-// Cached raw method0, raw method1, and their signed difference.
+// Cached raw transport/diffusion target, full BDF target, and their difference.
 static deviceMemory<dfloat> o_divComparison;
 static deviceMemory<dfloat> o_divComparisonScratch;
 // Diagnostic only: advector used to construct this step's relUrst, and its
@@ -180,8 +184,7 @@ static occa::kernel addGasStressKernel;
 static occa::kernel reconstructGasVelocityKernel;
 static occa::kernel postProcessGasFluxKernel;
 static occa::kernel alphaCompressionKernel;
-static occa::kernel recoverAlphaRhsKernel;
-static occa::kernel alphaBoundaryRhsKernel;
+static occa::kernel extrapolateAlphaTransportRhsKernel;
 static occa::kernel fieldMagnitudeKernel;
 static occa::kernel gasPointwiseCflKernel;
 static occa::kernel divergenceCouplingLagKernel;
@@ -239,8 +242,7 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
     postProcessGasFluxKernel =
         platform->kernelRequests.load(request, "postProcessGasFlux");
     alphaCompressionKernel = platform->kernelRequests.load(request, "alphaCompression");
-    recoverAlphaRhsKernel = platform->kernelRequests.load(request, "recoverAlphaRhs");
-    alphaBoundaryRhsKernel = platform->kernelRequests.load(request, "alphaBoundaryRhs");
+    extrapolateAlphaTransportRhsKernel = platform->kernelRequests.load(request, "extrapolateAlphaTransportRhs");
     maskAlphaCompressionInletKernel =
         platform->kernelRequests.load(request, "maskAlphaCompressionInlet");
     clipAlphaKernel = platform->kernelRequests.load(request, "clipAlpha");
@@ -417,6 +419,8 @@ inline void allocate()
   o_gasUrst.resize(3 * nrs->scalar->vCubatureOffset);
   o_alphaMixtureAdvection.resize(nrs->scalar->fieldOffsetSum);
   o_alphaMixtureRhs.resize(offset);
+  o_alphaTransportRhsHistory.resize(nrs->scalar->o_coeffEXT.size() * offset);
+  platform->linAlg->fill(o_alphaTransportRhsHistory.size(), 0.0, o_alphaTransportRhsHistory);
   o_alphaPostprocessRate.resize(offset);
   o_alphaBeforePostprocess.resize(offset);
   platform->linAlg->fill(offset, 0.0, o_alphaPostprocessRate);
@@ -997,7 +1001,8 @@ inline void postProcessAlpha(double time, int)
   const MPI_Comm comm = platform->comm.mpiComm();
   auto alpha = nrs->scalar->o_solution("alpha");
   // Retain the actual implicit solution for weak diffusion recovery. The
-  // subsequent BDF correction includes both explicit filtering and clipping.
+  // postprocessing-rate diagnostic includes explicit filtering and clipping;
+  // it is deliberately excluded from the divergence source.
   o_alphaBeforePostprocess.copyFrom(alpha, Nlocal);
   platform->linAlg->fill(Nlocal, 0.0, o_alphaPostprocessRate);
   alphaFilterDeltaVolume = 0.0;
@@ -1167,6 +1172,21 @@ inline void subtractScalarDiffusion()
   }
 }
 
+inline void storeAlphaTransportRhs()
+{
+  const dlong offset = nrs->fieldOffset, Nlocal = nrs->meshV->Nlocal;
+  const int states = static_cast<int>(nrs->scalar->o_coeffEXT.size());
+  // Shift once per timestep, never during post-solve property evaluations.
+  if (alphaTransportHistoryStep != nrs->tstep) {
+    for (int h = states - 1; h > 0; --h) {
+      o_alphaTransportRhsHistory.copyFrom(o_alphaTransportRhsHistory, Nlocal,
+          h * offset, (h - 1) * offset);
+    }
+    alphaTransportHistoryStep = nrs->tstep;
+  }
+  o_alphaTransportRhsHistory.copyFrom(o_alphaSource, Nlocal);
+}
+
 inline void addExplicitSources(double)
 {
   // nrs_t::computeUrst() has just used fluid->o_U (not o_Ue). Preserve the
@@ -1175,6 +1195,9 @@ inline void addExplicitSources(double)
   prepareGasAdvection();
   evaluatePointwiseTerms();
   subtractScalarDiffusion();
+  // Before native HPF/forcing assembly: alphaSource contains only gas flux
+  // transport and the configured explicit diffusion subtraction, if enabled.
+  storeAlphaTransportRhs();
   evaluateMixtureForce();
   const dlong Nlocal = nrs->meshV->Nlocal;
   const dlong offset = nrs->fieldOffset;
@@ -1210,15 +1233,12 @@ inline void buildDivergenceFromAlphaRhs(deviceMemory<dfloat>& o_divergence)
 
   const int index = nrs->scalar->nameToIndex.at("alpha");
   const dlong alphaOffset = nrs->scalar->fieldOffsetScan[index];
-  const int bdfOrder = std::min(nrs->tstep, static_cast<int>(nrs->o_coeffBDF.size()));
-  // Native o_JwF contains the actual alpha explicit RHS (UG transport,
-  // HPF and EXT history) plus the BDF history load. Remove only that history.
-  recoverAlphaRhsKernel(Nlocal, alphaOffset, nrs->scalar->fieldOffsetSum,
-      bdfOrder, 1.0 / nrs->dt[0], nrs->meshV->o_LMM,
-      nrs->scalar->o_JwF, nrs->scalar->o_S, nrs->o_coeffBDF, o_alphaMixtureRhs);
-  platform->linAlg->axmy(Nlocal, 1.0, nrs->meshV->o_LMM, o_alphaMixtureRhs);
-  oogs::startFinish(o_alphaMixtureRhs, 1, 0, ogsDfloat, ogsAdd, nrs->meshV->oogs);
-  platform->linAlg->axmy(Nlocal, 1.0, nrs->meshV->o_invLMM, o_alphaMixtureRhs);
+  // Match alpha's actual explicit time treatment, but deliberately exclude
+  // native HPF, BDF history loads and any postprocessing/BC time correction.
+  extrapolateAlphaTransportRhsKernel(Nlocal, offset,
+      static_cast<int>(nrs->scalar->o_coeffEXT.size()),
+      nrs->scalar->o_coeffEXT, o_alphaTransportRhsHistory, o_alphaMixtureRhs);
+  assembleDivergence(o_alphaMixtureRhs);
   // Use the native weak diffusion stiffness with its negative RHS sign.
   launchKernel("core-weakLaplacianHex3D", nrs->meshV->Nelements, 1,
       o_scalarFieldOffsetScan, nrs->meshV->o_ggeo, nrs->meshV->o_D,
@@ -1226,20 +1246,10 @@ inline void buildDivergenceFromAlphaRhs(deviceMemory<dfloat>& o_divergence)
       o_alphaDiffusionDivergence);
   oogs::startFinish(o_alphaDiffusionDivergence, 1, 0, ogsDfloat, ogsAdd, nrs->meshV->oogs);
   platform->linAlg->axmy(Nlocal, -1.0, nrs->meshV->o_invLMM, o_alphaDiffusionDivergence);
-  platform->linAlg->axpby(Nlocal, 1.0, o_alphaDiffusionDivergence, 1.0, o_alphaMixtureRhs);
-  platform->linAlg->axpby(Nlocal, 1.0, o_alphaPostprocessRate, 1.0, o_alphaMixtureRhs);
-  // At Dirichlet nodes the imposed boundary replaces the evolution equation.
-  auto &solver = nrs->scalar->ellipticSolver[index];
-  if (solver->Nmasked()) {
-    alphaBoundaryRhsKernel(solver->Nmasked(), solver->o_maskIds(), alphaOffset,
-        nrs->scalar->fieldOffsetSum, bdfOrder, 1.0 / nrs->dt[0], nrs->g0,
-        nrs->scalar->o_S, nrs->o_coeffBDF, o_alphaMixtureRhs);
-  }
   evaluateNativeAlphaAdvection(o_alphaMixtureAdvection, true, "alpha", true);
   platform->linAlg->axpby(Nlocal, 1.0,
       o_alphaMixtureAdvection.slice(alphaOffset, offset), 1.0, o_alphaMixtureRhs);
-  // Diffusion is already incorporated in the recovered alpha RHS.
-  platform->linAlg->fill(Nlocal, 0.0, o_alphaDiffusionDivergence);
+  // The final kernel adds this weak implicit diffusion contribution once.
 
   buildDivergenceFromAlphaRhsKernel(Nlocal,
                                     p.rhoLiquid,
@@ -1288,11 +1298,11 @@ inline void buildDivergenceFromAlphaBdf(deviceMemory<dfloat>& o_divergence)
 inline void updateProperties(double)
 {
   // Called after all four scalars advance: refresh density, viscosity, and the
-  // mixture divergence implied by the alpha-equation RHS.
+  // mixture divergence from alpha transport + numerical diffusion only.
   postProcessGasFlux();
   evaluatePointwiseTerms();
-  // Cache recovered-RHS and BDF diagnostics. Only the recovered alpha RHS
-  // supplies the pressure target; BDF remains an independent comparison.
+  // Cache transport/diffusion RHS and full BDF diagnostics. The reduced RHS
+  // supplies the pressure target; BDF includes HPF/postprocessing/BC effects.
   const dlong Nlocal = nrs->meshV->Nlocal;
   const dlong offset = nrs->fieldOffset;
 
@@ -1303,7 +1313,7 @@ inline void updateProperties(double)
   rawMethod1.copyFrom(o_divSource, Nlocal);
   assembleDivergence(rawMethod1);
 
-  // Component 0 stores the unfiltered two-term method 0 result.
+  // Component 0 stores the unfiltered transport/diffusion-based target.
   buildDivergenceFromAlphaRhs(o_divSource);
   assembleDivergence(o_divSource);
   o_divComparison.copyFrom(o_divSource, Nlocal, 0, 0);
