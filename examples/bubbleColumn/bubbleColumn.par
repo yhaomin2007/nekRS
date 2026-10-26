@@ -127,6 +127,10 @@ alphaTransportForm = 2
 # HPFRT, explicit-filter/clipping rates and boundary BDF overrides are excluded.
 # 0 imposes div(U)=0; 1 enables the reconstructed target (optionally ramped).
 mixtureDivergenceEnabled = 1
+# 1: previous (rhoL-rhoG)/rhoM * [alpha transport/diffusion + UM.grad(alpha)].
+# 2: (rhoL-rhoG)/rhoL * [div(alpha*(UM-UG)) + numerical diffusion].
+# Relative flux follows alphaTransportForm and scalar explicit time treatment.
+mixtureDivergenceForm = 2
 # Raw method0/method1/difference statistics in log and comparison CSV.
 divergenceComparisonInterval = 10
 # User explicitFilterApply: Legendre bubble-basis tensor filter.

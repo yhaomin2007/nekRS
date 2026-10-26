@@ -467,3 +467,14 @@
     if (thickness > 0.0 && z[n] <= thickness) term[n] = 0.0;
   }
 }
+
+@kernel void buildRelativeMixtureDivergence(const dlong N,
+                                            const dfloat rhoLiquid, const dfloat rhoGas,
+                                            @ restrict const dfloat *relativeRhs,
+                                            @ restrict const dfloat *diffusion,
+                                            @ restrict dfloat *divergence)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    divergence[n] = (rhoLiquid - rhoGas) / rhoLiquid * (relativeRhs[n] + diffusion[n]);
+  }
+}

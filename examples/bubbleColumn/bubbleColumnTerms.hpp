@@ -61,6 +61,7 @@ struct Parameters {
   dfloat alphaCompressionInletThickness = 0.0;
   int scalarExtrapolationEnabled = 0;
   int mixtureDivergenceMethod = 0;
+  int mixtureDivergenceForm = 1; // 1: material-alpha RHS, 2: relative conservative flux
   int mixtureDivergenceEnabled = 1;
   int divergenceComparisonInterval = 10;
   int divergenceFilterModes = 1;
@@ -91,6 +92,7 @@ static deviceMemory<dfloat> o_alphaMixtureRhs;
 // Kept separately from native forcing so HPF/BC/postprocessing cannot enter.
 static deviceMemory<dfloat> o_alphaTransportRhsHistory;
 static int alphaTransportHistoryStep = -1;
+static deviceMemory<dfloat> o_alphaRelativeRhs, o_alphaTransportOnly, o_alphaRelativeFlux;
 static deviceMemory<dfloat> o_alphaPostprocessRate;
 static deviceMemory<dfloat> o_alphaBeforePostprocess;
 static deviceMemory<dfloat> o_alphaConservativeFlux;
@@ -185,6 +187,7 @@ static occa::kernel reconstructGasVelocityKernel;
 static occa::kernel postProcessGasFluxKernel;
 static occa::kernel alphaCompressionKernel;
 static occa::kernel extrapolateAlphaTransportRhsKernel;
+static occa::kernel buildRelativeMixtureDivergenceKernel;
 static occa::kernel fieldMagnitudeKernel;
 static occa::kernel gasPointwiseCflKernel;
 static occa::kernel divergenceCouplingLagKernel;
@@ -242,6 +245,7 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
     postProcessGasFluxKernel =
         platform->kernelRequests.load(request, "postProcessGasFlux");
     alphaCompressionKernel = platform->kernelRequests.load(request, "alphaCompression");
+    buildRelativeMixtureDivergenceKernel = platform->kernelRequests.load(request, "buildRelativeMixtureDivergence");
     extrapolateAlphaTransportRhsKernel = platform->kernelRequests.load(request, "extrapolateAlphaTransportRhs");
     maskAlphaCompressionInletKernel =
         platform->kernelRequests.load(request, "maskAlphaCompressionInlet");
@@ -418,6 +422,12 @@ inline void allocate()
   o_gasAdvector.resize(3 * offset);
   o_gasUrst.resize(3 * nrs->scalar->vCubatureOffset);
   o_alphaMixtureAdvection.resize(nrs->scalar->fieldOffsetSum);
+  nekrsCheck(p.mixtureDivergenceForm != 1 && p.mixtureDivergenceForm != 2,
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "%s", "mixtureDivergenceForm must be 1 or 2.\n");
+  o_alphaRelativeRhs.resize(offset);
+  o_alphaTransportOnly.resize(offset);
+  o_alphaRelativeFlux.resize(3 * offset);
   o_alphaMixtureRhs.resize(offset);
   o_alphaTransportRhsHistory.resize(nrs->scalar->o_coeffEXT.size() * offset);
   platform->linAlg->fill(o_alphaTransportRhsHistory.size(), 0.0, o_alphaTransportRhsHistory);
@@ -1172,6 +1182,43 @@ inline void subtractScalarDiffusion()
   }
 }
 
+// Evaluated at userSource time: alpha, UM and frozen UG share the same
+// explicit time level. The result later receives alpha's EXT treatment.
+inline void prepareRelativeDivergenceRhs()
+{
+  if (p.mixtureDivergenceForm != 2) return;
+  auto mesh = nrs->meshV;
+  const dlong offset = nrs->fieldOffset;
+  auto alpha = nrs->scalar->o_solution("alpha");
+  o_alphaTransportOnly.copyFrom(o_alphaSource, mesh->Nlocal);
+  for (int c = 0; c < 3; ++c) {
+    auto velocity = o_alphaRelativeFlux.slice(c * offset, offset);
+    velocity.copyFrom(o_mixtureAdvectorUsed, mesh->Nlocal, 0, c * offset);
+    platform->linAlg->axpby(mesh->Nlocal, -1.0,
+        o_gasAdvector.slice(c * offset, offset), 1.0, velocity);
+  }
+  if (p.alphaTransportForm == 1) {
+    for (int c = 0; c < 3; ++c)
+      platform->linAlg->axmy(mesh->Nlocal, 1.0, alpha,
+          o_alphaRelativeFlux.slice(c * offset, offset));
+    opSEM::strongDivergence(mesh, offset, o_alphaRelativeFlux, o_alphaRelativeRhs, true);
+  } else {
+    const dlong cubOffset = mesh->Nelements * mesh->cubNp;
+    o_gasTransportFields.copyFrom(alpha, mesh->Nlocal);
+    for (int c = 0; c < 3; ++c)
+      o_gasTransportFields.copyFrom(o_alphaRelativeFlux, mesh->Nlocal,
+          (c + 1) * offset, c * offset);
+    gasInterpolateKernel(mesh->Nelements, offset, cubOffset,
+        mesh->o_cubInterpT, o_gasTransportFields, o_gasCubatureFields);
+    alphaConservativeCubatureKernel(mesh->Nelements, cubOffset, mesh->o_cubD,
+        mesh->o_cubvgeo, o_gasCubatureFields, o_gasCubatureProducts);
+    gasProjectKernel(mesh->Nelements, offset, cubOffset, mesh->o_cubInterpT,
+        mesh->o_vgeo, o_gasCubatureProducts, o_gasTransport);
+    o_alphaRelativeRhs.copyFrom(o_gasTransport, mesh->Nlocal);
+    assembleDivergence(o_alphaRelativeRhs);
+  }
+}
+
 inline void storeAlphaTransportRhs()
 {
   const dlong offset = nrs->fieldOffset, Nlocal = nrs->meshV->Nlocal;
@@ -1184,7 +1231,16 @@ inline void storeAlphaTransportRhs()
     }
     alphaTransportHistoryStep = nrs->tstep;
   }
-  o_alphaTransportRhsHistory.copyFrom(o_alphaSource, Nlocal);
+  if (p.mixtureDivergenceForm == 2) {
+    // Preserve subtractAlphaDiffusion as a numerical-diffusion contribution.
+    if (p.subtractAlphaDiffusion != 0.0) {
+      platform->linAlg->axpby(Nlocal, 1.0, o_alphaSource, 1.0, o_alphaRelativeRhs);
+      platform->linAlg->axpby(Nlocal, -1.0, o_alphaTransportOnly, 1.0, o_alphaRelativeRhs);
+    }
+    o_alphaTransportRhsHistory.copyFrom(o_alphaRelativeRhs, Nlocal);
+  } else {
+    o_alphaTransportRhsHistory.copyFrom(o_alphaSource, Nlocal);
+  }
 }
 
 inline void addExplicitSources(double)
@@ -1194,6 +1250,7 @@ inline void addExplicitSources(double)
   o_mixtureAdvectorUsed.copyFrom(nrs->fluid->o_U, 3 * nrs->fieldOffset);
   prepareGasAdvection();
   evaluatePointwiseTerms();
+  prepareRelativeDivergenceRhs();
   subtractScalarDiffusion();
   // Before native HPF/forcing assembly: alphaSource contains only gas flux
   // transport and the configured explicit diffusion subtraction, if enabled.
@@ -1246,6 +1303,11 @@ inline void buildDivergenceFromAlphaRhs(deviceMemory<dfloat>& o_divergence)
       o_alphaDiffusionDivergence);
   oogs::startFinish(o_alphaDiffusionDivergence, 1, 0, ogsDfloat, ogsAdd, nrs->meshV->oogs);
   platform->linAlg->axmy(Nlocal, -1.0, nrs->meshV->o_invLMM, o_alphaDiffusionDivergence);
+  if (p.mixtureDivergenceForm == 2) {
+    buildRelativeMixtureDivergenceKernel(Nlocal, p.rhoLiquid, p.rhoGas,
+        o_alphaMixtureRhs, o_alphaDiffusionDivergence, o_divergence);
+    return;
+  }
   evaluateNativeAlphaAdvection(o_alphaMixtureAdvection, true, "alpha", true);
   platform->linAlg->axpby(Nlocal, 1.0,
       o_alphaMixtureAdvection.slice(alphaOffset, offset), 1.0, o_alphaMixtureRhs);

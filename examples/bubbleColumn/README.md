@@ -70,3 +70,29 @@ s1 and applied target s3. Large values identify a potentially significant
 lagged-velocity contribution, but do not establish causality. This nodal
 continuum-form diagnostic is not the exact difference of native cubature
 advection operators or the measured final divergence/projection residual.
+
+## Mixture divergence formula selector
+
+`mixtureDivergenceForm=1` retains the previous reduced material-alpha formula:
+`d=(rhoL-rhoG)/rhoM * (EXT[-div(alpha*UG)+diffusion_compensation] + diffusion_implicit + A_UMused(alpha_final))`.
+
+`mixtureDivergenceForm=2` (example par setting) uses the relative conservative flux:
+`d=(rhoL-rhoG)/rhoL * (EXT[div(alpha*(UMused-UG))+diffusion_compensation] + diffusion_implicit)`.
+The C++ default is 1 for existing par files. Only values 1 and 2 are accepted.
+The relative flux is constructed once at the alpha source time using the same
+alpha, step-start UM, and frozen UG time level. It follows alphaTransportForm:
+1 uses assembled nodal-product SEM divergence; 2 uses conservative cubature.
+The saved source receives the same scalar EXT coefficients as alpha transport.
+Native weak implicit diffusion still uses the pre-filter/clipping solved alpha.
+Configured explicit alpha diffusion compensation is included; HPF/filter/
+clipping-rate sources and boundary BDF overrides remain excluded.
+
+Form 2 replaces the separate gas-transport and UM-material-advection terms;
+it does not add an extra UM.grad(alpha) term or use rhoM in its prefactor.
+Since form 1 uses final alpha in the mixture material term while form 2 keeps
+the entire relative flux at one explicit time level, they are not identical
+discrete/time-level rearrangements. Neither is an implicit pressure corrector.
+Filtering, assembly, history extrapolation, startup ramp and the master switch
+are unchanged. Div s1 now means the selected formula's raw target; s2 remains
+the full BDF comparison, s3 the applied target, s4=s1-s2 and s5 the original
+nodal material-advection lag diagnostic (not a complete form-2 residual).
