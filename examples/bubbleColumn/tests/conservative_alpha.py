@@ -1,4 +1,4 @@
-"""Actual flux product and native EXT cancellation, including shared-node assembly."""
+"""Actual flux product and direct gas RHS, including shared-node assembly."""
 from pathlib import Path
 import re
 import subprocess
@@ -28,14 +28,13 @@ int main() {
   assert(std::abs(flux[0]-.1)<1e-14 && std::abs(flux[6]-1.)<1e-14);
   assert(std::abs(flux[12]+.9)<1e-14 && flux[13]==99 && flux[3]==99);
 
-  // Two element copies of one shared node have unequal masses and native Ag.
-  // FU contains the mass-assembled Ag; core subtracts element-local ADV.
+  // Two element copies of one shared node have unequal masses.
+  // No native advection or cancellation enters the direct gas RHS.
   double mass[2]={2.,5.},rho[4]={1,1,1,1},state[4]={.2,.2,.1,.1};
-  double bdf[2]={2.,-.5},adv[4]={.6,-.3,1.2,.4},rhs[4],bf[2];
+  double bdf[2]={2.,-.5},adv[4]={},rhs[4],bf[2];
   double divFlux[2]={.9,-.2},extra[2]={.07,.03};
   for(int h=0;h<2;++h) {
-    double avg=(mass[0]*adv[2*h]+mass[1]*adv[2*h+1])/7.;
-    for(int i=0;i<2;++i) rhs[2*h+i]=avg-divFlux[h]+extra[h];
+    for(int i=0;i<2;++i) rhs[2*h+i]=-divFlux[h]+extra[h];
   }
   for(int extrapolate: {0,1}) {
     double ext[2]={extrapolate?2.:1.,extrapolate?-1.:0.};
@@ -60,13 +59,12 @@ assert 'evaluateAlphaTransport();' in evaluation
 assert 'evaluateGasCubatureTransport(true);' in case.split('inline void evaluateAlphaTransport()')[1].split('inline void evaluatePointwiseTerms()')[0]
 forcing = case.split('inline void addExplicitSources(double)')[1].split(
     'inline void buildDivergenceFromAlphaRhs')[0]
-assert 'for (int i = 1; i < 4; ++i)' in forcing
-assert 'evaluateNativeAlphaAdvection(o_alphaGasAdvection, true, names[i], true);' in forcing
-assert '1.0, nrs->scalar->o_explicitTerms(names[i])' in forcing
+assert 'evaluateNativeAlphaAdvection' not in forcing
+assert 'o_alphaGasAdvection' not in case
 reconstruction = case.split('inline void buildDivergenceFromAlphaRhs')[1].split(
     'inline void buildDivergenceFromAlphaBdf')[0]
 assert 'recoverAlphaRhsKernel' in reconstruction
 assert 'core-weakLaplacianHex3D' in reconstruction
 assert 'o_alphaBeforePostprocess' in reconstruction
-print('Actual nodal flux product and UG core EXT1/EXT2 native-advection cancellation '
+print('Actual nodal flux product and direct gas RHS with EXT1/EXT2 and zero native advection '
       'pass unequal shared-node mass assembly. Direct RHS reconstruction routing checked.')

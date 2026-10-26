@@ -1,6 +1,6 @@
 # Density-averaged method1: conservative UG transport of alpha
 
-Alpha has no native mixture convection or matching RHS cancellation: its device-only advection compute flag is disabled before the first timestep. Host compute stays enabled, retaining the alpha Helmholtz solve, diffusion, HPFRT and boundary conditions. Native alpha advection histories are zero-initialized and remain zero. The alpha RHS directly supplies conservative div(alpha*UG): alphaTransportForm=1 forms the product at GLL nodes then applies assembled opSEM::strongDivergence; alphaTransportForm=2 retains conservative cubature differentiation (default). Both use the same frozen UG and time treatment. The former aliases the nodal product; neither form guarantees boundedness. UGX/UGY/UGZ retain native mixture convection plus identical RHS cancellation, replaced by cubature UG.grad(UG). UG remains transported velocity, not QG. Gas drag and effective virtual-mass inertia remain semi-implicit; pressure and liquid acceleration remain lagged.
+Alpha and UG have no native mixture convection or matching RHS cancellation: their device-only advection compute flags are disabled before the first timestep. Host compute stays enabled, retaining all four Helmholtz solves, diffusion, HPFRT and boundary conditions. Native alpha/UG advection histories are zero-initialized and remain zero. The alpha RHS directly supplies conservative div(alpha*UG): alphaTransportForm=1 forms the product at GLL nodes then applies assembled opSEM::strongDivergence; alphaTransportForm=2 retains conservative cubature differentiation (default). Both use the same frozen UG and time treatment. The former aliases the nodal product; neither form guarantees boundedness. UGX/UGY/UGZ receive only the user cubature -UG.grad(UG) convection in their explicit RHS. UG remains transported velocity, not QG. Gas drag and effective virtual-mass inertia remain semi-implicit; pressure and liquid acceleration remain lagged.
 
 For alphaTransportForm=2, set cubaturePolynomialOrder >= 2*N because the conservative cubature kernel differentiates the sampled product. With alphaTransportForm=1 this extra requirement is lifted; native/UG cubature still requires sufficient quadrature for its own operator. The example N=7 uses order 14 (15 Gauss points). Scalar explicit histories use EXT1; native fluid/BDF integration is unchanged.
 
@@ -22,7 +22,7 @@ The RHS is recovered from native scalar o_JwF by removing its BDF history load. 
 
 The BDF alternative remains an exported diagnostic only; there is no longer a selectable mixtureDivergenceMethod. Raw recovered-RHS, raw BDF, actual pressure target and their signed difference are exported in the div checkpoint.
 
-The raw target is d_raw=(rhoLiquid-rhoGas)/rhoM * (D_t^BDF alpha_postprocessed + A_UMpred(alpha_postprocessed)). The recovered-RHS and independent BDF kernels are checked against each other with nonzero UM material advection and native alpha convection disabled, including weak diffusion, HPFRT, filtering/clipping and imposed boundary corrections. The final target may differ from this raw continuity identity because of divergence filtering, ramp or optional history extrapolation.
+The raw target is d_raw=(rhoLiquid-rhoGas)/rhoM * (D_t^BDF alpha_postprocessed + A_UMpred(alpha_postprocessed)). The recovered-RHS and independent BDF kernels are checked against each other with nonzero UM material advection and native alpha/UG convection disabled, including weak diffusion, HPFRT, filtering/clipping and imposed boundary corrections. The final target may differ from this raw continuity identity because of divergence filtering, ramp or optional history extrapolation.
 
 The pressure target still uses predicted mixture advection before the pressure-corrected U exists. Thus recovering the alpha RHS consistently does not make the whole pressure/gas coupling implicit or establish exact final total-mass continuity. Pressure does not correct UG within the same step.
 
@@ -38,7 +38,7 @@ Divergence recovery uses weak diffusion on the original implicit alpha solution 
 
 ## Verification
 
-Serial checks cover actual forcing recovery with HPF, weak diffusion, clipping and imposed boundary correction; native advection cancellation; gas/VM scaling and dilute forcing; plume initialization; uniform/rim boundary consistency; diagnostic kernels and conservative transport. Full GPU/MPI integration must be checked in the user's NekRS installation. Core files are not modified.
+Serial checks cover actual forcing recovery with HPF, weak diffusion, clipping and imposed boundary correction; masked native alpha/UG advection and direct gas RHS; gas/VM scaling and dilute forcing; plume initialization; uniform/rim boundary consistency; diagnostic kernels and conservative transport. Full GPU/MPI integration must be checked in the user's NekRS installation. Core files are not modified.
 
 METHOD1_AUDIT.md records the earlier pre-simplification snapshot and is retained as historical analysis.
 

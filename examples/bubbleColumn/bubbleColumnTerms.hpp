@@ -85,7 +85,6 @@ static deviceMemory<dfloat> o_gasAdvector;
 static deviceMemory<dfloat> o_scalarCoeffEXT;
 static deviceMemory<dlong> o_userAdvectionCompute;
 static deviceMemory<dfloat> o_gasUrst;
-static deviceMemory<dfloat> o_alphaGasAdvection;
 static deviceMemory<dfloat> o_alphaMixtureAdvection;
 static deviceMemory<dfloat> o_alphaMixtureRhs;
 static deviceMemory<dfloat> o_alphaPostprocessRate;
@@ -416,7 +415,6 @@ inline void allocate()
   o_ug.resize(3 * offset);
   o_gasAdvector.resize(3 * offset);
   o_gasUrst.resize(3 * nrs->scalar->vCubatureOffset);
-  o_alphaGasAdvection.resize(nrs->scalar->fieldOffsetSum);
   o_alphaMixtureAdvection.resize(nrs->scalar->fieldOffsetSum);
   o_alphaMixtureRhs.resize(offset);
   o_alphaPostprocessRate.resize(offset);
@@ -701,7 +699,7 @@ inline void evaluatePointwiseTerms()
                             o_qg,
                             o_ul);
   // Use normalized gather-scatter assembly for every user-side SEM gradient
-  // and divergence. This keeps the reconstructed cancellation and conservative
+  // and divergence. This keeps user-side derivative and conservative
   // flux terms single-valued at shared CG nodes.
   opSEM::strongGrad(mesh, offset, alpha, o_gradAlpha);
   opSEM::strongDivergence(mesh, offset, o_qg, o_divQg);
@@ -899,7 +897,7 @@ inline void prepareGasAdvection()
   o_gasAdvector.copyFrom(o_ug, 3 * offset);
 }
 
-inline void disableNativeAlphaAdvection()
+inline void disableNativeGasScalarAdvection()
 {
   // Host compute controls solving/BC/HPF; device o_compute is used only by
   // native scalar advection. Keep a separate enabled mask for user-side
@@ -907,18 +905,21 @@ inline void disableNativeAlphaAdvection()
   std::vector<dlong> flags(nrs->scalar->compute.begin(), nrs->scalar->compute.end());
   o_userAdvectionCompute.resize(flags.size());
   o_userAdvectionCompute.copyFrom(flags);
-  flags[nrs->scalar->nameToIndex.at("alpha")] = 0;
+  for (const char *name : {"alpha", "ugx", "ugy", "ugz"}) {
+    flags[nrs->scalar->nameToIndex.at(name)] = 0;
+  }
   nrs->scalar->o_compute.copyFrom(flags.data());
   // v26 device allocations zero-initialize private o_ADV and its histories.
-  // With alpha masked from the first step, these entries stay identically
+  // With alpha and UG masked from the first step, these entries stay identically
   // zero through native makeForcing/history lagging, including restarts.
 }
 
 inline void initializeHistory()
 {
-  disableNativeAlphaAdvection();
-  // Native UG transport remains mixture-based and is replaced in its RHS.
-  // Alpha native advection is disabled; only user conservative UG flux remains.
+  disableNativeGasScalarAdvection();
+  // Native alpha/UG advection is disabled. Their user RHS supplies
+  // conservative div(alpha*UG) and material UG.grad(UG), respectively.
+  // Keep fluid aliases for native BC handling and the divergence constraint.
   nrs->scalar->o_U = nrs->fluid->o_U;
   nrs->scalar->o_Ue = nrs->fluid->o_Ue;
   nrs->scalar->o_relUrst = nrs->fluid->o_relUrst;
@@ -1191,16 +1192,6 @@ inline void addExplicitSources(double)
         o_gasTransport.slice((i + 1) * offset, offset), 1.0, source);
     nrs->scalar->o_explicitTerms(names[i + 1]).copyFrom(source, Nlocal);
   }
-  // Cancel native mixture convection only for UG. Alpha has neither native
-  // convection nor a cancellation term.
-  for (int i = 1; i < 4; ++i) {
-    evaluateNativeAlphaAdvection(o_alphaGasAdvection, true, names[i], true);
-    const int index = nrs->scalar->nameToIndex.at(names[i]);
-    platform->linAlg->axpby(Nlocal, 1.0,
-        o_alphaGasAdvection.slice(nrs->scalar->fieldOffsetScan[index], offset),
-        1.0, nrs->scalar->o_explicitTerms(names[i]));
-  }
-
   auto fluidTerms = nrs->fluid->o_explicitTerms();
   for (int i = 0; i < 3; ++i) {
     fluidTerms.copyFrom(o_mixtureForce, Nlocal, i * offset, i * offset);
