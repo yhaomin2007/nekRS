@@ -26,7 +26,7 @@ regularization = hpfrt + nModes=1 + scalingCoeff=10
 scalars = s00
 
 [MESH]
-file = ../turbPipe/turbPipe.re2
+file = turbpipe.re2
 
 [FLUID PRESSURE]
 initialGuess = previous
