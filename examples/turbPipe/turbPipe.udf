@@ -1,6 +1,7 @@
 #include "tavg.hpp"
 #include "planarCopy.hpp"
 #include "avm.hpp"
+#include "lineProfiles.hpp"
 #include <csignal>
 //#include "nekAscent.hpp"
 
@@ -92,6 +93,7 @@ void uservp(double time)
 
 void UDF_Setup0(MPI_Comm comm, setupAide &options)
 {
+  pipeLines::configure();
   platform->par->extract("casedata", "nslabs", NSLABS);
   platform->par->extract("casedata", "nelslab", NELSLAB);
   platform->par->extract("casedata", "processAscentYamlFrequency", processAscentYamlFrequency); // ascent
@@ -270,6 +272,7 @@ void UDF_Setup()
 
 void UDF_ExecuteStep(double time, int tstep)
 {
+  if (tstep == 0 || nrs->timeStepConverged) pipeLines::write(time, tstep);
   auto mesh = nrs->meshV;
 
   if (tstep == 0) {

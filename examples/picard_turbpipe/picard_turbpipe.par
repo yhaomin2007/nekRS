@@ -9,7 +9,7 @@ userSections = CASEDATA
 polynomialOrder = 7
 #startFrom = "restart.fld"
 stopAt = numSteps
-numSteps = 20
+numSteps = 1000
 
 timeStepper = tombo2
 
@@ -19,7 +19,7 @@ dt = 1e-3
 advectionSubCyclingSteps = 0
 
 checkpointControl = steps
-checkpointInterval = 10
+checkpointInterval = 100
 
 regularization = hpfrt + nModes=1 + scalingCoeff=10
 
@@ -65,3 +65,8 @@ repeatTolerance = 1e-9
 picardConvection = 1
 # Stop after a corrector when max scaled U,p,s00 change is below this value.
 picardTolerance = 1e-8
+
+# Identical accepted-step line exports in this case and ../turbPipe.
+lineProfilesEnabled = 1
+lineProfileInterval = 100
+lineProfilePoints = 201

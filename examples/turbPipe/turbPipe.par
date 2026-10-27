@@ -8,41 +8,53 @@ userSections = CASEDATA
 #verbose = true
 polynomialOrder = 7
 #startFrom = "restart.fld"
-stopAt = endTime
-endTime = 200
+stopAt = numSteps
+numSteps = 1000
 
 timeStepper = tombo2
 
 #dt = 6.0e-3
 #advectionSubCyclingSteps = 2
-dt = targetCFL=4 + max=1e-2 + initial=6e-3
+dt = 1e-3
+advectionSubCyclingSteps = 0
 
-checkpointControl = simulationTime 
-checkpointInterval = 10
+checkpointControl = steps
+checkpointInterval = 100
 
 regularization = hpfrt + nModes=1 + scalingCoeff=10
 
 scalars = s00
 
+[MESH]
+file = turbPipe.re2
+
 [FLUID PRESSURE]
-residualTol = 1e-04
+initialGuess = previous
+residualTol = 1e-10
 #initialGuess = projectionAconj+nVector=10
 
 [FLUID VELOCITY]
-boundaryTypeMap = udfDirichlet, zeroNeumann,zeroDirichlet 
+initialGuess = previous
+boundaryTypeMap = udfDirichlet, zeroNeumann,zeroDirichlet
 rho = 1.0
 viscosity = 1/19000
-residualTol = 1e-06
+residualTol = 1e-10
 
 [SCALAR S00]
+initialGuess = previous
 transportCoeff = 1.0
 diffusionCoeff = 1/19000
-boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet 
-residualTol = 1e-06
+boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
+residualTol = 1e-10
 regularization = avm+noiseThreshold=1e-3
 
 [CASEDATA]
-# adjust to actual mesh 
+# adjust to actual mesh
 NSLABS  = 60
-NELSLAB = 132 
+NELSLAB = 132
 processAscentYamlFrequency = 100
+
+# Shared line sampling; this case uses the original native one-pass solver.
+lineProfilesEnabled = 1
+lineProfileInterval = 100
+lineProfilePoints = 201

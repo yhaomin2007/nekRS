@@ -118,3 +118,95 @@ early convergence and history-corruption detection. These are bookkeeping and
 RHS tests, not full spatial-discretization or turbulent-flow validation.
 The second test uses the native OKL extractor and verifies preserved BCs.
 A full GPU/MPI run of the new convection mode is still required.
+
+
+## Direct comparison with the original turbPipe case
+
+Both supplied `.par` files now use polynomial order 7, Tombo2, fixed `dt=0.001`,
+1000 steps, no subcycling, `initialGuess=previous` and linear tolerances of
+`1e-10`. Native HPFRT/AVM settings are identical. The original `turbPipe` UDF
+still runs the native one-pass solver; it only gains the shared line exporter.
+The Picard wrapper includes that same UDF, so both use the same sampler.
+
+Use identical mesh contents, MPI rank count, partition/backend and restart or
+initialization. The original random perturbation has a deterministic seed per
+MPI rank, so the same partition/layout matters. The original case reads
+`turbPipe.re2`; Picard reads the requested local lowercase `turbpipe.re2`.
+If needed, copy `../turbPipe/turbPipe.re2` to `turbpipe.re2` in the Picard run
+directory. Verify the two files are identical, not just similar geometries.
+
+Run the cases in separate directories, for example from this directory:
+
+```bash
+(cd ../turbPipe && nekrs turbPipe)
+nekrs picard_turbpipe
+python compare_lines.py ../turbPipe . --steps 0 100 500 1000
+```
+
+Use the same MPI launch configuration for both runs on your machine.
+Set `picardEnabled=1, picardConvection=1` for the actual Picard comparison.
+For a control, `picardConvection=0` should reproduce the native profiles within
+solver/roundoff tolerance. Check the step-zero comparison before interpreting
+later differences.
+
+Shared CASEDATA controls in **both** files:
+
+```ini
+lineProfilesEnabled = 1
+lineProfileInterval = 100
+lineProfilePoints = 201
+```
+
+Each run writes `lineProfiles_step000000.csv`, `lineProfiles_step000100.csv`,
+etc., including the final accepted step even if it is off the interval.
+Exports occur once per accepted physical timestep, never per Picard pass.
+The supplied field checkpoint interval is also 100 steps; line export has its
+own control. Existing files for the same step are replaced. Use fresh run
+directories or remove old line-profile CSVs before a new comparison.
+
+Five lines, with 201 points each, sample instantaneous `ux,uy,uz,p,s00`:
+
+| Line | Location in the original D=1, L=20 pipe |
+| --- | --- |
+| `x_z25` | x diameter, y=0, z=5 |
+| `x_z50` | x diameter, y=0, z=10 |
+| `x_z75` | x diameter, y=0, z=15 |
+| `y_z50` | y diameter, x=0, z=10 |
+| `axial` | x=y=0, z along the pipe |
+
+Positions are computed from the global mesh bounds; endpoints are inset by
+`1e-6` of each span to avoid geometric boundary ambiguity. The implementation
+follows gabls' collective `pointInterpolation_t::setPoints/find/eval` pattern,
+with rank zero owning all requested points. Missing points abort the run.
+Coordinates, physical time, step, line name and point index are included in
+CSV files. These are line profiles, not azimuthal or statistical averages.
+
+The comparison script needs NumPy and Matplotlib. It verifies matching steps,
+physical times and locations, then produces five overlay PNGs per requested
+step and `line_comparison/line_errors.csv` for **every** exported step.
+Use `--steps all` for every export, or omit `--steps` for the final export.
+`--output DIR` changes the plot/summary destination.
+
+For each field and line, the summary gives maximum absolute difference,
+line-integrated RMS difference and relative L2 difference (Picard minus native,
+native as denominator). A zero reference norm with nonzero difference yields
+`nan` for relative L2; absolute measures remain available. Pressure is compared
+as exported, without subtracting a gauge offset. The script reports initial
+profile mismatch explicitly. Agreement on these lines does not prove equality
+of the entire 3D fields, and the native case is a comparison baseline rather
+than an exact solution. Timestep refinement is needed to assess temporal
+accuracy; long-time instantaneous turbulent trajectories may diverge.
+
+Additional checks:
+
+```bash
+OCCA_DIR=/path/to/built/occa python tests/line_profiles.py
+python tests/compare_lines.py
+```
+
+The exporter check compiles the production helper with real OCCA memory and
+controlled interpolation/MPI doubles. It covers packing, five-line coordinates,
+cadence, final-step and duplicate guards, disabled mode and missing points.
+The plotting check verifies known metrics, rejects mismatched times/locations
+and generates overlay figures from synthetic data. Full distributed sampling
+and physical profiles still require actual NekRS runs.
