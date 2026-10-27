@@ -49,8 +49,8 @@ inline void addMassWeighted(const occa::memory &destination,
   for (int c = 0; c < components; ++c) {
     scratch.copyFrom(advection.slice(c * offset, mesh->Nlocal), mesh->Nlocal);
     platform->linAlg->axmy(mesh->Nlocal, 1.0, (components == 3 ? mesh->o_Jw : mesh->o_LMM), scratch);
-    platform->linAlg->axpby(mesh->Nlocal, factor, scratch, 1.0,
-                          destination.slice(c * offset, mesh->Nlocal));
+    auto output = destination.slice(c * offset, mesh->Nlocal);
+    platform->linAlg->axpby(mesh->Nlocal, factor, scratch, 1.0, output);
   }
 }
 

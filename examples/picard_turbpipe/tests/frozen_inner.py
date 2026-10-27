@@ -44,12 +44,13 @@ struct Comm {int mpiComm(){return 0;}int mpiRank(){return 0;}};
 struct Timer {void tic(std::string,int=0){}void toc(std::string){}};
 double *ptr(const occa::memory &m){return const_cast<double*>(static_cast<const double*>(m.ptr()));}
 struct LA {
- void fill(long n,double v,const occa::memory&a){std::fill(ptr(a),ptr(a)+n,v);}
+ // Match native linAlg mutable output references; temporary outputs must fail compilation.
+ void fill(long n,double v,occa::memory&a){std::fill(ptr(a),ptr(a)+n,v);}
  double min(long n,const occa::memory&a,int){return *std::min_element(ptr(a),ptr(a)+n);}
  double max(long n,const occa::memory&a,int){return *std::max_element(ptr(a),ptr(a)+n);}
  double innerProd(long n,const occa::memory&a,const occa::memory&b,int){double r=0;for(long i=0;i<n;++i)r+=ptr(a)[i]*ptr(b)[i];return r;}
- void axpby(long n,double a,const occa::memory&x,double b,const occa::memory&y){for(long i=0;i<n;++i)ptr(y)[i]=a*ptr(x)[i]+b*ptr(y)[i];}
- void axmy(long n,double a,const occa::memory&x,const occa::memory&y){for(long i=0;i<n;++i)ptr(y)[i]*=a*ptr(x)[i];}
+ void axpby(long n,double a,const occa::memory&x,double b,occa::memory&y){for(long i=0;i<n;++i)ptr(y)[i]=a*ptr(x)[i]+b*ptr(y)[i];}
+ void axmy(long n,double a,const occa::memory&x,occa::memory&y){for(long i=0;i<n;++i)ptr(y)[i]*=a*ptr(x)[i];}
 } la;
 // Controlled nonlinear advection operator; elliptic/geometry remain test doubles.
 struct MockKernel {
