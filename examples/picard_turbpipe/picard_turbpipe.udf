@@ -43,6 +43,8 @@ void UDF_Setup0(MPI_Comm comm, setupAide &options)
   platform->par->extract("casedata", "picardenabled", frozenInner::enabled);
   platform->par->extract("casedata", "inneriterations", frozenInner::iterations);
   platform->par->extract("casedata", "repeattolerance", frozenInner::tolerance);
+  platform->par->extract("casedata", "picardconvection", frozenInner::updateConvection);
+  platform->par->extract("casedata", "picardtolerance", frozenInner::picardTolerance);
 }
 
 void UDF_Setup()

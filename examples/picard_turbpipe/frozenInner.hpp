@@ -4,8 +4,9 @@
 #include <cmath>
 #include <fstream>
 #include <iomanip>
+#include <vector>
 
-// A frozen-system control experiment, not nonlinear Picard convergence.
+// Frozen repeatability control and optional nonlinear convection corrector.
 // All allocations belong to the UDF. No private solver history is accessed.
 namespace frozenInner
 {
@@ -82,8 +83,11 @@ inline dfloat unchanged(const Saved &field, dlong skip = 0)
                   std::abs(platform->linAlg->max(count, scratch, comm)));
 }
 
+#include "convectionPicard.hpp"
+
 // Called once by initInnerStep, after predictors/Urst but BEFORE makeForcing
-// and BEFORE the native first-pass lagSolution. No forcing is rebuilt here.
+// and BEFORE the native first-pass lagSolution. Convection history is captured
+// here; native forcing is still built only once.
 inline void beginStep(double)
 {
   nekrsCheck(step == nrs->tstep, platform->comm.mpiComm(), EXIT_FAILURE,
@@ -102,6 +106,7 @@ inline void beginStep(double)
   coeffBdf.capture(nrs->o_coeffBDF);
   coeffExtU.capture(nrs->fluid->o_coeffEXT);
   coeffExtS.capture(nrs->scalar->o_coeffEXT);
+  if (updateConvection) prepareConvectionHistory();
 }
 
 // This callback runs after each scalar/pressure/velocity solve and before
@@ -130,6 +135,7 @@ inline bool convergenceCheck(int iteration)
     propU.capture(nrs->fluid->o_prop);
     propS.capture(nrs->scalar->o_prop);
     divergence.capture(nrs->fluid->o_div);
+    if (updateConvection) savePicardBase();
   }
   const auto u = difference(nrs->fluid->o_U, firstU, 3, nrs->fluid->fieldOffset);
   const auto p = difference(nrs->fluid->o_P, firstP, 1, nrs->fluid->fieldOffset);
@@ -138,11 +144,12 @@ inline bool convergenceCheck(int iteration)
       unchanged(historyU, nrs->fluid->fieldOffsetSum),
       unchanged(historyS, nrs->scalar->fieldOffsetSum));
   const dfloat propertyError = unchanged(propS);
-  dfloat frozenError = std::max(unchanged(rhsU), unchanged(rhsS));
+  dfloat frozenError = updateConvection ? 0 : std::max(unchanged(rhsU), unchanged(rhsS));
   for (auto *field : {&explicitU, &explicitS, &coeffBdf, &coeffExtU, &coeffExtS,
                       &boundary, &urst, &propU, &divergence}) {
     frozenError = std::max(frozenError, unchanged(*field));
   }
+  if (updateConvection) return picardCheck(iteration, historyError, frozenError);
   if (platform->comm.mpiRank() == 0) {
     printf("frozenInner step=%d pass=%d/%d U[max,rms]=[%.8e,%.8e] "
            "P[max,rms]=[%.8e,%.8e] S[max,rms]=[%.8e,%.8e] "
@@ -192,6 +199,7 @@ inline void restoreForNextPass()
   coeffBdf.restore();
   coeffExtU.restore();
   coeffExtS.restore();
+  if (updateConvection) updateConvectionRhs();
   // runInnerStep suppresses checkpointStep on an unconverged pass. Restore
   // the original request for the next pass; do not write intermediate output.
   nrs->checkpointStep = requestedCheckpoint;
@@ -204,9 +212,18 @@ inline void configure()
   nekrsCheck(iterations < 1 || !std::isfinite(tolerance) || tolerance <= 0,
              platform->comm.mpiComm(), EXIT_FAILURE,
              "%s", "innerIterations must be positive and repeatTolerance finite and positive.\n");
+  nekrsCheck(updateConvection != 0 && updateConvection != 1,
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "%s", "picardConvection must be 0 or 1.\n");
+  nekrsCheck(!std::isfinite(picardTolerance) || picardTolerance <= 0,
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "%s", "picardTolerance must be finite and positive.\n");
   if (!enabled) return;
-  // These restrictions define the frozen-system control experiment. Expanding
-  // to nonlinear/moving-mesh/multisession coupling requires a separate design.
+  nekrsCheck(updateConvection && (nrs->fluid->userAdvectionTerm ||
+             !platform->options.compareArgs("EQUATION TYPE", "NAVIERSTOKES")),
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "%s", "Picard convection requires native Navier-Stokes advection.\n");
+  // Restrictions shared by the frozen control and fixed-mesh convection demo.
   for (const auto *key : {"MOVING MESH", "LOWMACH", "FLUID PRESSURE RHO SPLITTING",
                            "CONSTANT FLOW RATE", "NEKNEK MULTIRATE TIMESTEPPER"}) {
     nekrsCheck(platform->options.compareArgs(key, "TRUE"), platform->comm.mpiComm(),

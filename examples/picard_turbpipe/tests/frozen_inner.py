@@ -7,7 +7,7 @@ from pathlib import Path
 import os, re, subprocess, tempfile, csv
 case=Path(__file__).resolve().parents[1]
 repo=case.parents[1]
-occa=repo.parent/'occa-cub-parser'
+occa=Path(os.environ.get('OCCA_DIR',repo.parent/'occa-cub-parser'))
 
 def function(path, signature):
     text=path.read_text();start=text.index(signature);brace=text.index('{', start)
@@ -34,6 +34,7 @@ prefix=r'''
 #include <stdexcept>
 #include <cstddef>
 #include <iostream>
+#include <tuple>
 using dfloat=double;using dlong=long;
 struct Options {std::map<std::string,std::string> map;
  bool compareArgs(std::string k,std::string v){return map[k]==v;}
@@ -43,15 +44,41 @@ struct Comm {int mpiComm(){return 0;}int mpiRank(){return 0;}};
 struct Timer {void tic(std::string,int=0){}void toc(std::string){}};
 double *ptr(const occa::memory &m){return const_cast<double*>(static_cast<const double*>(m.ptr()));}
 struct LA {
+ void fill(long n,double v,const occa::memory&a){std::fill(ptr(a),ptr(a)+n,v);}
  double min(long n,const occa::memory&a,int){return *std::min_element(ptr(a),ptr(a)+n);}
  double max(long n,const occa::memory&a,int){return *std::max_element(ptr(a),ptr(a)+n);}
  double innerProd(long n,const occa::memory&a,const occa::memory&b,int){double r=0;for(long i=0;i<n;++i)r+=ptr(a)[i]*ptr(b)[i];return r;}
  void axpby(long n,double a,const occa::memory&x,double b,const occa::memory&y){for(long i=0;i<n;++i)ptr(y)[i]=a*ptr(x)[i]+b*ptr(y)[i];}
  void axmy(long n,double a,const occa::memory&x,const occa::memory&y){for(long i=0;i<n;++i)ptr(y)[i]*=a*ptr(x)[i];}
 } la;
+// Controlled nonlinear advection operator; elliptic/geometry remain test doubles.
+struct MockKernel {
+ std::string name;
+ template<class... A>void operator()(A... args){
+ auto t=std::make_tuple(args...);
+ if constexpr(sizeof...(A)==8){ // SEM Urst
+ auto u=std::get<5>(t);auto out=std::get<7>(t);out.copyFrom(u,15);
+ } else if constexpr(sizeof...(A)==7){ // SEM vector advection
+ auto u=std::get<4>(t);auto out=std::get<6>(t);
+ for(int c=0;c<3;++c)for(int i=0;i<3;++i)ptr(out)[5*c+i]=.02*ptr(u)[i]*ptr(u)[5*c+i];
+ } else if constexpr(sizeof...(A)==10){ // cubature Urst / vector operator
+ auto u=std::get<7>(t);auto out=std::get<9>(t);
+ if(name.find("Urst")!=std::string::npos)out.copyFrom(u,15);
+ else for(int c=0;c<3;++c)for(int i=0;i<3;++i)ptr(out)[5*c+i]=.02*ptr(u)[i]*ptr(u)[5*c+i];
+ } else if constexpr(sizeof...(A)==16){ // cubature scalar operator
+ auto s=std::get<12>(t);auto u=std::get<13>(t);auto out=std::get<15>(t);
+ for(int i=0;i<3;++i)ptr(out)[i]=.03*ptr(u)[i]*ptr(s)[i];
+ } else if constexpr(sizeof...(A)==12){ // SEM scalar advection
+ auto s=std::get<8>(t);auto u=std::get<9>(t);auto out=std::get<11>(t);
+ for(int i=0;i<3;++i)ptr(out)[i]=.03*ptr(u)[i]*ptr(s)[i];
+ }
+ }
+};
+struct Requests {MockKernel load(std::string n){return {n};}};
+#define launchKernel(name, ...) platform->kernelRequests.load(name)(__VA_ARGS__)
 struct Pool {occa::device *d;occa::memory reserve(size_t n){return d->malloc(n);}
  template<class T>occa::memory reserve(size_t n){return d->malloc<T>(n);}};
-struct Platform {Options options;Comm comm;Timer timer;LA *linAlg=&la;occa::device device;
+struct Platform {Requests kernelRequests;Options options;Comm comm;Timer timer;LA *linAlg=&la;occa::device device;
  Pool deviceMemoryPool{&device};occa::kernel copyDoubleToFloatKernel,copyFloatToDoubleKernel;
  bool verbose(){return false;}struct App *app=nullptr;
 } object,*platform=&object;
@@ -60,15 +87,15 @@ struct Boundary {deviceMemory<dfloat> o_usrwrk;bool hasOutflow(std::string){retu
 struct App {Boundary *bc;};
 template<class...T>void nekrsCheck(bool bad,int,int,const char *msg,T...){if(bad)throw std::runtime_error(msg);}
 occa::memory alloc(long n,double base=0){std::vector<double>a(n);for(long i=0;i<n;++i)a[i]=base+.001*i;return platform->device.malloc<double>(n,a.data());}
-struct Mesh {long Nlocal=3;double volume=6;occa::memory o_LMM;};
-struct Fluid {long fieldOffset=5,fieldOffsetSum=15;
+struct Mesh {int Nelements=1;occa::memory o_Jw,o_vgeo,o_D,o_cubvgeo,o_cubInterpT,o_cubDiffInterpT,o_cubProjectT;long Nlocal=3;double volume=6;occa::memory o_LMM;};
+struct Fluid {long cubatureOffset=5;std::function<occa::memory(double,int)> userAdvectionTerm=nullptr;long fieldOffset=5,fieldOffsetSum=15;
  occa::memory o_div,o_U,o_P,o_Ue,o_relUrst,o_prop,o_JwF,o_EXT,o_ADV,o_coeffBDF,o_coeffEXT,o_coeffEXTP;
  int lagCount=0,solveCount=0;
  void lagSolution();void solve(double,int);
  void applyDirichlet(double);void updateZeroNormalMask(){}
 };
 struct Cvode {void solve(double,double,int){}};
-struct Scalar {long fieldOffsetSum=5;occa::memory o_S,o_Se,o_prop,o_JwF,o_EXT,o_ADV,o_coeffBDF,o_coeffEXT;
+struct Scalar {long vFieldOffset=5,vCubatureOffset=5;occa::memory o_rho,o_compute,o_fieldOffsetScan;long fieldOffsetSum=5;occa::memory o_S,o_Se,o_prop,o_JwF,o_EXT,o_ADV,o_coeffBDF,o_coeffEXT;
  Cvode *cvode=nullptr;bool anyEllipticSolver=true;int lagCount=0,solveCount=0;
  void lagSolution();void solve(double,int);void applyDirichlet(double);
 };
@@ -98,11 +125,11 @@ void Fluid::applyDirichlet(double){
 }
 void Scalar::applyDirichlet(double){ptr(o_S)[0]=.2;ptr(o_Se)[0]=.2;}
 void Scalar::solve(double,int){++solveCount;for(int i=1;i<3;++i)
- ptr(o_S)[i]=ptr(o_JwF)[i]/(100*nrs->g0+ptr(o_prop)[i])+.001*ptr(o_Se)[i];}
+ ptr(o_S)[i]=ptr(o_JwF)[i]/(ptr(nrs->meshV->o_LMM)[i]*(100*nrs->g0+ptr(o_prop)[i]))+.001*ptr(o_Se)[i];}
 void Fluid::solve(double,int){++solveCount;
  const double bc=ptr(o_P)[2];for(int i=0;i<2;++i)ptr(o_P)[i]=.01*ptr(o_JwF)[i]+bc;
  for(int c=0;c<3;++c)for(int i=0;i<3;++i)if(c||i)
- ptr(o_U)[c*5+i]=(ptr(o_JwF)[c*5+i]-.1*ptr(o_P)[i])/(100*nrs->g0)+.001*ptr(o_Ue)[c*5+i];
+ ptr(o_U)[c*5+i]=(ptr(o_JwF)[c*5+i]-.1*ptr(o_P)[i])/(ptr(nrs->meshV->o_Jw)[i]*100*nrs->g0)+.001*ptr(o_Ue)[c*5+i];
 }
 void nrs_t::evaluateProperties(double){
  // Native AVM timing: update coefficients after scalar solve using current U,S.
@@ -123,6 +150,7 @@ kernels='\n#define p_nBDF 3\n#define p_nEXT 3\n#define p_ADVECTION 1\n#define p_
 for kind in ['fluid','scalar']:
  kernels+=serial((repo/f'src/solver/{kind}/kernels/sumMakef.okl').read_text()).replace('sumMakef(',kind+'SumMakef(')
 main=r'''
+std::vector<double> oracleBaseU(15),oracleBaseS(5);
 void prepare(Fluid &f,Scalar &s,Mesh &mesh,int step){
  const double bdf[3][3]={{1,0,0},{2,-.5,0},{3,-1.5,1./3}};
  const double ext[3][3]={{1,0,0},{2,-1,0},{3,-3,1}};
@@ -131,24 +159,30 @@ void prepare(Fluid &f,Scalar &s,Mesh &mesh,int step){
  f.o_Ue.copyFrom(f.o_U,15);s.o_Se.copyFrom(s.o_S,5);f.o_relUrst.copyFrom(f.o_U,15);
  // This is the sole userSource entry. Real initInnerStep constructs RHS next.
  if(nrs->userSource)nrs->userSource(nrs->timePrevious);
- for(int i=0;i<15;++i){ptr(f.o_EXT)[i]=.01;ptr(f.o_ADV)[i]=.02*ptr(f.o_U)[i];}
- for(int i=0;i<5;++i){ptr(s.o_EXT)[i]=.015;ptr(s.o_ADV)[i]=.03*ptr(s.o_S)[i];}
+ for(int i=0;i<15;++i){ptr(f.o_EXT)[i]=.01;ptr(f.o_ADV)[i]=.02*ptr(f.o_U)[i%5]*ptr(f.o_U)[i];}
+ for(int i=0;i<5;++i){ptr(s.o_EXT)[i]=.015;ptr(s.o_ADV)[i]=.03*ptr(f.o_U)[i]*ptr(s.o_S)[i];}
  double rho[5]={1,1,1,1,1};
- fluidSumMakef(3,ptr(mesh.o_LMM),100,ptr(f.o_coeffEXT),ptr(f.o_coeffBDF),5,15,5,
+ fluidSumMakef(3,ptr(mesh.o_Jw),100,ptr(f.o_coeffEXT),ptr(f.o_coeffBDF),5,15,5,
  rho,ptr(f.o_U),ptr(f.o_ADV),ptr(f.o_EXT),ptr(f.o_JwF));
  scalarSumMakef(3,ptr(mesh.o_LMM),100,ptr(s.o_coeffEXT),ptr(s.o_coeffBDF),0,5,5,
  rho,ptr(s.o_S),ptr(s.o_ADV),ptr(s.o_EXT),ptr(s.o_JwF));
+ // Independent RHS oracle: native BDF+EXT sources with advection zeroed.
+ double zeroAdv[45]={0};
+ fluidSumMakef(3,ptr(mesh.o_Jw),100,ptr(f.o_coeffEXT),ptr(f.o_coeffBDF),5,15,5,
+ rho,ptr(f.o_U),zeroAdv,ptr(f.o_EXT),oracleBaseU.data());
+ scalarSumMakef(3,ptr(mesh.o_LMM),100,ptr(s.o_coeffEXT),ptr(s.o_coeffBDF),0,5,5,
+ rho,ptr(s.o_S),zeroAdv,ptr(s.o_EXT),oracleBaseS.data());
  // Native sumMakef pushes these explicit histories once, before runInnerStep.
  for(int k=3;k>1;--k){f.o_EXT.copyFrom(f.o_EXT,15,(k-1)*15,(k-2)*15);f.o_ADV.copyFrom(f.o_ADV,15,(k-1)*15,(k-2)*15);
  s.o_EXT.copyFrom(s.o_EXT,5,(k-1)*5,(k-2)*5);s.o_ADV.copyFrom(s.o_ADV,5,(k-1)*5,(k-2)*5);}
 }
 int main(int argc,char**argv){
- const int passes=std::stoi(argv[1]);occa::properties props;props["mode"]="Serial";platform->device.setup(props);
+ const int passes=std::stoi(argv[1]);const bool nonlinear=argc>2;occa::properties props;props["mode"]="Serial";platform->device.setup(props);
  for(auto key:{"FLUID PRESSURE INITIAL GUESS","FLUID VELOCITY INITIAL GUESS","SCALAR00 INITIAL GUESS"})platform->options.map[key]="PREVIOUS";
  Boundary boundary;boundary.o_usrwrk.resize(15);std::vector<double> bc(15,1.);boundary.o_usrwrk.copyFrom(bc);
  App app{&boundary};platform->app=&app;
  Mesh mesh;double weights[3]={1,2,3};mesh.o_LMM=platform->device.malloc<double>(3,weights);
- Fluid f;Scalar s;
+ double jw[3]={.5,1.5,2.5};mesh.o_Jw=platform->device.malloc<double>(3,jw);Fluid f;Scalar s;
  f.o_div=alloc(5);f.o_U=alloc(45,.3);f.o_P=alloc(5,.1);f.o_Ue=alloc(15);f.o_relUrst=alloc(15);
  f.o_prop=alloc(10,.1);f.o_JwF=alloc(15);f.o_EXT=alloc(45,.01);f.o_ADV=alloc(45,.02);
  f.o_coeffBDF=alloc(3);f.o_coeffEXT=alloc(3);
@@ -157,18 +191,31 @@ int main(int argc,char**argv){
  nrs->fluid=&f;nrs->scalar=&s;nrs->meshV=&mesh;nrs->o_coeffBDF=f.o_coeffBDF;
  // Seeded higher history slots exercise a restart-like initial state too.
  frozenInner::enabled=passes!=0;frozenInner::iterations=passes?passes:1;
+ frozenInner::updateConvection=nonlinear;
+ platform->options.map["EQUATION TYPE"]="NAVIERSTOKES";
+ if(argc>3)platform->options.map["ADVECTION TYPE"]="CUBATURE";
  frozenInner::configure();udf.executeStep=&UDF_ExecuteStep;
  UDF_ExecuteStep(0.,0);
  for(int step=1;step<=6;++step){
  nrs->tstep=step;nrs->timePrevious=(step-1)*.01;nrs->timeStepConverged=false;nrs->checkpointStep=step%2==0;
  prepare(f,s,mesh,step);
  for(int it=1;;++it){
+ if(nonlinear && it>1){
+  for(int i=0;i<3;++i){
+   const double u=ptr(frozenInner::previousU)[i],w=ptr(mesh.o_LMM)[i];
+   for(int c=0;c<3;++c){const int j=5*c+i;
+    assert(std::abs(ptr(f.o_JwF)[j]-(oracleBaseU[j]-ptr(mesh.o_Jw)[i]*.02*u*ptr(frozenInner::previousU)[j]))<1e-11);
+   }
+   assert(std::abs(ptr(s.o_JwF)[i]-(oracleBaseS[i]-w*.03*u*ptr(frozenInner::previousS)[i]))<1e-11);
+  }
+ }
+
  auto check=[&](int i){return nrs->userConvergenceCheck?nrs->userConvergenceCheck(i):true;};
  if(nrs->runInnerStep(check,it,true))break;
  assert(it<passes);
  }
  assert(f.lagCount==step&&s.lagCount==step);assert(commits==step&&checkpoints==step/2);
- assert(f.solveCount==step*(passes?passes:1)&&s.solveCount==f.solveCount);
+ assert((nonlinear || f.solveCount==step*(passes?passes:1))&&s.solveCount==f.solveCount);
  assert(nek::output==(step%2==0));
  }
  // Identical final fields, histories, forcing histories and AVM coefficient state.
@@ -176,7 +223,7 @@ int main(int argc,char**argv){
  for(auto field:{f.o_U,f.o_P,s.o_S,f.o_EXT,s.o_EXT,f.o_ADV,s.o_ADV,s.o_prop})
  for(size_t i=0;i<field.size();++i)out<<ptr(field)[i]<<'\n';
  // Guard must detect history corruption, not silently erase it on restore.
- if(passes){ptr(f.o_U)[15]+=.1;bool failed=false;try{frozenInner::convergenceCheck(passes+1);}catch(const std::runtime_error&){failed=true;}assert(failed);}
+ if(passes && !nonlinear){ptr(f.o_U)[15]+=.1;bool failed=false;try{frozenInner::convergenceCheck(passes+1);}catch(const std::runtime_error&){failed=true;}assert(failed);}
 }
 '''
 cpp=prefix+methods+lagu+lags+'\n#include "frozenInner.hpp"\n'+wrapper+driver+kernels+main
@@ -201,6 +248,20 @@ with tempfile.TemporaryDirectory() as directory:
    for row in rows[:-1]:
     assert all(float(row[k])==0 for k in ['u_max','p_max','s_max','history_max','frozen_max','property_max'])
   print(f'PASS: native inner driver, {passes or "disabled"} passes; final arrays identical.')
+ for passes in [1,2,4,12]:
+  run=path/('picard'+str(passes));run.mkdir()
+  result=subprocess.run([str(path/'check'),str(passes),'picard'],cwd=run,text=True,capture_output=True)
+  if result.returncode:print(result.stdout[-6000:],result.stderr)
+  result.check_returncode()
+  assert 'picardInner' in result.stdout
+  assert ((run/'result.txt').read_text()==expected)==(passes==1)
+  if passes==12:assert 'status=converged' in result.stdout
+  print(f'PASS: nonlinear convection, {passes} max passes; RHS oracle/histories/checkpoints preserved.')
+  if passes==12:
+   cub=path/'cubature';cub.mkdir()
+   result=subprocess.run([str(path/'check'),'12','picard','cubature'],cwd=cub,text=True,capture_output=True,check=True)
+   assert (cub/'result.txt').read_text()==(run/'result.txt').read_text()
+   print('PASS: cubature dispatch produces the same controlled nonlinear RHS.')
 print('Real Serial arrays + native history/sumMakef/inner driver: BDF1/2/3, frozen RHS, '
       'AVM before/after state, boundary recycling once, checkpoints retained, corruption detected. '
       'Elliptic solves are mocked; full GPU/MPI pipe comparison remains required.')

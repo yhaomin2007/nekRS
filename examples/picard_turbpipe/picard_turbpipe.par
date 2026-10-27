@@ -15,7 +15,7 @@ timeStepper = tombo2
 
 #dt = 6.0e-3
 #advectionSubCyclingSteps = 2
-dt = 6e-3
+dt = 1e-3
 advectionSubCyclingSteps = 0
 
 checkpointControl = steps
@@ -56,7 +56,12 @@ processAscentYamlFrequency = 100
 
 # 0: native one-pass baseline, with no frozen-inner callbacks installed.
 picardEnabled = 1
-# Total passes per timestep, including the native first pass.
+# Maximum passes per timestep, including the native predictor.
 innerIterations = 3
 # max|repeat-first| / max(1,max|first|), checked independently for U,p,s00.
 repeatTolerance = 1e-9
+
+# 0: frozen repeatability control; 1: update full convection from latest iterate.
+picardConvection = 1
+# Stop after a corrector when max scaled U,p,s00 change is below this value.
+picardTolerance = 1e-8
