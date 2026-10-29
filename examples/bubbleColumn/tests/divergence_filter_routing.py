@@ -8,6 +8,8 @@ source = (root / 'bubbleColumnTerms.hpp').read_text()
 body = source.split('inline void updateProperties(double)')[1].split(
     'inline void diagnoseDivergenceCoupling')[0]
 prefix = '''#include <cassert>
+#include <functional>
+std::function<void()> picardAfterScalarPhysics;
 #include <cmath>
 #include <algorithm>
 using dfloat=double; using dlong=long;

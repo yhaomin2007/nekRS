@@ -15,9 +15,11 @@ checkpointInterval = 1000
 scalars = ALPHA, UGX, UGY, UGZ
 
 [FLUID PRESSURE]
+initialGuess = previous
 residualTol = 1e-6
 
 [FLUID VELOCITY]
+initialGuess = previous
 # Boundary IDs: 1=inlet, 2=outlet, 3=wall
 boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
 residualTol = 1e-6
@@ -26,6 +28,7 @@ viscosity = 1.0e-3
 regularization = hpfrt + nModes=1 + scalingCoeff=10.0
 
 [SCALAR ALPHA]
+initialGuess = previous
 boundaryTypeMap = udfDirichlet, zeroNeumann, zeroNeumann
 residualTol = 1e-6
 transportCoeff = 1.0
@@ -34,6 +37,7 @@ diffusionCoeff = 1e-5
 regularization = hpfrt + nModes=1 + scalingCoeff=10.0
 
 [SCALAR UGX]
+initialGuess = previous
 boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
 residualTol = 1e-6
 transportCoeff = 1.0
@@ -41,6 +45,7 @@ diffusionCoeff = 1e-5
 regularization = hpfrt + nModes=1 + scalingCoeff=10.0
 
 [SCALAR UGY]
+initialGuess = previous
 boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
 residualTol = 1e-6
 transportCoeff = 1.0
@@ -48,6 +53,7 @@ diffusionCoeff =1e-5
 regularization = hpfrt + nModes=1 + scalingCoeff=10.0
 
 [SCALAR UGZ]
+initialGuess = previous
 boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
 residualTol = 1e-6
 transportCoeff = 1.0
@@ -115,8 +121,7 @@ bubbleDiameter = 3.0e-3
 driftStressEnabled = 1.0
 virtualMassEnabled = 1.0
 virtualMassCoefficient = 0.5
-# Native scalar convection uses mixture U; its exact contribution is canceled
-# in the RHS for UG only. Alpha native convection is disabled.
+# Native alpha/UG scalar convection is disabled; user gas transport is supplied directly.
 # Alpha uses selected conservative div(alpha*UG); UG uses cubature UG.grad(UG).
 # Scalar explicit terms use EXT1; diffusion and gas drag remain implicit.
 gasTransportMethod = 1
@@ -145,3 +150,18 @@ divergenceRampSteps = 1000
 stabilityMonitorEnabled = 1.0
 stabilityMonitorInterval = 10
 validationOutputInterval = 10
+
+# User-side block Picard. Native UM convection keeps its original EXT treatment.
+# 0: unchanged one-pass path; 1: frozen repeat test; 2: coupled Picard.
+picardMode = 2
+innerIterations = 6
+# 0: stop at an unconverged cap; 1: explicitly allow cap acceptance (logged).
+picardAcceptAtCap = 0
+# Per-field max change / (absolute tolerance + relative tolerance * reference max).
+picardRelativeTolerance = 1e-6
+picardAlphaTolerance = 1e-8
+picardUgTolerance = 1e-7
+picardUmTolerance = 1e-7
+picardPressureTolerance = 1e-3
+picardDivergenceTolerance = 1e-6
+picardRepeatTolerance = 1e-9

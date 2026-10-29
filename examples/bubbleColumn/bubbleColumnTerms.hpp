@@ -5,6 +5,7 @@
 #include <fstream>
 #include <iomanip>
 #include <vector>
+#include <functional>
 
 #include "explicitFilter.hpp"
 #include "opSEM.hpp"
@@ -75,6 +76,12 @@ struct Parameters {
 };
 
 static Parameters p;
+// Optional user-side inner iteration hooks. Unset in the native one-pass path.
+static bool picardSkipSourceHistory = false;
+static std::function<void()> picardPressureGradientUpdate;
+static std::function<void()> picardAfterScalarPhysics;
+static std::function<void()> picardAlphaRhs;
+static occa::memory o_divergenceUrstOverride;
 
 static deviceMemory<dfloat> o_gasTransportFields;
 static deviceMemory<dfloat> o_gasCubatureFields;
@@ -747,7 +754,9 @@ inline void evaluatePointwiseTerms()
   filterGasPressureGradient();
   const auto &o_selectedGradP = o_gradPSpatial;
 
-  if (p.gasPressureGradientFilterEnabled == 0.0) {
+  if (picardPressureGradientUpdate) {
+    picardPressureGradientUpdate();
+  } else if (p.gasPressureGradientFilterEnabled == 0.0) {
     o_gradP.copyFrom(o_selectedGradP, 3 * offset);
   } else {
     // At source assembly, o_P contains the pressure from the most recently
@@ -865,7 +874,8 @@ inline void evaluateNativeAlphaAdvection(deviceMemory<dfloat> &o_advection,
                  nrs->scalar->vFieldOffset,
                  nrs->scalar->vCubatureOffset,
                  nrs->scalar->o_S,
-                 mixture ? nrs->fluid->o_relUrst : nrs->scalar->o_relUrst,
+                 mixture ? (o_divergenceUrstOverride.isInitialized() ? o_divergenceUrstOverride : nrs->fluid->o_relUrst)
+                         : nrs->scalar->o_relUrst,
                  nrs->scalar->o_rho,
                  o_advection);
   } else {
@@ -879,7 +889,8 @@ inline void evaluateNativeAlphaAdvection(deviceMemory<dfloat> &o_advection,
                  nrs->scalar->o_fieldOffsetScan + alphaIndex,
                  nrs->scalar->vFieldOffset,
                  nrs->scalar->o_S,
-                 mixture ? nrs->fluid->o_relUrst : nrs->scalar->o_relUrst,
+                 mixture ? (o_divergenceUrstOverride.isInitialized() ? o_divergenceUrstOverride : nrs->fluid->o_relUrst)
+                         : nrs->scalar->o_relUrst,
                  nrs->scalar->o_rho,
                  o_advection);
   }
@@ -1254,7 +1265,7 @@ inline void addExplicitSources(double)
   subtractScalarDiffusion();
   // Before native HPF/forcing assembly: alphaSource contains only gas flux
   // transport and the configured explicit diffusion subtraction, if enabled.
-  storeAlphaTransportRhs();
+  if (!picardSkipSourceHistory) storeAlphaTransportRhs();
   evaluateMixtureForce();
   const dlong Nlocal = nrs->meshV->Nlocal;
   const dlong offset = nrs->fieldOffset;
@@ -1292,10 +1303,14 @@ inline void buildDivergenceFromAlphaRhs(deviceMemory<dfloat>& o_divergence)
   const dlong alphaOffset = nrs->scalar->fieldOffsetScan[index];
   // Match alpha's actual explicit time treatment, but deliberately exclude
   // native HPF, BDF history loads and any postprocessing/BC time correction.
-  extrapolateAlphaTransportRhsKernel(Nlocal, offset,
-      static_cast<int>(nrs->scalar->o_coeffEXT.size()),
-      nrs->scalar->o_coeffEXT, o_alphaTransportRhsHistory, o_alphaMixtureRhs);
-  assembleDivergence(o_alphaMixtureRhs);
+  if (picardAlphaRhs) {
+    picardAlphaRhs();
+  } else {
+    extrapolateAlphaTransportRhsKernel(Nlocal, offset,
+        static_cast<int>(nrs->scalar->o_coeffEXT.size()),
+        nrs->scalar->o_coeffEXT, o_alphaTransportRhsHistory, o_alphaMixtureRhs);
+    assembleDivergence(o_alphaMixtureRhs);
+  }
   // Use the native weak diffusion stiffness with its negative RHS sign.
   launchKernel("core-weakLaplacianHex3D", nrs->meshV->Nelements, 1,
       o_scalarFieldOffsetScan, nrs->meshV->o_ggeo, nrs->meshV->o_D,
@@ -1361,8 +1376,12 @@ inline void updateProperties(double)
 {
   // Called after all four scalars advance: refresh density, viscosity, and the
   // mixture divergence from alpha transport + numerical diffusion only.
-  postProcessGasFlux();
-  evaluatePointwiseTerms();
+  if (picardAfterScalarPhysics) {
+    picardAfterScalarPhysics();
+  } else {
+    postProcessGasFlux();
+    evaluatePointwiseTerms();
+  }
   // Cache transport/diffusion RHS and full BDF diagnostics. The reduced RHS
   // supplies the pressure target; BDF includes HPF/postprocessing/BC effects.
   const dlong Nlocal = nrs->meshV->Nlocal;

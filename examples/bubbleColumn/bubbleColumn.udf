@@ -1,5 +1,6 @@
 #include "bubbleColumnTerms.hpp"
 #include "bubbleColumnCubature.hpp"
+#include "bubbleColumnPicard.hpp"
 
 #ifdef __okl__
 #include "bubbleColumn.oudf"
@@ -30,6 +31,25 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   if (!interpolationHeader.empty()) {
     platform->kernelInfo["headers"].asArray();
     platform->kernelInfo["headers"] += interpolationHeader;
+  }
+  auto &settings = platform->par;
+  using namespace bubbleColumn::picard;
+  settings->extract("casedata", "picardmode", mode);
+  settings->extract("casedata", "inneriterations", maxPasses);
+  settings->extract("casedata", "picardacceptatcap", acceptAtCap);
+  settings->extract("casedata", "picardrelativetolerance", rtol);
+  settings->extract("casedata", "picardalphatolerance", alphaAtol);
+  settings->extract("casedata", "picardugtolerance", ugAtol);
+  settings->extract("casedata", "picardumtolerance", umAtol);
+  settings->extract("casedata", "picardpressuretolerance", pressureAtol);
+  settings->extract("casedata", "picarddivergencetolerance", divAtol);
+  settings->extract("casedata", "picardrepeattolerance", repeatTol);
+  if (mode) {
+    // Avoid first-pass-only extrapolated guesses/private projection histories.
+    platform->options.setArgs("FLUID PRESSURE INITIAL GUESS", "PREVIOUS");
+    platform->options.setArgs("FLUID VELOCITY INITIAL GUESS", "PREVIOUS");
+    for (int i = 0; i < 4; ++i)
+      platform->options.setArgs("SCALAR" + scalarDigitStr(i) + " INITIAL GUESS", "PREVIOUS");
   }
   auto &p = bubbleColumn::p;
   platform->par->extract("casedata", "rholiquid", p.rhoLiquid);
@@ -138,10 +158,18 @@ void UDF_Setup()
   nrs->scalar->userImplicitLinearTerm = &bubbleColumn::implicitGasDrag;
   nrs->userProperties = &bubbleColumn::updateProperties;
   nrs->userDivergence = &bubbleColumn::updateDivergence;
+  bubbleColumn::picard::configure();
 }
 
 void UDF_ExecuteStep(double time, int tstep)
 {
+  if (bubbleColumn::picard::mode && tstep > 0 && !nrs->timeStepConverged) {
+    bubbleColumn::picard::nextPass(time);
+    return;
+  }
+  // Commit filtered pressure from the accepted iterate using the fixed old-time
+  // filter anchor. No repeated temporal smoothing or postprocessing counters.
+  if (bubbleColumn::picard::corrector) bubbleColumn::evaluatePointwiseTerms();
   // Measure the fluid update before optional emergency clipping.
   bubbleColumn::diagnoseDivergenceCoupling(time, tstep);
   // Use bounded velocity for the remaining diagnostics, output and next step.

@@ -11,6 +11,7 @@ pre=r'''
 #include <string>
 #include <vector>
 using dfloat=double;using dlong=long;
+bool picardSkipSourceHistory=false;
 struct Mem {double *a;
  Mem slice(long off,long){return {a+off};}
  void copyFrom(Mem b,long n,long dst=0,long src=0){std::copy(b.a+src,b.a+src+n,a+dst);}
