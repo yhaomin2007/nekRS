@@ -160,3 +160,16 @@ match `gasInletVelocity` to `gasInitialVelocity`. The log prints the constant
 UG and confirms that its solves are disabled; no UG residuals are expected.
 Set `prescribedGasVelocityEnabled = 0` (default) to restore normal UG solves
 and plume UG initialization.
+
+## Native scalar AVM with user properties
+
+The case explicitly calls `scalar->applyAVM()` at the end of `updateProperties`,
+after restoring baseline scalar diffusion and applying the outlet ramp.
+NekRS skips its automatic AVM call when a user-properties callback is installed.
+Select AVM per scalar using, for example,
+`regularization = avm + noiseThreshold=1e-6`; this is a syntax example, not a
+calibrated threshold. Scalars using HPFRT or no AVM are unaffected by this call.
+The native AVM velocity scale still uses the scalar solver's UM pointer, not
+UG. This change repairs the missing invocation only; it does not adapt that
+velocity scale or diffusion-cancellation settings. Keep `subtractAlphaDiffusion`
+and `subtractUgx/y/zDiffusion` disabled when testing AVM.

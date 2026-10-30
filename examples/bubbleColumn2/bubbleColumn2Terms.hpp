@@ -1090,6 +1090,10 @@ inline void updateProperties(double)
   nrs->fluid->o_prop.slice(0 * nrs->fieldOffset, nrs->fieldOffset).copyFrom(o_muM);
   nrs->fluid->o_prop.slice(1 * nrs->fieldOffset, nrs->fieldOffset)
       .copyFrom(o_rhoPressure);
+  // A userProperties callback bypasses nrs_t's automatic AVM call.
+  // Apply after evaluatePointwiseTerms restores/ramp-scales scalar diffusion.
+  // Native applyAVM is a no-op for scalars without AVM regularization.
+  nrs->scalar->applyAVM();
 }
 
 inline void enforceZeroDivergence(double)
