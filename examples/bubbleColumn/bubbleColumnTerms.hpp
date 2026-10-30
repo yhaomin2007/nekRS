@@ -67,6 +67,7 @@ struct Parameters {
   int divergenceComparisonInterval = 10;
   int divergenceFilterModes = 1;
   dfloat divergenceFilterStrength = 0.25;
+  dfloat divergenceInletThickness = 0.0;
   dfloat divergenceExtrapolationEnabled;
   dfloat divergenceRampEnabled;
   int divergenceRampSteps;
@@ -195,6 +196,7 @@ static occa::kernel postProcessGasFluxKernel;
 static occa::kernel alphaCompressionKernel;
 static occa::kernel extrapolateAlphaTransportRhsKernel;
 static occa::kernel buildRelativeMixtureDivergenceKernel;
+static occa::kernel maskMixtureDivergenceInletKernel;
 static occa::kernel fieldMagnitudeKernel;
 static occa::kernel gasPointwiseCflKernel;
 static occa::kernel divergenceCouplingLagKernel;
@@ -253,6 +255,7 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
         platform->kernelRequests.load(request, "postProcessGasFlux");
     alphaCompressionKernel = platform->kernelRequests.load(request, "alphaCompression");
     buildRelativeMixtureDivergenceKernel = platform->kernelRequests.load(request, "buildRelativeMixtureDivergence");
+    maskMixtureDivergenceInletKernel = platform->kernelRequests.load(request, "maskMixtureDivergenceInlet");
     extrapolateAlphaTransportRhsKernel = platform->kernelRequests.load(request, "extrapolateAlphaTransportRhs");
     maskAlphaCompressionInletKernel =
         platform->kernelRequests.load(request, "maskAlphaCompressionInlet");
@@ -400,6 +403,9 @@ inline void allocate()
              "(minimum=%g, maximum=%g)\n",
              p.alphaMinimum,
              p.alphaMaximum);
+  nekrsCheck(!std::isfinite(p.divergenceInletThickness) || p.divergenceInletThickness < 0.0,
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "%s", "divergenceInletThickness must be finite and nonnegative.\n");
   nekrsCheck(p.divergenceRampEnabled != 0.0 && p.divergenceRampSteps <= 0,
              platform->comm.mpiComm(),
              EXIT_FAILURE,
@@ -1536,6 +1542,12 @@ inline void updateDivergence(double)
         : 0.0;
     const dfloat ramp = 0.5 * (1.0 - std::cos(3.14159265358979323846 * phase));
     platform->linAlg->scale(Nlocal, ramp, nrs->fluid->o_div);
+  }
+  // Final pressure target: no subsequent filtering/assembly may leak values
+  // back into the suppressed inlet layer. Shared nodes have the same z.
+  if (p.divergenceInletThickness > 0.0) {
+    maskMixtureDivergenceInletKernel(Nlocal, p.divergenceInletThickness,
+                                    nrs->meshV->o_z, nrs->fluid->o_div);
   }
 }
 

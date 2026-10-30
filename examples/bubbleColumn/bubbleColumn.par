@@ -132,6 +132,10 @@ alphaTransportForm = 2
 # HPFRT, explicit-filter/clipping rates and boundary BDF overrides are excluded.
 # 0 imposes div(U)=0; 1 enables the reconstructed target (optionally ramped).
 mixtureDivergenceEnabled = 1
+# Force the final pressure target div(UM)=0 for z < this height (mesh units).
+# Inlet is at z=0. Applied after filtering, extrapolation and ramp, every Picard pass.
+# 0 disables the inlet layer; raw divergence exports remain unchanged.
+divergenceInletThickness = 0.01
 # 1: previous (rhoL-rhoG)/rhoM * [alpha transport/diffusion + UM.grad(alpha)].
 # 2: (rhoL-rhoG)/rhoL * [div(alpha*(UM-UG)) + numerical diffusion].
 # Relative flux follows alphaTransportForm and scalar explicit time treatment.

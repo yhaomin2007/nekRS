@@ -129,6 +129,7 @@ void UDF_Setup0(MPI_Comm, setupAide &)
                          p.gasPressureGradientExplicitFilterStrength);
   platform->par->extract("casedata", "alphatransportform", p.alphaTransportForm);
   platform->par->extract("casedata", "divergencefilterstrength", p.divergenceFilterStrength);
+  platform->par->extract("casedata", "divergenceinletthickness", p.divergenceInletThickness);
   platform->par->extract(
       "casedata", "divergenceextrapolationenabled", p.divergenceExtrapolationEnabled);
   platform->par->extract("casedata", "divergencerampenabled", p.divergenceRampEnabled);
