@@ -468,14 +468,23 @@
   }
 }
 
-// Planar inlet at z=0. Apply only to the final mixture pressure target.
+// Planar inlet at z=0: zero below half-thickness, cosine recovery to full
+// target at thickness. Apply only to the final mixture pressure target.
 @kernel void maskMixtureDivergenceInlet(const dlong N,
                                        const dfloat thickness,
                                        @ restrict const dfloat *z,
                                        @ restrict dfloat *divergence)
 {
   for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
-    if (thickness > 0.0 && z[n] < thickness) divergence[n] = 0.0;
+    if (thickness > 0.0 && z[n] < thickness) {
+      if (z[n] <= 0.5 * thickness) {
+        divergence[n] = 0.0;
+      } else {
+        const dfloat phase = 2.0 * z[n] / thickness - 1.0;
+        const dfloat weight = 0.5 * (1.0 - cos(3.14159265358979323846 * phase));
+        divergence[n] *= weight;
+      }
+    }
   }
 }
 

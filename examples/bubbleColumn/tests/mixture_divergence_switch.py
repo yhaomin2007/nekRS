@@ -39,7 +39,7 @@ int main(){
  }
  p.mixtureDivergenceEnabled=1;p.divergenceRampEnabled=0;app.tstep=1;
  updateDivergence(0.);assert(target[0]==values[0] && target[1]==values[1]);
- // Test final masking across EXT startup/history and ramp paths.
+ // Test final spatial weighting across EXT startup/history and temporal ramp paths.
  p.divergenceInletThickness=.01;p.divergenceRampEnabled=1;app.tstep=50;
  for(int ext=0;ext<2;++ext)for(int history=0;history<3;++history){
    p.divergenceExtrapolationEnabled=ext;divergenceHistoryCount=history;
@@ -48,11 +48,27 @@ int main(){
    double expected=(!ext||history==0)?values[1]:history==1?previous[1]:2*previous[1]-older[1];
    assert(std::abs(target[1]-.5*expected)<1e-14); // z=delta is NOT masked
  }
- // Duplicate shared-node coordinates, padding, and disabled kernel.
- double heights[5]={0.,.009,.009,.01,-1.},field[5]={1,2,3,4,99};
- maskMixtureDivergenceInletKernel(4,.01,Mem{heights},Mem{field});
- assert(field[0]==0&&field[1]==0&&field[2]==0&&field[3]==4&&field[4]==99);
- field[0]=7;maskMixtureDivergenceInletKernel(4,0.,Mem{heights},Mem{field});assert(field[0]==7);
+ // Zero plateau, ramp midpoint, duplicate shared nodes, full recovery and padding.
+ double heights[8]={0.,.004,.005,.0075,.0075,.01,.02,-1.};
+ double field[8]={1,2,3,4,4,5,6,99};
+ maskMixtureDivergenceInletKernel(7,.01,Mem{heights},Mem{field});
+ assert(field[0]==0&&field[1]==0&&field[2]==0);
+ assert(std::abs(field[3]-2.)<1e-14&&field[3]==field[4]);
+ assert(field[5]==5&&field[6]==6&&field[7]==99);
+ field[0]=7;maskMixtureDivergenceInletKernel(7,0.,Mem{heights},Mem{field});assert(field[0]==7);
+ // Dense sweep checks the intended shape and endpoint smoothness.
+ double last=-1.;
+ for(int j=0;j<=1000;++j){
+   double h=.01*j/1000.,v=-3.;
+   maskMixtureDivergenceInletKernel(1,.01,Mem{&h},Mem{&v});
+   double weight=v/(-3.);
+   double expected=j<=500?0.:.5*(1-std::cos(3.14159265358979323846*(2*h/.01-1)));
+   assert(std::abs(weight-expected)<1e-14&&weight>=last&&weight>=0&&weight<=1);
+   last=weight;
+ }
+ // Callback composes temporal ramp (0.5) and spatial ramp midpoint (0.5).
+ z[1]=.0075;p.divergenceExtrapolationEnabled=0;updateDivergence(0.);
+ assert(std::abs(target[1]-.25*values[1])<1e-14);
  assert(values[0]==2&&previous[0]==1&&older[0]==.5); // raw/history unaffected
 }
 '''
@@ -60,4 +76,4 @@ with tempfile.TemporaryDirectory() as directory:
     path=Path(directory);(path/'check.cpp').write_text(cpp)
     subprocess.run(['g++','-std=c++17',str(path/'check.cpp'),'-o',str(path/'check')],check=True)
     subprocess.run([str(path/'check')],check=True)
-print('Actual divergence callback: disabled zero target, enabled RHS target, cosine ramp, inlet cutoff after EXT/ramp, exact threshold, shared nodes and padding passed.')
+print('Actual divergence callback: disabled zero target, enabled RHS target, cosine ramp, zero plateau and spatial cosine ramp after EXT/temporal ramp, midpoint, monotonicity, shared nodes and padding passed.')

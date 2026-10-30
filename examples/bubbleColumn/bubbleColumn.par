@@ -132,7 +132,8 @@ alphaTransportForm = 2
 # HPFRT, explicit-filter/clipping rates and boundary BDF overrides are excluded.
 # 0 imposes div(U)=0; 1 enables the reconstructed target (optionally ramped).
 mixtureDivergenceEnabled = 1
-# Force the final pressure target div(UM)=0 for z < this height (mesh units).
+# Spatial inlet layer of thickness delta (mesh units): div(UM)=0 for z<=delta/2.
+# Cosine ramp to the full reconstructed target over delta/2 < z < delta.
 # Inlet is at z=0. Applied after filtering, extrapolation and ramp, every Picard pass.
 # 0 disables the inlet layer; raw divergence exports remain unchanged.
 divergenceInletThickness = 0.01
