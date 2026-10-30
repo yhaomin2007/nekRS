@@ -156,9 +156,12 @@ stabilityMonitorEnabled = 1.0
 stabilityMonitorInterval = 10
 validationOutputInterval = 10
 
-# User-side block Picard. Native UM convection keeps its original EXT treatment.
+# User-side block Picard, with selectable UM convection treatment.
 # 0: unchanged one-pass path; 1: frozen repeat test; 2: coupled Picard.
 picardMode = 2
+# 0: retain native EXT; 1: use full UM.grad(UM) from the preceding Picard iterate.
+# Requires picardMode=2. First pass always uses the native predictor.
+picardUmConvection = 0
 innerIterations = 6
 # 0: stop at an unconverged cap; 1: explicitly allow cap acceptance (logged).
 picardAcceptAtCap = 0

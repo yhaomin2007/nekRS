@@ -1,9 +1,10 @@
 #pragma once
 
 // User-side block Picard. Native fluid ADV/EXT and BDF history are never
-// rebuilt or shifted here. UM convection stays on the native EXT path.
+// rebuilt or shifted here. UM convection can retain EXT or use Picard iterates.
 namespace bubbleColumn { namespace picard {
 static int mode = 0, maxPasses = 6, acceptAtCap = 0;
+static int umConvection = 0;
 static dfloat rtol = 1e-6, alphaAtol = 1e-8, ugAtol = 1e-7;
 static dfloat umAtol = 1e-7, pressureAtol = 1e-3, divAtol = 1e-6, repeatTol = 1e-9;
 static int step = -1, pass = 0, checkpointRequest = 0;
@@ -30,6 +31,7 @@ static deviceMemory<dfloat> baseU, baseS, nativeUserU, nativeUserS;
 static deviceMemory<dfloat> userHistoryU, userHistoryS, extUserU, extUserS;
 static deviceMemory<dfloat> freshUserU, freshUserS, pressureAnchor, oldUl, iterateUrst;
 static deviceMemory<dfloat> scratch, measuredDiv;
+static deviceMemory<dfloat> umAdvection, umAdvector, extUmAdvection;
 
 struct Counters {
   dfloat alphaFilter, alphaClip, q[3], magnitude;
@@ -89,6 +91,45 @@ inline void addLoad(const occa::memory &destination, const occa::memory &source,
   }
 }
 
+// Same element-local normalized operator as native fluid advection. Do not
+// assemble it or overwrite native Urst/ADV; sumMakef uses local Jw weights.
+inline void evaluateUmConvection(const occa::memory &u)
+{
+  auto mesh=nrs->meshV;
+  auto &f=nrs->fluid;
+  umAdvection.resize(f->fieldOffsetSum);
+  umAdvector.resize(f->o_relUrst.size());
+  platform->linAlg->fill(umAdvection.size(),0.0,umAdvection);
+  if(platform->options.compareArgs("ADVECTION TYPE","CUBATURE")) {
+    launchKernel("nrs-UrstCubatureHex3D",mesh->Nelements,0,
+        mesh->o_cubvgeo,mesh->o_cubInterpT,f->fieldOffset,0,
+        f->cubatureOffset,u,u,umAdvector);
+    launchKernel("core-strongAdvectionCubatureVolumeHex3D",mesh->Nelements,
+        mesh->o_vgeo,mesh->o_cubDiffInterpT,mesh->o_cubInterpT,
+        mesh->o_cubProjectT,f->fieldOffset,f->cubatureOffset,u,umAdvector,umAdvection);
+  } else {
+    launchKernel("nrs-UrstHex3D",mesh->Nelements,0,mesh->o_vgeo,
+        f->fieldOffset,0,u,u,umAdvector);
+    launchKernel("core-strongAdvectionVolumeHex3D",mesh->Nelements,
+        mesh->o_vgeo,mesh->o_D,f->fieldOffset,u,umAdvector,umAdvection);
+  }
+}
+inline void prepareUmConvectionHistory()
+{
+  // Reconstruct native EXT(N) from pre-lag physical solution slots, including
+  // restart history. Never shift or access the solver's private ADV history.
+  const dlong stride=nrs->fluid->fieldOffsetSum;
+  extUmAdvection.resize(stride);
+  platform->linAlg->fill(stride,0.0,extUmAdvection);
+  std::vector<dfloat> weights(nrs->fluid->o_coeffEXT.size());
+  nrs->fluid->o_coeffEXT.copyTo(weights.data());
+  for(size_t h=0;h<weights.size();++h) {
+    if(weights[h]==0.0) continue;
+    evaluateUmConvection(startU.slice(h*stride,stride));
+    platform->linAlg->axpby(stride,weights[h],umAdvection,1.0,extUmAdvection);
+  }
+}
+
 inline void pressureFilter()
 {
   const dlong N=nrs->meshV->Nlocal, offset=nrs->fieldOffset;
@@ -120,7 +161,7 @@ inline void buildIterateUrst()
         nrs->fluid->fieldOffset,0,nrs->fluid->o_U,nrs->fluid->o_U,iterateUrst);
   }
   // Only continuity's material-advection diagnostics use this override.
-  // Native fluid convection continues to use the original o_relUrst.
+  // Native o_relUrst is unchanged; optional UM convection has its own buffer.
   o_divergenceUrstOverride=iterateUrst;
 }
 inline void reducedAlphaRhs()
@@ -161,6 +202,12 @@ inline void preFluid(double,int)
   evaluateMixtureForce();
   nrs->fluid->o_JwF.copyFrom(baseU,baseU.size());
   addLoad(nrs->fluid->o_JwF,o_mixtureForce,true,1.0);
+  if(umConvection) {
+    // U is the preceding complete iterate (with this pass's BC reapplied).
+    // Update both factors of U.grad(U); do not extrapolate the new product.
+    evaluateUmConvection(nrs->fluid->o_U);
+    addLoad(nrs->fluid->o_JwF,umAdvection,true,-1.0);
+  }
 }
 
 inline void beginStep(double time)
@@ -173,6 +220,7 @@ inline void beginStep(double time)
   countersStart.take();
   copy(startU,nrs->fluid->o_U,nrs->fluid->o_U.size());
   copy(startS,nrs->scalar->o_S,nrs->scalar->o_S.size());
+  if(umConvection) prepareUmConvectionHistory();
   pressureStart.take(nrs->fluid->o_P);
   uPredictor.take(nrs->fluid->o_Ue); sPredictor.take(nrs->scalar->o_Se);
   nativeUrst.take(nrs->fluid->o_relUrst);
@@ -252,6 +300,8 @@ inline bool convergence(int iteration)
     copy(previousP,firstP,firstP.size());copy(previousDiv,firstDiv,firstDiv.size());
     copy(baseU,rhsU.data,rhsU.data.size());copy(baseS,rhsS.data,rhsS.data.size());
     addLoad(baseU,extUserU,true,-1.0);addLoad(baseS,extUserS,false,-1.0);
+    // Native RHS contains -M*EXT(N). Remove it only for correctors.
+    if(umConvection) addLoad(baseU,extUmAdvection,true,1.0);
   }
   dfloat immutable=std::max(unchanged(uHistory,nrs->fluid->fieldOffsetSum),
                            unchanged(sHistory,nrs->scalar->fieldOffsetSum));
@@ -350,12 +400,18 @@ inline void nextPass(double time)
 
 inline void configure()
 {
-  nekrsCheck(mode<0||mode>2||maxPasses<1||(acceptAtCap!=0&&acceptAtCap!=1),
+  nekrsCheck(mode<0||mode>2||maxPasses<1||(acceptAtCap!=0&&acceptAtCap!=1)
+      ||(umConvection!=0&&umConvection!=1),
       platform->comm.mpiComm(),EXIT_FAILURE,"%s","Invalid bubble Picard mode/pass/cap controls.\n");
+  nekrsCheck(umConvection && mode!=2,platform->comm.mpiComm(),EXIT_FAILURE,
+      "%s","picardUmConvection=1 requires picardMode=2.\n");
   for(dfloat x:{rtol,alphaAtol,ugAtol,umAtol,pressureAtol,divAtol,repeatTol})
     nekrsCheck(!std::isfinite(x)||x<=0,platform->comm.mpiComm(),EXIT_FAILURE,
         "%s","Picard tolerances must be finite and positive.\n");
   if(!mode)return;
+  nekrsCheck(umConvection && !platform->options.compareArgs("EQUATION TYPE","NAVIERSTOKES"),
+      platform->comm.mpiComm(),EXIT_FAILURE,
+      "%s","Picard UM convection requires native Navier-Stokes advection.\n");
   for(const char *key:{"MOVING MESH","LOWMACH","FLUID PRESSURE RHO SPLITTING",
       "CONSTANT FLOW RATE","NEKNEK MULTIRATE TIMESTEPPER"})
     nekrsCheck(platform->options.compareArgs(key,"TRUE"),platform->comm.mpiComm(),EXIT_FAILURE,
@@ -375,5 +431,7 @@ inline void configure()
   nrs->preFluid=&preFluid;
   nrs->userConvergenceCheck=&convergence;
   picardAfterScalarPhysics=&afterScalarPhysics;
+  if(platform->comm.mpiRank()==0)
+    printf("bubblePicard UM convection: %s\n",umConvection?"Picard iterate (correctors)":"native EXT");
 }
 } } // bubbleColumn::picard

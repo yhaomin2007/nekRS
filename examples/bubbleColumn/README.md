@@ -107,6 +107,7 @@ files are changed. The example par selects coupled mode:
 
 ```ini
 picardMode = 2
+picardUmConvection = 0
 innerIterations = 6
 picardAcceptAtCap = 0
 picardRelativeTolerance = 1e-6
@@ -128,7 +129,7 @@ Modes:
 - 2: the native first pass is the predictor. Later passes replace scalar user
   forcing with current-iterate conservative alpha transport, UG material
   convection and gas forces. UM physical force is refreshed after the scalar
-  block. UM native convection and HPF retain their original EXT treatment.
+  block. UM convection follows `picardUmConvection`; HPF retains its original EXT treatment.
 
 One pass (innerIterations=1) performs no corrector. For comparison the example
 sets all initialGuess entries to previous; iteration modes also select these
@@ -137,18 +138,32 @@ may differ by linear-solve error when switching to iteration. Compare matching
 linear settings and choose residual tolerances tight enough to resolve the
 requested Picard changes; outer iterate convergence is not linear accuracy.
 
+`picardUmConvection=0` (default) retains native EXT convection. Set it to `1`
+with `picardMode=2` to recompute the full `N(U)=U.grad(U)` from the preceding
+UM iterate before each corrector fluid solve. Both the advecting and advected
+velocity use that iterate; the new nonlinear product is not extrapolated.
+The native first pass remains unchanged, including when innerIterations=1.
+This uses the native GLL/cubature operator selected by ADVECTION TYPE, with
+UDF-owned advector and output buffers. It never overwrites native ADV/Urst or
+shifts physical histories. Modes 0/1 reject this option rather than silently
+ignoring it. All other existing Picard restrictions still apply.
+
 The scalar base load is `native_JwF - M_LMM*EXT(original_user_scalar_source)`.
 A corrector adds `M_LMM*current_user_scalar_source`, without EXT of the current
 nonlinear product. The fluid base is
 `native_JwF - M_Jw*EXT(original_user_mixture_force)`; it retains BDF history,
-native EXT convection and HPF. preFluid adds `M_Jw*current_mixture_force` using
+native EXT convection and HPF when the option is zero. When enabled, the
+base additionally adds `M_Jw*EXT(N)` to cancel the original negative convection
+load. `EXT(N)` is reconstructed once from the pre-lag physical U history using
+the native operator and fluid EXT coefficients. preFluid then subtracts
+`M_Jw*N(U_iter)` and adds `M_Jw*current_mixture_force` using
 new alpha/UG and the preceding UM iterate. Native sumMakef's fluid load is an
 acceleration load; no extra rho factor is added here. The native pressure and
 velocity solvers use refreshed mixture coefficients, including variable 1/rho
 in pressure. Scalars keep transportCoeff=1 and semi-implicit drag. Native
 predictors (including native predictor-dependent viscous terms) remain fixed.
 This is a user-side nonlinear RHS fixed-point iteration, not an Oseen/Newton
-operator and not a fully implicit treatment of UM convection.
+operator. With `picardUmConvection=1`, UM convection participates in the nonlinear fixed point, but no convection matrix is added to the native linear solves.
 
 Each complete preceding iterate supplies alpha/UG transport, gas pressure,
 drag and liquid acceleration for the next four-scalar block. UG does not use

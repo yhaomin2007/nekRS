@@ -35,6 +35,7 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   auto &settings = platform->par;
   using namespace bubbleColumn::picard;
   settings->extract("casedata", "picardmode", mode);
+  settings->extract("casedata", "picardumconvection", umConvection);
   settings->extract("casedata", "inneriterations", maxPasses);
   settings->extract("casedata", "picardacceptatcap", acceptAtCap);
   settings->extract("casedata", "picardrelativetolerance", rtol);

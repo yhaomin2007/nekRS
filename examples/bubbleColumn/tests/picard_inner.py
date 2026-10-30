@@ -40,13 +40,25 @@ struct LA{
  double innerProd(long n,const occa::memory&a,const occa::memory&b,int){double v=0;for(int i=0;i<n;++i)v+=ptr(a)[i]*ptr(b)[i];return v;}
 }la;
 struct Pool{occa::device*d;occa::memory reserve(size_t n){return d->malloc(n);}template<class T>occa::memory reserve(size_t n){return d->malloc<T>(n);}};
+int umKernelCalls=0;
 struct Kernel{
+ std::string name;
+ static void adv(const occa::memory &u,const occa::memory &advector,occa::memory out){
+   ++umKernelCalls;
+   for(int c=0;c<3;++c)for(int i=0;i<3;++i){int j=c*5+i;
+     assert(ptr(u)[j]==ptr(advector)[j]); // both factors from same iterate
+     ptr(out)[j]=.02*ptr(u)[i]*ptr(u)[j];
+   }
+ }
  template<class...A>void operator()(A...args){auto t=std::make_tuple(args...);
- if constexpr(sizeof...(A)==8)std::get<7>(t).copyFrom(std::get<5>(t),15);
- else if constexpr(sizeof...(A)==10)std::get<9>(t).copyFrom(std::get<7>(t),15);
+ if constexpr(sizeof...(A)==8){assert(name=="nrs-UrstHex3D");std::get<7>(t).copyFrom(std::get<5>(t),15);}
+ else if constexpr(sizeof...(A)==10){
+   if(name=="nrs-UrstCubatureHex3D")std::get<9>(t).copyFrom(std::get<7>(t),15);
+   else{assert(name=="core-strongAdvectionCubatureVolumeHex3D");adv(std::get<7>(t),std::get<8>(t),std::get<9>(t));}
+ }else if constexpr(sizeof...(A)==7){assert(name=="core-strongAdvectionVolumeHex3D");adv(std::get<4>(t),std::get<5>(t),std::get<6>(t));}
  }
 };
-struct Requests{Kernel load(std::string){return {};}};
+struct Requests{Kernel load(std::string name){return {name};}};
 struct Boundary{bool hasOutflow(std::string){return true;}};
 struct App{Boundary*bc;};
 struct Platform{Options options;Comm comm;Timer timer;occa::device device;LA*linAlg=&la;Pool deviceMemoryPool{&device};
@@ -56,7 +68,7 @@ struct Platform{Options options;Comm comm;Timer timer;occa::device device;LA*lin
 #include "deviceMemory.hpp"
 template<class...T>void nekrsCheck(bool bad,int,int,const char*msg,T...args){if(bad){char buffer[1024];std::snprintf(buffer,sizeof(buffer),msg,args...);throw std::runtime_error(buffer);}}
 occa::memory alloc(long n,double base=0){std::vector<double>a(n);for(int i=0;i<n;++i)a[i]=base+.0001*i;return platform->device.malloc<double>(n,a.data());}
-struct Mesh{long Nlocal=3,Nelements=1;double volume=6;occa::memory o_LMM,o_Jw,o_vgeo,o_D,o_cubvgeo,o_cubInterpT;}mesh;
+struct Mesh{long Nlocal=3,Nelements=1;double volume=6;occa::memory o_LMM,o_Jw,o_vgeo,o_D,o_cubvgeo,o_cubInterpT,o_cubDiffInterpT,o_cubProjectT;}mesh;
 struct Fluid{std::function<occa::memory(double,int)>userAdvectionTerm;long fieldOffset=5,fieldOffsetSum=15,cubatureOffset=5;
  occa::memory o_U,o_P,o_Ue,o_relUrst,o_prop,o_JwF,o_EXT,o_ADV,o_coeffBDF,o_coeffEXT,o_coeffEXTP,o_div,o_EToB;
  int lagCount=0,solves=0;void lagSolution();void applyDirichlet(double);void solve(double,int);void updateZeroNormalMask(){}
@@ -155,12 +167,15 @@ void Scalar::solve(double,int){++solves;for(int c=0;c<4;++c)for(int i=0;i<3;++i)
  double lambda=c?bubbleColumn::o_dragLambda.ptr()[i]:0.;
  ptr(o_S)[c*5+i]=ptr(o_JwF)[c*5+i]/(ptr(mesh.o_LMM)[i]*(100*nrs->g0+lambda));}}
 void Fluid::solve(double,int){++solves;
+ double expectedConvection[15]={};
+ for(int c=0;c<3;++c)for(int i=0;i<3;++i)expectedConvection[c*5+i]=.02*ptr(o_U)[i]*ptr(o_U)[c*5+i];
  for(int i=0;i<2;++i)ptr(o_P)[i]=.001*ptr(o_JwF)[i]/ptr(o_prop)[5+i]+.01*ptr(o_div)[i];
  for(int c=0;c<3;++c)for(int i=0;i<3;++i)if(c||i)
  ptr(o_U)[c*5+i]=(ptr(o_JwF)[c*5+i]/ptr(mesh.o_Jw)[i]-.01*ptr(o_P)[i]/ptr(o_prop)[5+i])/(100*nrs->g0);
  if(bubbleColumn::picard::corrector){
  for(int c=0;c<3;++c)for(int i=0;i<3;++i){int j=c*5+i;
  double expected=bubbleColumn::picard::baseU.ptr()[j]+ptr(mesh.o_Jw)[i]*bubbleColumn::o_mixtureForce.ptr()[j];
+ if(bubbleColumn::picard::umConvection)expected-=ptr(mesh.o_Jw)[i]*expectedConvection[j];
  assert(std::abs(ptr(o_JwF)[j]-expected)<1e-12);
  }}
 }
@@ -191,13 +206,15 @@ int main(int argc,char**argv){
  // Scalar and fluid EXT coefficients intentionally have different values.
  s.o_coeffEXT=alloc(3);s.o_coeffBDF=f.o_coeffBDF;nrs->o_coeffBDF=f.o_coeffBDF;
  using namespace bubbleColumn;
- for(auto field:{&o_alphaSource,&o_alphaTransportOnly,&o_alphaRelativeRhs,&o_alphaMixtureRhs,&o_dragLambda})field->resize(5);
- for(auto field:{&o_gradP,&o_gradPSpatial,&o_ulPrevious,&o_liquidAcceleration,&o_mixtureAdvectorUsed,&o_mixtureForce,&o_alphaTransportRhsHistory})field->resize(15);
+ for(auto field:{&o_alphaSource,&o_alphaTransportOnly,&o_alphaRelativeRhs,&o_alphaMixtureRhs,&o_dragLambda}){field->resize(5);std::fill(field->ptr(),field->ptr()+field->size(),0.);}
+ for(auto field:{&o_gradP,&o_gradPSpatial,&o_ulPrevious,&o_liquidAcceleration,&o_mixtureAdvectorUsed,&o_mixtureForce,&o_alphaTransportRhsHistory}){field->resize(15);std::fill(field->ptr(),field->ptr()+field->size(),0.);}
  o_ulPrevious.copyFrom(f.o_U,15);
  nrs->userSource=&addExplicitSources;nrs->postScalar=&postProcessAlpha;nrs->userProperties=&updateProperties;nrs->userDivergence=&updateDivergence;
  if(std::getenv("PICARD_TEST_CUBATURE"))platform->options.m["ADVECTION TYPE"]="CUBATURE";
  if(std::getenv("PICARD_TEST_NO_VM"))p.virtualMassEnabled=0;
  if(std::getenv("PICARD_TEST_NO_PRESSURE_EMA"))p.gasPressureGradientFilterEnabled=0;
+ platform->options.m["EQUATION TYPE"]="NAVIERSTOKES";
+ if(std::getenv("PICARD_TEST_UM_CONVECTION"))picard::umConvection=1;
  picard::mode=mode;picard::maxPasses=passes;picard::acceptAtCap=argc>3?std::stoi(argv[3]):0;picard::configure();
  udf.executeStep=&UDF_ExecuteStep;
  if(argc>4){picard::rtol=1e-30;picard::alphaAtol=picard::ugAtol=picard::umAtol=picard::pressureAtol=picard::divAtol=1e-30;}
@@ -213,18 +230,24 @@ int main(int argc,char**argv){
  for(int c=0;c<3;++c)for(int i=0;i<3;++i){int j=c*5+i;ptr(f.o_ADV)[j]=.02*ptr(f.o_U)[i]*ptr(f.o_U)[j];ptr(f.o_EXT)[j]+=.00003;}
  for(int c=0;c<4;++c)for(int i=0;i<3;++i)ptr(s.o_EXT)[c*5+i]+=.00002;
  double rho[20];std::fill(rho,rho+20,1.);
- double hpfU[45],hpfS[60],expectedBaseU[15]={},expectedBaseS[20]={};
+ double hpfU[45],hpfS[60],expectedBaseU[15]={},expectedBaseS[20]={},noAdv[45]={},noAdvBase[15]={};
  std::fill(hpfU,hpfU+45,.00003);std::fill(hpfS,hpfS+60,.00002);
- // Independent native-forcing reference with ONLY HPF and frozen UM ADV.
+ // Independent native-forcing reference with HPF and native EXT UM ADV.
  fluidSumMakef(3,ptr(mesh.o_Jw),100,ptr(f.o_coeffEXT),ptr(f.o_coeffBDF),5,15,5,rho,ptr(f.o_U),ptr(f.o_ADV),hpfU,expectedBaseU);
  for(int c=0;c<4;++c)scalarSumMakef(3,ptr(mesh.o_LMM),100,ptr(s.o_coeffEXT),ptr(s.o_coeffBDF),5*c,20,5,rho,ptr(s.o_S),ptr(s.o_ADV),hpfS,expectedBaseS);
+ fluidSumMakef(3,ptr(mesh.o_Jw),100,ptr(f.o_coeffEXT),ptr(f.o_coeffBDF),5,15,5,rho,ptr(f.o_U),noAdv,hpfU,noAdvBase);
  fluidSumMakef(3,ptr(mesh.o_Jw),100,ptr(f.o_coeffEXT),ptr(f.o_coeffBDF),5,15,5,rho,ptr(f.o_U),ptr(f.o_ADV),ptr(f.o_EXT),ptr(f.o_JwF));
  for(int c=0;c<4;++c)scalarSumMakef(3,ptr(mesh.o_LMM),100,ptr(s.o_coeffEXT),ptr(s.o_coeffBDF),5*c,20,5,rho,ptr(s.o_S),ptr(s.o_ADV),ptr(s.o_EXT),ptr(s.o_JwF));
  for(int k=3;k>1;--k){f.o_EXT.copyFrom(f.o_EXT,15,(k-1)*15,(k-2)*15);f.o_ADV.copyFrom(f.o_ADV,15,(k-1)*15,(k-2)*15);
  s.o_EXT.copyFrom(s.o_EXT,20,(k-1)*20,(k-2)*20);s.o_ADV.copyFrom(s.o_ADV,20,(k-1)*20,(k-2)*20);}
+ std::vector<double> nativeAdv(ptr(f.o_ADV),ptr(f.o_ADV)+45);
  for(int it=1;;++it){auto check=[&](int n){return nrs->userConvergenceCheck?nrs->userConvergenceCheck(n):true;};
  bool done=nrs->runInnerStep(check,it,true);
- if(mode){for(int c=0;c<3;++c)for(int i=0;i<3;++i)assert(std::abs(picard::baseU.ptr()[5*c+i]-expectedBaseU[5*c+i])<1e-11);
+ assert(std::equal(nativeAdv.begin(),nativeAdv.end(),ptr(f.o_ADV)));
+ if(mode){for(int c=0;c<3;++c)for(int i=0;i<3;++i){int j=c*5+i;double expected=expectedBaseU[j];
+ if(picard::umConvection)expected=noAdvBase[j];
+ assert(std::abs(picard::baseU.ptr()[j]-expected)<1e-11);
+ }
  for(int c=0;c<4;++c)for(int i=0;i<3;++i)assert(std::abs(picard::baseS.ptr()[5*c+i]-expectedBaseS[5*c+i])<1e-11);}
  if(done)break;assert(it<passes);}
  assert(f.lagCount==step&&s.lagCount==step&&nativeAdvectionCalls==step);
@@ -263,6 +286,26 @@ with tempfile.TemporaryDirectory() as d:
   r=subprocess.run([str(path/'check'),'2','12'],cwd=run,capture_output=True,text=True,env=dict(os.environ,**{flag:'1'}))
   assert r.returncode==0,(flag,r.stdout[-2000:],r.stderr)
   print('PASS',flag)
+ # Enabled convection: one-pass predictor unchanged; correctors update convection.
+ for cubature in [False,True]:
+  for passes in [1,12]:
+   run=path/('um_'+str(cubature)+'_'+str(passes));run.mkdir()
+   env=dict(os.environ,PICARD_TEST_UM_CONVECTION='1')
+   if cubature:env['PICARD_TEST_CUBATURE']='1'
+   r=subprocess.run([str(path/'check'),'2',str(passes)],cwd=run,capture_output=True,text=True,env=env)
+   assert r.returncode==0,(cubature,passes,r.stdout[-3000:],r.stderr)
+   state=(run/'result.txt').read_text()
+   if passes==1:assert state==baseline
+   else:
+    assert state!=baseline and state!=(path/'2_12'/'result.txt').read_text()
+    rows=list(csv.DictReader((run/'bubbleColumn_picard.csv').open()))[:-1]
+    assert len([x for x in rows if x['status']=='converged'])==6
+    assert all(float(x['history_max'])==0 for x in rows)
+   print('PASS iterated UM convection:', 'cubature' if cubature else 'GLL', 'passes',passes)
+ for invalidMode in [0,1]:
+  r=subprocess.run([str(path/'check'),str(invalidMode),'2'],cwd=path,capture_output=True,text=True,
+                   env=dict(os.environ,PICARD_TEST_UM_CONVECTION='1'))
+  assert r.returncode!=0 and 'requires picardMode=2' in r.stderr
  for allow in [0,1]:
   run=path/f'cap{allow}';run.mkdir()
   r=subprocess.run([str(path/'check'),'2','2',str(allow),'strict'],cwd=run,capture_output=True,text=True)
