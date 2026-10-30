@@ -114,9 +114,7 @@ static deviceMemory<dfloat> o_alphaSource;
 static deviceMemory<dfloat> o_ugSource;
 static deviceMemory<dfloat> o_dragLambda;
 static deviceMemory<dfloat> o_mixtureDragRate, o_frozenMixtureDragRate;
-static deviceMemory<dfloat> o_mixtureDragDiagonal, o_fluidForcingBeforeDrag;
-static bool fluidForcingSnapshotValid = false;
-static occa::kernel splitMixtureDragKernel;
+static occa::kernel addExplicitMixtureDragKernel;
 static deviceMemory<dfloat> o_mixtureInterphaseAcceleration;
 static deviceMemory<dfloat> o_mixtureForce;
 static deviceMemory<dfloat> o_monitorMagnitude;
@@ -198,7 +196,7 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
   if (platform->options.compareArgs("REGISTER ONLY", "TRUE")) {
     platform->kernelRequests.add(request, fileName, kernelInfo);
   } else {
-    splitMixtureDragKernel = platform->kernelRequests.load(request, "splitMixtureDrag");
+    addExplicitMixtureDragKernel = platform->kernelRequests.load(request, "addExplicitMixtureDrag");
     vectorMagnitudeKernel = platform->kernelRequests.load(request, "vectorMagnitude");
     buildMixtureStressCorrectionKernel = platform->kernelRequests.load(request, "buildMixtureStressCorrection");
     addMixtureStressCorrectionKernel = platform->kernelRequests.load(request, "addMixtureStressCorrection");
@@ -378,9 +376,6 @@ inline void allocate()
   o_dragLambda.resize(offset);
   o_mixtureDragRate.resize(offset);
   o_frozenMixtureDragRate.resize(offset);
-  o_mixtureDragDiagonal.resize(offset);
-  platform->linAlg->fill(offset, 0.0, o_mixtureDragDiagonal);
-  o_fluidForcingBeforeDrag.resize(nrs->fluid->fieldOffsetSum);
   platform->linAlg->fill(offset, 0.0, o_frozenMixtureDragRate);
   o_mixtureInterphaseAcceleration.resize(3 * offset);
   o_mixtureForce.resize(3 * offset);
@@ -1034,49 +1029,17 @@ inline dfloat mixtureDragRampFactor(int step)
       (static_cast<dfloat>(step) - p.mixtureDragRampStartStep) / p.mixtureDragRampSteps));
 }
 
-// Called after all scalar solves/properties and before native pressure/velocity.
-// Keep rhoPressure unchanged. Supply -rhoPressure*D through the native
-// velocity implicit-linear-term callback; pressure retains its native split.
-inline void prepareMixtureDrag(double, int)
-{
-  const dlong Nlocal = nrs->meshV->Nlocal;
-  const dlong offset = nrs->fieldOffset;
-  const dfloat aBdf = nrs->g0 / nrs->dt[0];
-  const dfloat maxRate = platform->linAlg->max(
-      Nlocal, o_frozenMixtureDragRate, platform->comm.mpiComm());
-  nekrsCheck(!std::isfinite(maxRate) || !std::isfinite(aBdf) || aBdf <= 0.0
-                 || maxRate >= aBdf,
-             platform->comm.mpiComm(), EXIT_FAILURE,
-             "Semi-implicit mixture drag requires D*dt/g0 < 1; max(D)=%g g0/dt=%g. Reduce dt.\n",
-             maxRate, aBdf);
-  if (!fluidForcingSnapshotValid) {
-    o_fluidForcingBeforeDrag.copyFrom(nrs->fluid->o_JwF, nrs->fluid->fieldOffsetSum);
-    fluidForcingSnapshotValid = true;
-  }
-  reconstructGasVelocity();
-  splitMixtureDragKernel(Nlocal, offset, nrs->meshV->o_LMM,
-      o_rhoPressure, o_frozenMixtureDragRate, o_ug, o_fluidForcingBeforeDrag,
-      o_mixtureDragDiagonal, nrs->fluid->o_JwF);
-
-}
-
-inline occa::memory implicitMixtureDrag(double)
-{
-  return o_mixtureDragDiagonal;
-}
-
 inline void addExplicitSources(double)
 {
   prepareGasAdvection();
   evaluatePointwiseTerms();
   subtractScalarDiffusion();
   evaluateMixtureForce();
-  // Freeze both the rate and its ramp at source assembly. Later property and
-  // monitor refreshes must not change the drag coefficient within this step.
+  // Retain the source-stage ramped rate for diagnostics. UM drag uses the
+  // same lagged UM/UG as the other explicit fluid sources, before scalar solves.
   o_frozenMixtureDragRate.copyFrom(o_mixtureDragRate, nrs->meshV->Nlocal);
   platform->linAlg->scale(nrs->meshV->Nlocal,
       mixtureDragRampFactor(nrs->tstep), o_frozenMixtureDragRate);
-  fluidForcingSnapshotValid = false;
   captureAlphaAdvectionDiagnostics();
   const dlong Nlocal = nrs->meshV->Nlocal;
   const dlong offset = nrs->fieldOffset;
@@ -1102,6 +1065,9 @@ inline void addExplicitSources(double)
         1.0, nrs->scalar->o_explicitTerms(names[i]));
   }
 
+  // Add the complete acceleration before native fluid EXT/BDF assembly.
+  addExplicitMixtureDragKernel(Nlocal, offset, o_frozenMixtureDragRate,
+      nrs->fluid->o_U, o_ug, o_mixtureForce);
   auto fluidTerms = nrs->fluid->o_explicitTerms();
   for (int i = 0; i < 3; ++i) {
     fluidTerms.copyFrom(o_mixtureForce, Nlocal, i * offset, i * offset);

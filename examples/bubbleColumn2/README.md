@@ -24,11 +24,10 @@ The scalar transport follows method1 at the synchronization commit:
   and alpha: `lambdaG=Ki/(beta*rhoEff)`. The RHS contains `lambdaG*UM_old`;
   the LHS contains `lambdaG*UG_new`. This also retains the reconstructed
   liquid-velocity dependence on UG implicitly.
-- UM drag uses `D*(UM_new-UG_new)`, where
-  `D=rampDrag*alpha*(1/rhoGas-1/rhoLiquid)*Ki/beta`. D is frozen at source
-  assembly, including its cutoff/limiter/ramp, and UG is taken after its scalar
-  solve and postprocessing. Its UM reaction is negative on the LHS. The
-  explicit mixture source contains VM, drift and other forces, with no drag.
+- UM drag uses the fully explicit `D*(UM_old-UG_old)`, where
+  `D=rampDrag*alpha*(1/rhoGas-1/rhoLiquid)*Ki/beta`. The coefficient includes
+  the cutoff/limiter/ramp. The complete drag acceleration is added once to the
+  mixture force during source assembly, before scalar solves and fluid EXT.
 - UG is retained at zero/dilute alpha by default, as in method1.
   `gasVelocityLowAlphaCutoffEnabled=1` enables the optional hard/smooth mask;
   magnitude clipping remains independent. Physical stress uses
@@ -49,41 +48,21 @@ at scaling 10 for alpha/UG, matching method1. Filtering is not a positivity
 limiter and need not preserve gas volume on curved elements. Conservation CSV
 accounts for filter and clipping volume changes separately.
 
-## Direct native implicit mixture drag
+## Explicit mixture drag
 
-Let `aBdf=g0/dt` and `D` be the frozen UM drag rate above. The physical source
-`D*(UM_new-UG_new)` is split as follows:
+UG retains the native scalar implicit reaction and lagged UM load. UM drag
+is restored to a complete explicit source, `D*(UM_old-UG_old)`, alongside VM,
+drift and other mixture forces. Only drag is multiplied by the optional
+step ramp; the VM load is unchanged. Native fluid EXT/BDF assembly supplies
+this same known force to pressure and velocity. There is no UM implicit
+reaction callback or post-scalar `preFluid` drag adjustment, and density,
+pressure mobility and velocity Helmholtz coefficients are unchanged.
 
-```
-velocity LHS addition = -rhoPressure*D
-known acceleration RHS = -D*UG_new
-rhoSolve = rhoPressure
-```
-
-The case registers `fluid->userImplicitLinearTerm` and returns a field holding
-`-rhoPressure*D`. Native NekRS adds it to `aBdf*rhoPressure`, giving the desired
-velocity Helmholtz diagonal `rhoPressure*(aBdf-D)`. The sign is negative for
-our positive D; adding positive rhoPressure*D would change the physical force.
-
-The existing `preFluid` callback forms the known mass-weighted RHS term once,
-after UG solves, from an unmodified native forcing snapshot. It does not divide
-or rescale the forcing, BDF history, explicit VM, viscosity or density. The
-pressure property and pressure operator remain `rhoPressure` and
-`Bp=1/rhoPressure=beta/rhoLiquid+alpha/rhoGas`. The native implicit callback
-is consumed by the velocity solver only; its reaction does not automatically
-enter the pressure Poisson operator. This intentionally retains native
-pressure/velocity splitting, not a fully coupled drag-pressure projection.
-
-The source-stage D includes the drag ramp/cutoff/limiter and is independent of
-property/monitor scratch fields. Repeated fluid stages rebuild the known UG
-term from the saved forcing rather than accumulate it. UM drag is excluded
-from explicit EXT histories; all other explicit loads are preserved.
-
-The case stops if `max(D*dt/g0)>=1`, because the velocity mass/reaction
-coefficient would be nonpositive. This is a velocity-diagonal condition, not
-a change to density or a guarantee of flow stability. There are no
-explicit/implicit drag switches. Existing mixture drag enable/ramp and drag
-cutoff/limiter controls remain available. Core files are unchanged.
+The former `D*dt/g0 < 1` implicit-diagonal abort is removed. Explicit drag
+still imposes timestep/coupling constraints; this restoration does not establish
+long-term stability or resolve the previously observed alpha oscillations.
+The source-stage ramped rate is retained for the `max(Dm*dt/g0)` diagnostic.
+Existing mixture drag enable/ramp and cutoff/limiter controls remain available.
 
 ## Initial and boundary conditions
 
@@ -157,7 +136,7 @@ not solved implicitly together. The pressure mobility remains
 
 Tests under `tests/` exercise actual kernels/native BDF forcing, cubature
 transport and high-degree quadrature, shared-node cancellation, initialization,
-inlet rim agreement, dilute UG, implicit gas drag, semi-implicit mixture drag/ramp and direct native velocity reaction,
+inlet rim agreement, dilute UG, implicit gas drag, explicit mixture drag/ramp and native force assembly,
 VM histories/coefficient pairing, alpha postprocessing and interpolation fallback.
 Full NekRS MPI/GPU build and flow stability require a run on the target system.
 

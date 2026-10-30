@@ -69,7 +69,7 @@ with tempfile.TemporaryDirectory() as tmp:
  subprocess.run([str(p/'check')],check=True)
 # Host/kernel call arity check catches wiring errors beyond serial kernel math.
 eq=(case/'bubbleColumn2Equations.okl').read_text()
-for name in ['buildEquationTerms','initializePlume','updateVirtualMassHistory','postProcessGasVelocity','reconstructGasVelocity','splitMixtureDrag']:
+for name in ['buildEquationTerms','initializePlume','updateVirtualMassHistory','postProcessGasVelocity','reconstructGasVelocity','addExplicitMixtureDrag']:
  kernel=function(eq,'@kernel void '+name+'(')
  count=len(kernel.split(')\n{')[0].split('(',1)[1].split(','))
  source=t+(case/'bubbleColumn2.udf').read_text()

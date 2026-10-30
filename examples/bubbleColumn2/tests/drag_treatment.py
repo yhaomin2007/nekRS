@@ -1,4 +1,4 @@
-"""Semi-implicit gas and mixture drag checks; requires g++."""
+"""Semi-implicit gas drag and explicit mixture drag checks; requires g++."""
 from pathlib import Path
 import re
 import subprocess
@@ -14,7 +14,8 @@ for obsolete in ('frozenDragEnabled', 'mixtureImplicitDragEnabled',
     assert obsolete not in terms + udf
 assert 'userImplicitLinearTerm = &bubbleColumn2::implicitGasDrag' in udf
 assert 'freezeDragHistory' not in terms
-assert 'nrs->preFluid = &bubbleColumn2::prepareMixtureDrag;' in udf
+assert 'nrs->preFluid' not in udf
+assert 'nrs->fluid->userImplicitLinearTerm' not in udf
 okl = (root / 'bubbleColumn2Equations.okl').read_text()
 kernel = okl.split('@kernel void buildEquationTerms')[1].split('@kernel')[0]
 kernel = 'void buildEquationTerms' + kernel

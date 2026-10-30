@@ -1,129 +1,91 @@
-"""Actual preFluid hook and native BDF/pressure/velocity kernels for UM drag."""
+"""Explicit UM drag through actual native EXT/BDF, pressure and velocity RHS kernels."""
 from pathlib import Path
-import re,subprocess,tempfile
-case=Path(__file__).resolve().parents[1];repo=case.parents[1]
+import re
+import subprocess
+import tempfile
+
+case = Path(__file__).resolve().parents[1]
+repo = case.parents[1]
 def serial(s):
- s=s.replace('@kernel ','').replace('@ restrict ','')
- return re.sub(r'; @tile\(p_blockSize, @outer, @inner\)','',s)
-eq=(case/'bubbleColumn2Equations.okl').read_text()
-k=serial('@kernel void splitMixtureDrag('+eq.split('@kernel void splitMixtureDrag(')[1])
-t=(case/'bubbleColumn2Terms.hpp').read_text()
-hook='inline void prepareMixtureDrag'+t.split('inline void prepareMixtureDrag')[1].split('inline void addExplicitSources')[0]
-cpp=r'''
+    s = s.replace('@kernel ', '').replace('@ restrict ', '')
+    return re.sub(r'; @tile\(p_blockSize, @outer, @inner\)', '', s)
+eq = (case / 'bubbleColumn2Equations.okl').read_text()
+k = serial('@kernel void addExplicitMixtureDrag(' + eq.split('@kernel void addExplicitMixtureDrag(')[1])
+cpp = r'''
 #include <algorithm>
 #include <cassert>
 #include <cmath>
-#include <memory>
-#include <stdexcept>
-#include <vector>
 using dfloat=double;using dlong=long;
 #define p_SUBCYCLING 0
 #define p_MovingMesh 0
 #define p_ADVECTION 1
 #define p_nBDF 2
 #define p_nEXT 2
-'''+k
-cpp+=serial((repo/'src/platform/linAlg/kernels/axpbyz.okl').read_text())
-for name in ['sumMakef','pressureRhsHex3D','velocityRhsHex3D']:
- cpp+=serial((repo/f'src/solver/fluid/kernels/{name}.okl').read_text())
-cpp+=r'''
-struct Mem {
- std::shared_ptr<std::vector<double>> v;long start=0;
- Mem(long n=0):v(std::make_shared<std::vector<double>>(n)){}
- double *ptr(){return v->data()+start;}
- Mem slice(long off,long){auto m=*this;m.start+=off;return m;}
- void copyFrom(Mem other,long n){std::copy(other.ptr(),other.ptr()+n,ptr());}
-};
-namespace occa {using memory=Mem;}
-struct Comm{int mpiComm(){return 0;}};
-struct LA{double max(long n,Mem m,int){return *std::max_element(m.ptr(),m.ptr()+n);}} la;
-struct Platform{LA *linAlg=&la;Comm comm;} obj;auto platform=&obj;
-struct Mesh{long Nlocal=3;Mem o_LMM{3};} mesh;
-struct Fluid{long fieldOffsetSum=15;Mem o_JwF{15},o_prop{10};} fluid;
-struct Nrs{Mesh *meshV=&mesh;Fluid *fluid=&::fluid;long fieldOffset=5;double g0=1.5,dt[1]={.01};} app;auto nrs=&app;
-Mem o_frozenMixtureDragRate(3),o_rhoPressure(3),o_mixtureDragDiagonal(3),o_ug(15),o_fluidForcingBeforeDrag(15);
-bool fluidForcingSnapshotValid=false;
-void reconstructGasVelocity(){}
-#define nekrsCheck(test,...) do{if(test)throw std::runtime_error("invalid drag diagonal");}while(0)
-void splitMixtureDragKernel(long n,long o,Mem mass,Mem rho,Mem rate,Mem ug,Mem base,Mem diag,Mem f){
- splitMixtureDrag(n,o,mass.ptr(),rho.ptr(),rate.ptr(),ug.ptr(),base.ptr(),diag.ptr(),f.ptr());
-}
-'''+hook+r'''
+''' + k
+for name in ['sumMakef', 'pressureRhsHex3D', 'velocityRhsHex3D']:
+    cpp += serial((repo / f'src/solver/fluid/kernels/{name}.okl').read_text())
+cpp += r'''
 bool close(double x,double y){return std::abs(x-y)<1e-11*std::max(1.,std::max(std::abs(x),std::abs(y)));}
 int main(){
- const int N=3,O=5;
- double mass[3]={2,5,3},rho[3]={2,4,9};
- double state[30]={},adv[30]={},fu[30]={},bf[15]={},bdf[2]={2,-.5};
- double gp[15]={},gradDiv[15]={},curl[15]={},mu[3]={.1,.2,.3};
- double velrhs[15]={},prhs[15]={},inverseRho[3]={},lambda[3]={};
- for(int extOrder:{1,2}) for(int vm:{0,1}) for(int drag:{0,1}){
-  double ext[2]={extOrder==1?1.:2.,extOrder==1?0.:-1.};
-  fluidForcingSnapshotValid=false;
-  for(int n=0;n<N;++n){
-   mesh.o_LMM.ptr()[n]=mass[n];o_rhoPressure.ptr()[n]=rho[n];
-   fluid.o_prop.ptr()[O+n]=rho[n];
-   o_frozenMixtureDragRate.ptr()[n]=drag*(n==0?0.:(n==1?4.:10.));
-  }
+ const int N=3,O=5,S=15;
+ double mass[N]={2,5,3},rho[N]={2,4,9},rate[N]={0,4,10};
+ double um[S]={},ug[S]={},base[2*S]={},force[2*S]={};
+ double state[2*S]={},adv[2*S]={},bdf[2]={2,-.5};
+ double bf[S]={},gp[S]={},gradDiv[S]={},curl[S]={},mu[N]={.1,.2,.3};
+ double velrhs[S]={},prhs[S]={},inverseRho[N]={};
+ for(int order:{1,2})for(int vm:{0,1})for(double ramp:{0.,.25,1.}){
+  double ext[2]={order==1?1.:2.,order==1?0.:-1.};
+  for(int i=0;i<2*S;++i){base[i]=force[i]=12345.;state[i]=adv[i]=0.;}
+  for(int n=0;n<N;++n)inverseRho[n]=1/rho[n];
   for(int c=0;c<3;++c)for(int n=0;n<N;++n){
-   int id=n+c*O;state[id]=.1+.02*id;state[id+15]=.05+.01*id;
-   adv[id]=.03*id;adv[id+15]=-.07*id;
-   // Nonlinear signed VM history exposes any accidental reweighting.
-   fu[id]=1.+vm*(id+1)*(id+1);fu[id+15]=-.2-vm*(id+2)*(id+2);
-   o_ug.ptr()[id]=.3+.01*id;gp[id]=-.2*(id+1);curl[id]=.05*id;
+   int id=n+c*O;
+   um[id]=.1+.02*id;ug[id]=.3-.01*id;
+   state[id]=.05+.01*id;state[id+S]=-.1+.02*id;
+   adv[id]=.03*id;adv[id+S]=-.07*id;
+   base[id]=1.+vm*(id+1)*(id+1);
+   base[id+S]=-.2-vm*(id+2)*(id+2);
+   force[id]=base[id];force[id+S]=base[id+S];
+   gp[id]=-.2*(id+1);curl[id]=.05*id;
   }
-  sumMakef(N,mass,100.,ext,bdf,O,15,3,rho,state,adv,fu,bf);
-  std::copy(bf,bf+15,fluid.o_JwF.ptr());
-  prepareMixtureDrag(.1,1);
-  for(int n=0;n<N;++n){
-   double D=o_frozenMixtureDragRate.ptr()[n];
-   assert(fluid.o_prop.ptr()[O+n]==rho[n]);
-   inverseRho[n]=1/fluid.o_prop.ptr()[O+n];
-   // Dynamic BDF diagonal is exactly the original diagonal minus rho*D.
-   assert(close(implicitMixtureDrag(.1).ptr()[n],-rho[n]*D));
-  }
-  axpbyz(N,150.,fluid.o_prop.ptr()+O,1.,implicitMixtureDrag(.1).ptr(),lambda);
-  for(int n=0;n<N;++n)assert(close(lambda[n],rho[n]*(150.-o_frozenMixtureDragRate.ptr()[n])));
-  velocityRhsHex3D(N,O,fluid.o_prop.ptr()+O,fluid.o_JwF.ptr(),gradDiv,gp,velrhs);
-  pressureRhsHex3D(N,O,mu,inverseRho,fluid.o_JwF.ptr(),curl,gradDiv,prhs);
+  double ramped[N];for(int n=0;n<N;++n)ramped[n]=ramp*rate[n];
+  addExplicitMixtureDrag(N,O,ramped,um,ug,force);
+  // Previous explicit force history has its own drag and must not be overwritten.
+  double oldUm[S]={},oldUg[S]={},oldRate[N]={2,3,5};
+  for(int id=0;id<S;++id){oldUm[id]=-.1+.01*id;oldUg[id]=.2;}
+  addExplicitMixtureDrag(N,O,oldRate,oldUm,oldUg,force+S);
+  sumMakef(N,mass,100.,ext,bdf,O,S,3,rho,state,adv,force,bf);
+  velocityRhsHex3D(N,O,rho,bf,gradDiv,gp,velrhs);
+  pressureRhsHex3D(N,O,mu,inverseRho,bf,curl,gradDiv,prhs);
   for(int c=0;c<3;++c)for(int n=0;n<N;++n){
-   int id=n+c*O;double D=o_frozenMixtureDragRate.ptr()[n];
-   double rhs=bf[id]-mass[n]*D*o_ug.ptr()[id];
-   assert(close(velrhs[id],rho[n]*rhs+gp[id]));
-   assert(close(prhs[id],rhs-mu[n]/rho[n]*curl[id]));
-   double expected=rhs;
-   assert(close(fluid.o_JwF.ptr()[id],expected));
-   if(!drag)assert(fluid.o_JwF.ptr()[id]==bf[id]);
+   int id=n+c*O;
+   double current=base[id]+ramped[n]*(um[id]-ug[id]);
+   double previous=base[id+S]+oldRate[n]*(oldUm[id]-oldUg[id]);
+   assert(close(force[id],current));assert(close(force[id+S],previous));
+   double expected=mass[n]*(ext[0]*(current-adv[id])+ext[1]*(previous-adv[id+S])
+                  +100.*(bdf[0]*state[id]+bdf[1]*state[id+S]));
+   assert(close(bf[id],expected));
+   assert(close(velrhs[id],rho[n]*expected+gp[id]));
+   assert(close(prhs[id],expected-mu[n]/rho[n]*curl[id]));
   }
-  // Repeated preFluid calls must use the unmodified forcing snapshot.
-  double first[15];std::copy(fluid.o_JwF.ptr(),fluid.o_JwF.ptr()+15,first);
-  prepareMixtureDrag(.1,1);
-  for(int i=0;i<15;++i)assert(fluid.o_JwF.ptr()[i]==first[i]);
-  o_ug.ptr()[1]+=.1;prepareMixtureDrag(.1,1);
-  double D=o_frozenMixtureDragRate.ptr()[1];
-  assert(close(fluid.o_JwF.ptr()[1],bf[1]-mass[1]*D*o_ug.ptr()[1]));
- }
- for(double invalid:{150.,200.}){
-  o_frozenMixtureDragRate.ptr()[1]=invalid;
-  bool rejected=false;try{prepareMixtureDrag(.1,1);}catch(const std::runtime_error&){rejected=true;}
-  assert(rejected);
+  for(int c=0;c<3;++c)for(int n=N;n<O;++n){
+   assert(force[n+c*O]==12345.);assert(force[n+c*O+S]==12345.);
+  }
  }
 }
 '''
 with tempfile.TemporaryDirectory() as tmp:
- p=Path(tmp);(p/'check.cpp').write_text(cpp)
- subprocess.run(['g++','-std=c++17','-Wall','-Wextra','-Werror','-Wno-unused-parameter','-Wno-unknown-pragmas',str(p/'check.cpp'),'-o',str(p/'check')],check=True)
- subprocess.run([str(p/'check')],check=True)
-# The source stage must exclude UM drag from EXT and freeze its own rate.
-forcing=t.split('inline void addExplicitSources(double)')[1].split('inline occa::memory implicitGasDrag')[0]
-assert 'o_frozenMixtureDragRate.copyFrom(o_mixtureDragRate' in forcing
-assert 'fluidForcingSnapshotValid = false;' in forcing
-assert 'freezeDragHistory' not in t
-order=(repo/'src/app/nrs/nrs.cpp').read_text().split('bool nrs_t::runInnerStep')[1]
-assert order.index('scalar->solve(')<order.index('evaluateProperties(timeNew)')<order.index('preFluid(timeNew, tstep)')<order.index('fluid->solve(')
-udf=(case/'bubbleColumn2.udf').read_text()
-assert 'nrs->fluid->userImplicitLinearTerm = &bubbleColumn2::implicitMixtureDrag;' in udf
-assert 'o_prop' not in hook and 'chi' not in hook
-core=(repo/'src/solver/fluid/fluidSolver.cpp').read_text()
-assert 'userImplicitLinearTerm' not in core.split('void fluidSolver_t::solvePressure')[1].split('void fluidSolver_t::solveVelocity')[0]
-assert 'userImplicitLinearTerm(time)' in core.split('void fluidSolver_t::solveVelocity')[1]
-print('Actual preFluid/native BDF+pressure+velocity: reaction diagonal, full VM/EXT/BDF forcing preserved, variable rho/mass, unchanged density/pressure mobility, native callback, repeated stages, updated UG and diagonal guard passed.')
+    p = Path(tmp)
+    (p / 'check.cpp').write_text(cpp)
+    subprocess.run(['g++', '-std=c++17', '-Wall', '-Wextra', '-Werror',
+                    '-Wno-unused-parameter', '-Wno-unknown-pragmas',
+                    str(p / 'check.cpp'), '-o', str(p / 'check')], check=True)
+    subprocess.run([str(p / 'check')], check=True)
+t = (case / 'bubbleColumn2Terms.hpp').read_text()
+u = (case / 'bubbleColumn2.udf').read_text()
+assert 'nrs->preFluid' not in u and 'nrs->fluid->userImplicitLinearTerm' not in u
+assert 'nrs->scalar->userImplicitLinearTerm = &bubbleColumn2::implicitGasDrag;' in u
+assert 'prepareMixtureDrag' not in t and 'implicitMixtureDrag' not in t
+source = t.split('inline void addExplicitSources(double)')[1].split('inline occa::memory implicitGasDrag')[0]
+assert source.index('evaluateMixtureForce();') < source.index('addExplicitMixtureDragKernel(') < source.index('fluidTerms.copyFrom(')
+assert 'nrs->fluid->o_U, o_ug, o_mixtureForce' in source
+print('Explicit UM drag: signed force, ramp/off, VM preservation, padded vectors, EXT1/EXT2 histories and identical known load in native pressure/velocity RHS passed.')

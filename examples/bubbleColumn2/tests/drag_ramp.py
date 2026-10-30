@@ -3,7 +3,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 s=(Path(__file__).resolve().parents[1]/'bubbleColumn2Terms.hpp').read_text()
-helper='inline dfloat mixtureDragRampFactor'+s.split('inline dfloat mixtureDragRampFactor')[1].split('// Called after all scalar solves')[0]
+helper='inline dfloat mixtureDragRampFactor'+s.split('inline dfloat mixtureDragRampFactor')[1].split('inline void addExplicitSources')[0]
 cpp=r'''
 #include <vector>
 #include <memory>
@@ -29,7 +29,7 @@ p.mixtureDragRampEnabled=1;
 for(int step: {0,2,3,4,6,10}) {
  double factor=std::max(0.,std::min(1.,double(step-2)/4));
  assert(mixtureDragRampFactor(step)==factor);
- // Freeze/ramp the rate once, for both the UM diagonal and known UG term.
+ // Ramp the complete explicit acceleration, including both velocities.
  double D=8*mixtureDragRampFactor(step),um=.2,ug=.3;
  assert(std::abs(D*um-D*ug-factor*8*(um-ug))<1e-12);
 }

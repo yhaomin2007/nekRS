@@ -324,8 +324,8 @@
                                       * virtualMassCoefficient
                                       * rhoLiquid / rhoGas;
     const dfloat volumeWeight = a * (1.0 - rhoGas / rhoLiquid);
-    // Mixture drag is added once, after UG solves, by the preFluid reaction
-    // normalization. Only virtual mass remains in this explicit source.
+    // Mixture drag is added to the complete explicit mixture force at source
+    // assembly. Keep VM separate here so the drag ramp scales only drag.
     mixtureInterphaseAcceleration[n + 0 * offset] =
         volumeWeight
         * gasVirtualMassScale
@@ -497,23 +497,18 @@
   }
 }
 
-// Direct native velocity reaction: source D*(UM-UG) corresponds to
-// -rhoPressure*D on the velocity LHS and -D*UG on the acceleration RHS.
-// Keep the original rhoPressure and its native pressure operator unchanged.
-@kernel void splitMixtureDrag(const dlong N, const dlong offset,
-                              @ restrict const dfloat *mass,
-                              @ restrict const dfloat *rhoPressure,
-                              @ restrict const dfloat *rate,
-                              @ restrict const dfloat *ug,
-                              @ restrict const dfloat *baseForcing,
-                              @ restrict dfloat *diagonal,
-                              @ restrict dfloat *forcing)
+// Add the full lagged UM drag acceleration before native fluid EXT assembly.
+// The source is positive D*(UM-UG); UG retains its separate implicit reaction.
+@kernel void addExplicitMixtureDrag(const dlong N, const dlong offset,
+                                    @ restrict const dfloat *rate,
+                                    @ restrict const dfloat *um,
+                                    @ restrict const dfloat *ug,
+                                    @ restrict dfloat *force)
 {
   for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
-    diagonal[n] = -rhoPressure[n] * rate[n];
     for (int i = 0; i < 3; ++i) {
       const dlong id = n + i * offset;
-      forcing[id] = baseForcing[id] - mass[n] * rate[n] * ug[id];
+      force[id] += rate[n] * (um[id] - ug[id]);
     }
   }
 }
