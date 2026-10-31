@@ -144,3 +144,32 @@ present baseline and outlet ramp are fixed in time; evolving user diffusivity
 would require a different integration. This callback change leaves the restored
 semi-implicit UG drag, explicit UM drag and `freezeDragHistory` unchanged.
 Use `virtualMassEnabled = 0` for the current no-VM stability baseline.
+
+## Near inlet gas pressure source ramp
+
+`gasPressureInletRegionEnabled = 1` attenuates all components of the lagged
+pressure-gradient force in UG throughout a coordinate-defined inlet layer.
+It is independent of `gasPressureInletMaskEnabled`, which masks inlet surface
+nodes only. The new region option defaults to zero to preserve the baseline.
+For the current inlet at z=0, one example is:
+
+```ini
+gasPressureInletMaskEnabled = 0
+gasPressureInletRegionEnabled = 1
+gasPressureInletZeroEndZ = 0.01
+gasPressureInletRampEndZ = 0.02
+```
+
+The coordinates are absolute mesh z coordinates. The UG pressure term is
+`-w(z)*gradP_used/rhoEff`. The weight is zero at/below zeroEndZ, one at/above
+rampEndZ, and `t*t*(3-2*t)` in between, where
+`t=(z-zeroEndZ)/(rampEndZ-zeroEndZ)`. The ramp has zero endpoint slopes.
+Enabled regions require finite rampEndZ greater than zeroEndZ.
+
+This is a diagnostic modification of the gas momentum equation. It does not
+change the native UM pressure solve, density/mobility, drag, gas advection,
+alpha transport, AVM, or boundary conditions. Masks multiply when both options
+are enabled. Raw strong/weak pressure gradients and the temporal filter history
+remain unattenuated; repeated callbacks cannot compound the spatial weight.
+The pressure acceleration monitor uses the resulting attenuated UG gradient.
+No claim of improved long-time stability follows from this option alone.

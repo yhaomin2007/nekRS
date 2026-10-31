@@ -43,6 +43,9 @@ struct Parameters {
   dfloat gasMomentumFullyActive;
   dfloat gasPressureEnabled;
   int gasPressureInletMaskEnabled = 0;
+  int gasPressureInletRegionEnabled = 0;
+  dfloat gasPressureInletZeroEndZ = 0.01;
+  dfloat gasPressureInletRampEndZ = 0.02;
   int gasPressureGradientMethod = 0;
   dfloat gasPressureGradientFilterEnabled = 0.0;
   dfloat gasPressureGradientFilterWeight = 0.2;
@@ -94,6 +97,7 @@ static deviceMemory<dfloat> o_virtualMassRelativeAcceleration, o_liquidAccelerat
 static deviceMemory<dfloat> o_qg;
 static deviceMemory<dfloat> o_gradUg;
 static deviceMemory<dfloat> o_gradP;
+static deviceMemory<dfloat> o_gradPFilterHistory, o_gasPressureRegionWeight;
 static deviceMemory<dfloat> o_gradPStrong, o_gradPWeak;
 static deviceMemory<dfloat> o_gasPressureInletMask, o_inletVelocityWeight;
 static bool pressureGradientFilterInitialized = false;
@@ -222,6 +226,16 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
   }
 }
 
+// Fixed-mesh UG pressure-source weight. z coordinates are in mesh units.
+inline dfloat gasPressureInletRampWeight(dfloat z)
+{
+  if (!p.gasPressureInletRegionEnabled) return 1.0;
+  dfloat t = (z - p.gasPressureInletZeroEndZ)
+      / (p.gasPressureInletRampEndZ - p.gasPressureInletZeroEndZ);
+  t = std::max(dfloat(0), std::min(dfloat(1), t));
+  return t * t * (3.0 - 2.0 * t);
+}
+
 inline void allocate()
 {
   const dlong offset = nrs->fieldOffset;
@@ -236,6 +250,13 @@ inline void allocate()
                  || p.gasPressureGradientMethod < 0 || p.gasPressureGradientMethod > 1,
              platform->comm.mpiComm(), EXIT_FAILURE,
              "%s", "Gas pressure mask/gradient method must be 0 or 1.\n");
+  nekrsCheck(p.gasPressureInletRegionEnabled < 0 || p.gasPressureInletRegionEnabled > 1
+                 || (p.gasPressureInletRegionEnabled
+                     && (!std::isfinite(p.gasPressureInletZeroEndZ)
+                         || !std::isfinite(p.gasPressureInletRampEndZ)
+                         || p.gasPressureInletRampEndZ <= p.gasPressureInletZeroEndZ)),
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "%s", "Gas pressure inlet region requires enabled=0/1 and finite rampEndZ > zeroEndZ.\n");
   nekrsCheck(!std::isfinite(p.gasPressureGradientFilterWeight)
                  || p.gasPressureGradientFilterWeight <= 0 || p.gasPressureGradientFilterWeight > 1,
              platform->comm.mpiComm(), EXIT_FAILURE,
@@ -317,6 +338,7 @@ inline void allocate()
   o_qg.resize(3 * offset);
   o_gradUg.resize(9 * offset);
   o_gradP.resize(3 * offset);
+  o_gradPFilterHistory.resize(3 * offset);
   {
     auto mesh = nrs->meshV;
     std::vector<dfloat> weight(offset, 1.0);
@@ -358,6 +380,14 @@ inline void allocate()
   }
   o_gradPStrong.resize(3 * offset);
   o_gradPWeak.resize(3 * offset);
+  if (p.gasPressureInletRegionEnabled) {
+    const dlong Nlocal = nrs->meshV->Nlocal;
+    std::vector<dfloat> z(Nlocal), weight(offset, 1.0);
+    nrs->meshV->o_z.copyTo(z.data(), Nlocal);
+    for (dlong n = 0; n < Nlocal; ++n) weight[n] = gasPressureInletRampWeight(z[n]);
+    o_gasPressureRegionWeight.resize(offset);
+    o_gasPressureRegionWeight.copyFrom(weight.data(), offset);
+  }
   o_rhoM.resize(offset);
   o_rhoPressure.resize(offset);
   o_muM.resize(offset);
@@ -497,6 +527,52 @@ inline void prepareGasAdvection()
   o_gasAdvector.copyFrom(o_ug, 3 * offset);
 }
 
+// Form the UG-only pressure source from the selected lagged gradient.
+// Spatial attenuation never changes raw gradients or temporal filter history.
+inline void prepareGasPressureForcing()
+{
+  auto mesh = nrs->meshV;
+  const dlong offset = nrs->fieldOffset;
+  const auto &o_selectedGradP =
+      (p.gasPressureGradientMethod == 1) ? o_gradPWeak : o_gradPStrong;
+
+  if (p.gasPressureGradientFilterEnabled == 0.0) {
+    o_gradP.copyFrom(o_selectedGradP, 3 * offset);
+  } else {
+    // At source assembly, o_P contains the pressure from the most recently
+    // completed physical step. Advance the exponential history only once per
+    // timestep because this routine can be called more than once in that step.
+    const int tstep = nrs->tstep;
+    if (!pressureGradientFilterInitialized) {
+      o_gradPFilterHistory.copyFrom(o_selectedGradP, 3 * offset);
+      pressureGradientFilterInitialized = true;
+      pressureGradientFilterStep = tstep;
+    } else if (tstep != pressureGradientFilterStep) {
+      for (int i = 0; i < 3; ++i) {
+        const auto laggedGradient =
+            o_selectedGradP.slice(i * offset, offset);
+        auto filteredGradient = o_gradPFilterHistory.slice(i * offset, offset);
+        platform->linAlg->axpby(mesh->Nlocal,
+                                p.gasPressureGradientFilterWeight,
+                                laggedGradient,
+                                1.0 - p.gasPressureGradientFilterWeight,
+                                filteredGradient);
+      }
+      pressureGradientFilterStep = tstep;
+    }
+    o_gradP.copyFrom(o_gradPFilterHistory, 3 * offset);
+  }
+
+  if (p.gasPressureInletMaskEnabled) {
+    platform->linAlg->axmyMany(mesh->Nlocal, 3, offset, 0, 1.0,
+                               o_gasPressureInletMask, o_gradP);
+  }
+  if (p.gasPressureInletRegionEnabled) {
+    platform->linAlg->axmyMany(mesh->Nlocal, 3, offset, 0, 1.0,
+                               o_gasPressureRegionWeight, o_gradP);
+  }
+}
+
 inline void evaluatePointwiseTerms()
 {
   auto mesh = nrs->meshV;
@@ -542,40 +618,7 @@ inline void evaluatePointwiseTerms()
   platform->linAlg->axmyMany(
       mesh->Nlocal, mesh->dim, offset, 0, -1.0, mesh->o_invLMM, o_gradPWeak);
 
-  const auto &o_selectedGradP =
-      (p.gasPressureGradientMethod == 1) ? o_gradPWeak : o_gradPStrong;
-
-  if (p.gasPressureGradientFilterEnabled == 0.0) {
-    o_gradP.copyFrom(o_selectedGradP, 3 * offset);
-  } else {
-    // At source assembly, o_P contains the pressure from the most recently
-    // completed physical step. Advance the exponential history only once per
-    // timestep because this routine can be called more than once in that step.
-    const int tstep = nrs->tstep;
-    if (!pressureGradientFilterInitialized) {
-      o_gradP.copyFrom(o_selectedGradP, 3 * offset);
-      pressureGradientFilterInitialized = true;
-      pressureGradientFilterStep = tstep;
-    } else if (tstep != pressureGradientFilterStep) {
-      for (int i = 0; i < 3; ++i) {
-        const auto laggedGradient =
-            o_selectedGradP.slice(i * offset, offset);
-        auto filteredGradient = o_gradP.slice(i * offset, offset);
-        platform->linAlg->axpby(mesh->Nlocal,
-                                p.gasPressureGradientFilterWeight,
-                                laggedGradient,
-                                1.0 - p.gasPressureGradientFilterWeight,
-                                filteredGradient);
-      }
-      pressureGradientFilterStep = tstep;
-    }
-  }
-
-  if (p.gasPressureInletMaskEnabled) {
-    platform->linAlg->axmyMany(mesh->Nlocal, 3, offset, 0, 1.0,
-                               o_gasPressureInletMask, o_gradP);
-  }
-
+  prepareGasPressureForcing();
 
   buildEquationTermsKernel(mesh->Nlocal,
                            offset,

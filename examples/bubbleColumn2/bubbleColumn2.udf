@@ -85,6 +85,9 @@ void UDF_Setup0(MPI_Comm, setupAide &)
       "casedata", "gasmomentumfullyactive", p.gasMomentumFullyActive);
   platform->par->extract("casedata", "gaspressureenabled", p.gasPressureEnabled);
   platform->par->extract("casedata", "gaspressureinletmaskenabled", p.gasPressureInletMaskEnabled);
+  platform->par->extract("casedata", "gaspressureinletregionenabled", p.gasPressureInletRegionEnabled);
+  platform->par->extract("casedata", "gaspressureinletzeroendz", p.gasPressureInletZeroEndZ);
+  platform->par->extract("casedata", "gaspressureinletrampendz", p.gasPressureInletRampEndZ);
   platform->par->extract(
       "casedata", "gaspressuregradientmethod", p.gasPressureGradientMethod);
   platform->par->extract("casedata",
@@ -181,6 +184,9 @@ void UDF_Setup()
     printf("bubbleColumn2 mixture drag ramp: startStep=%d rampSteps=%d; "
            "linear step ramp; explicit mixture drag excluded from EXT extrapolation\n",
            bubbleColumn2::p.mixtureDragRampStartStep, bubbleColumn2::p.mixtureDragRampSteps);
+  if (platform->comm.mpiRank() == 0 && bubbleColumn2::p.gasPressureInletRegionEnabled)
+    printf("bubbleColumn2 UG pressure inlet region: zero for z<=%g; smoothstep recovery to full pressure at z=%g; UM pressure unchanged\n",
+           bubbleColumn2::p.gasPressureInletZeroEndZ, bubbleColumn2::p.gasPressureInletRampEndZ);
   nrs->postScalar = &bubbleColumn2::postProcessAlpha;
   nrs->scalar->userImplicitLinearTerm = &bubbleColumn2::implicitGasDrag;
   nrs->userProperties = &bubbleColumn2::updateProperties;
