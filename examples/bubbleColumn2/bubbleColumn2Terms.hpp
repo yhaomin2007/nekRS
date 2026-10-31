@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "opSEM.hpp"
+#include "avm.hpp"
 #include "explicitFilter.hpp"
 
 namespace bubbleColumn2
@@ -1148,6 +1149,39 @@ inline occa::memory implicitGasDrag(double, int scalarIndex)
   return o_NULL;
 }
 
+// Add native AVM using the actual gas transport speed. Baseline diffusion
+// (including the outlet ramp) has just been rebuilt by evaluatePointwiseTerms.
+inline void applyGasVelocityAVM()
+{
+  const char *names[4] = {"alpha", "ugx", "ugy", "ugz"};
+  for (const auto name : names) {
+    const auto sid = scalarDigitStr(nrs->scalar->nameToIndex.at(name));
+    const std::string prefix = "SCALAR" + sid + " ";
+    if (!platform->options.compareArgs(prefix + "REGULARIZATION METHOD",
+                                       "AVM_AVERAGED_MODAL_DECAY")) continue;
+    nekrsCheck(nrs->meshV->N < 5, platform->comm.mpiComm(), EXIT_FAILURE,
+               "%s", "AVM requires polynomialOrder >= 5!\n");
+    dfloat width = 1.0, decay = 2.0, scaling = 1.0, noise = 0.0;
+    platform->options.getArgs(prefix + "REGULARIZATION AVM ACTIVATION WIDTH", width);
+    platform->options.getArgs(prefix + "REGULARIZATION AVM DECAY THRESHOLD", decay);
+    platform->options.getArgs(prefix + "REGULARIZATION AVM SCALING COEFF", scaling);
+    platform->options.getArgs(prefix + "REGULARIZATION AVM ABSOLUTE TOL", noise);
+    const bool c0 = platform->options.compareArgs(prefix + "REGULARIZATION AVM C0", "TRUE");
+    // Native scalar setup initializes avm::setup when any scalar selects AVM.
+    auto o_eps = avm::viscosity(nrs->fieldOffset, o_ug,
+        nrs->scalar->o_solution(name), noise, scaling, decay, width, c0);
+    auto o_diff = nrs->scalar->o_diffusionCoeff(name);
+    platform->linAlg->axpby(nrs->meshV->Nlocal, 1.0, o_eps, 1.0, o_diff);
+    if (platform->verbose()) {
+      auto range = platform->linAlg->minMax(nrs->meshV->Nlocal,
+          {o_eps}, platform->comm.mpiComm());
+      if (platform->comm.mpiRank() == 0)
+        printf("bubbleColumn2 AVM scalar=%s velocity=UG min/max(nuAVM)=(%.8e,%.8e)\n",
+               name, range[0].first, range[0].second);
+    }
+  }
+}
+
 inline void updateProperties(double)
 {
   // Called after all four scalars advance. Refresh the effective viscosity and
@@ -1158,10 +1192,8 @@ inline void updateProperties(double)
   nrs->fluid->o_prop.slice(0 * nrs->fieldOffset, nrs->fieldOffset).copyFrom(o_muM);
   nrs->fluid->o_prop.slice(1 * nrs->fieldOffset, nrs->fieldOffset)
       .copyFrom(o_rhoPressure);
-  // userProperties bypasses nrs_t's automatic scalar AVM invocation.
-  // Apply after baseline diffusion/outlet ramp updates, once per callback.
-  // Native AVM selects only scalars configured with regularization = avm.
-  nrs->scalar->applyAVM();
+  // userProperties owns AVM application; add to the current baseline once.
+  applyGasVelocityAVM();
 }
 
 inline void enforceZeroDivergence(double)

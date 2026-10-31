@@ -36,6 +36,7 @@ void evaluatePointwiseTerms(){
  for(int i=0;i<4;++i)diffusion[i]=baseline[i];
  stage=3;
 }
+void applyGasVelocityAVM(){scalar.applyAVM();}
 ''' + hook + r'''
 int main(){
  for(int mask=0;mask<16;++mask){

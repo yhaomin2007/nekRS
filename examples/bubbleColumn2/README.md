@@ -122,7 +122,7 @@ Full NekRS MPI/GPU build and flow stability require a run on the target system.
 
 ## AVM with the method2 property callback
 
-`updateProperties` calls native `scalar->applyAVM()` after restoring scalar
+`updateProperties` calls `applyGasVelocityAVM()` after restoring scalar
 baseline diffusion and applying the spatial outlet ramp. This replaces the
 automatic AVM invocation skipped by NekRS when `userProperties` is registered.
 Scalars using HPFRT or `regularization = none` receive no AVM contribution.
@@ -134,14 +134,17 @@ regularization = avm + noiseThreshold=1e-6
 ```
 
 This threshold is an uncalibrated starting value. AVM requires polynomialOrder
-at least 5. Its native velocity scale remains UM; it does not use UG here.
+at least 5. The native sensor and viscosity algorithm use UG for their velocity scale.
+Each enabled scalar retains its own modal sensor and native AVM parameters.
 Keep `subtractAlphaDiffusion`, `subtractUgxDiffusion`, `subtractUgyDiffusion`
 and `subtractUgzDiffusion` at zero when testing AVM. The user alpha explicit
 filter remains independent and retains its configured strength.
 
-The native helper caches the diffusion baseline on its first invocation. The
-present baseline and outlet ramp are fixed in time; evolving user diffusivity
-would require a different integration. This callback change leaves the restored
+The case calls native `avm::viscosity()` directly with the packed UG field,
+then adds the result to the current baseline. It does not call `applyAVM()` or
+restore a cached initial diffusivity. Baseline restoration before every property
+update prevents artificial diffusion from accumulating. Verbose output reports
+per-scalar min/max AVM viscosity with `velocity=UG`. This change leaves the restored
 semi-implicit UG drag, explicit UM drag and `freezeDragHistory` unchanged.
 Use `virtualMassEnabled = 0` for the current no-VM stability baseline.
 
