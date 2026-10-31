@@ -1115,6 +1115,10 @@ inline void updateProperties(double)
   nrs->fluid->o_prop.slice(0 * nrs->fieldOffset, nrs->fieldOffset).copyFrom(o_muM);
   nrs->fluid->o_prop.slice(1 * nrs->fieldOffset, nrs->fieldOffset)
       .copyFrom(o_rhoPressure);
+  // userProperties bypasses nrs_t's automatic scalar AVM invocation.
+  // Apply after baseline diffusion/outlet ramp updates, once per callback.
+  // Native AVM selects only scalars configured with regularization = avm.
+  nrs->scalar->applyAVM();
 }
 
 inline void enforceZeroDivergence(double)
