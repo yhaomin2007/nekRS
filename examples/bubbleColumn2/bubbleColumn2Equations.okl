@@ -223,7 +223,7 @@
                                 @ restrict dfloat *ugSource,
                                 @ restrict dfloat *dragLambda,
                                 @ restrict dfloat *mixtureInterphaseAcceleration,
-                                @ restrict dfloat *mixtureDragRate)
+                                @ restrict dfloat *mixtureDragSource)
 {
   for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
     // Keep the physical volume fraction separate from denominator protection.
@@ -297,7 +297,7 @@
         : 0.44 * Re;
     const dfloat Ki = 0.75 * CdRe * muLiquid
                       / (bubbleDiameter * bubbleDiameter);
-    // Freeze Ki, alpha and UM; retain the reconstructed -UG/beta implicitly.
+    // Freeze Ki and liquid velocity; only -Ki*UG/rhoEff is implicit.
     const dfloat dragRate = (a >= dragAlphaCutoff && dragEnabled != 0.0)
         ? dragEnabled * Ki * dragSlipFactor / rhoGas : 0.0;
     // Move -C*rho_l*D_g(ug)/Dt to the left, then divide by rhoEff.
@@ -305,14 +305,12 @@
     const dfloat addedDensity = virtualMassEnabled * virtualMassCoefficient * rhoLiquid;
     const dfloat rhoEff = rhoGas + addedDensity;
     const dfloat forceScale = rhoGas / rhoEff;
-    dragLambda[n] = forceScale * dragRate / betaSafe;
-    mixtureDragRate[n] = mixtureDragEnabled != 0.0
-        ? a * (1.0 - rhoGas / rhoLiquid) * dragRate / betaSafe : 0.0;
+    dragLambda[n] = forceScale * dragRate;
     for (int i = 0; i < 3; ++i) {
       const dlong id = n + i * offset;
       const dfloat gravity = i == 0 ? gravityX : (i == 1 ? gravityY : gravityZ);
       ugSource[id] = gasActive * (forceScale * (-gasPressureEnabled * gradP[id] / rhoGas
-                          + gravity) + dragLambda[n] * uv[id]
+                          + gravity + dragRate * ul[id])
           + addedDensity / rhoEff * liquidAcceleration[id]);
     }
 
@@ -324,20 +322,27 @@
                                       * virtualMassCoefficient
                                       * rhoLiquid / rhoGas;
     const dfloat volumeWeight = a * (1.0 - rhoGas / rhoLiquid);
-    // Mixture drag is added to the complete explicit mixture force at source
-    // assembly. Keep VM separate here so the drag ramp scales only drag.
+    for (int i = 0; i < 3; ++i) {
+      const dlong id = n + i * offset;
+      const dfloat gasDrag = dragRate * (ul[id] - ug[id]);
+      mixtureDragSource[id] = mixtureDragEnabled != 0.0
+          ? a * (1.0 - rhoGas / rhoLiquid) * gasDrag : 0.0;
+    }
     mixtureInterphaseAcceleration[n + 0 * offset] =
         volumeWeight
-        * gasVirtualMassScale
-        * virtualMassRelativeAcceleration[n + 0 * offset];
+        * ((mixtureDragEnabled != 0.0 ? dragRate : 0.0) * (ul[n + 0 * offset] - ug[n + 0 * offset])
+           + gasVirtualMassScale
+             * virtualMassRelativeAcceleration[n + 0 * offset]);
     mixtureInterphaseAcceleration[n + 1 * offset] =
         volumeWeight
-        * gasVirtualMassScale
-        * virtualMassRelativeAcceleration[n + 1 * offset];
+        * ((mixtureDragEnabled != 0.0 ? dragRate : 0.0) * (ul[n + 1 * offset] - ug[n + 1 * offset])
+           + gasVirtualMassScale
+             * virtualMassRelativeAcceleration[n + 1 * offset]);
     mixtureInterphaseAcceleration[n + 2 * offset] =
         volumeWeight
-        * gasVirtualMassScale
-        * virtualMassRelativeAcceleration[n + 2 * offset];
+        * ((mixtureDragEnabled != 0.0 ? dragRate : 0.0) * (ul[n + 2 * offset] - ug[n + 2 * offset])
+           + gasVirtualMassScale
+             * virtualMassRelativeAcceleration[n + 2 * offset]);
   }
 }
 
@@ -494,21 +499,5 @@
   for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
     const dfloat aSafe = alpha[n] > alphaFloor ? alpha[n] : alphaFloor;
     source[n] += divStress[n] / (aSafe * rhoEff);
-  }
-}
-
-// Add the full lagged UM drag acceleration before native fluid EXT assembly.
-// The source is positive D*(UM-UG); UG retains its separate implicit reaction.
-@kernel void addExplicitMixtureDrag(const dlong N, const dlong offset,
-                                    @ restrict const dfloat *rate,
-                                    @ restrict const dfloat *um,
-                                    @ restrict const dfloat *ug,
-                                    @ restrict dfloat *force)
-{
-  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
-    for (int i = 0; i < 3; ++i) {
-      const dlong id = n + i * offset;
-      force[id] += rate[n] * (um[id] - ug[id]);
-    }
   }
 }

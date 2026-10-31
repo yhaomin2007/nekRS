@@ -20,14 +20,10 @@ The scalar transport follows method1 at the synchronization commit:
   to UM. There is no temporary replacement of the fluid velocity.
 - All scalar nonlinear sources/advection use EXT1, using separate scalar EXT
   coefficient storage. Native BDF history/order and fluid EXT are retained.
-- Gas drag uses the native scalar implicit reaction with lagged coefficient
-  and alpha: `lambdaG=Ki/(beta*rhoEff)`. The RHS contains `lambdaG*UM_old`;
-  the LHS contains `lambdaG*UG_new`. This also retains the reconstructed
-  liquid-velocity dependence on UG implicitly.
-- UM drag uses the fully explicit `D*(UM_old-UG_old)`, where
-  `D=rampDrag*alpha*(1/rhoGas-1/rhoLiquid)*Ki/beta`. The coefficient includes
-  the cutoff/limiter/ramp. The complete drag acceleration is added once to the
-  mixture force during source assembly, before scalar solves and fluid EXT.
+- Gas drag uses the native scalar implicit reaction: `lambda=Ki/rhoEff`,
+  with lagged `Ki` and `UL`; the explicit RHS contains `lambda*UL` and the
+  left side contains `lambda*UG`. Mixture drag remains a full explicit slip
+  force, with its existing independent switch/ramp/cutoff/limiter.
 - UG is retained at zero/dilute alpha by default, as in method1.
   `gasVelocityLowAlphaCutoffEnabled=1` enables the optional hard/smooth mask;
   magnitude clipping remains independent. Physical stress uses
@@ -47,22 +43,6 @@ The example uses one mode at strength 0.05, diffusion 1e-5, and HPFRT one mode
 at scaling 10 for alpha/UG, matching method1. Filtering is not a positivity
 limiter and need not preserve gas volume on curved elements. Conservation CSV
 accounts for filter and clipping volume changes separately.
-
-## Explicit mixture drag
-
-UG retains the native scalar implicit reaction and lagged UM load. UM drag
-is restored to a complete explicit source, `D*(UM_old-UG_old)`, alongside VM,
-drift and other mixture forces. Only drag is multiplied by the optional
-step ramp; the VM load is unchanged. Native fluid EXT/BDF assembly supplies
-this same known force to pressure and velocity. There is no UM implicit
-reaction callback or post-scalar `preFluid` drag adjustment, and density,
-pressure mobility and velocity Helmholtz coefficients are unchanged.
-
-The former `D*dt/g0 < 1` implicit-diagonal abort is removed. Explicit drag
-still imposes timestep/coupling constraints; this restoration does not establish
-long-term stability or resolve the previously observed alpha oscillations.
-The source-stage ramped rate is retained for the `max(Dm*dt/g0)` diagnostic.
-Existing mixture drag enable/ramp and cutoff/limiter controls remain available.
 
 ## Initial and boundary conditions
 
@@ -127,49 +107,15 @@ The implicit gas derivative order is controlled by native `timeStepper`.
 `virtualMassRampStep=R>0` gives `min(1,(step-S)/R)` afterward, and R=0 activates
 immediately. History is collected during the delay when VM is enabled.
 The default is VM on, coefficient 0.5, no delay/ramp, matching method1's
-activation. UM VM remains explicit with native fluid EXT, while scalar explicit
+activation. UM remains explicit with native fluid EXT, while scalar explicit
 parts use EXT1. Physical coefficients are paired; the coupled equations are
-not solved implicitly together. The pressure mobility remains
-`(1-alpha)/rhoLiquid + alpha/rhoGas`, without drag rescaling. Stability at larger dt is not established.
+not solved implicitly together. Pressure mobility remains
+`(1-alpha)/rhoLiquid + alpha/rhoGas`. Stability at larger dt is not established.
 
 ## Verification
 
 Tests under `tests/` exercise actual kernels/native BDF forcing, cubature
 transport and high-degree quadrature, shared-node cancellation, initialization,
-inlet rim agreement, dilute UG, implicit gas drag, explicit mixture drag/ramp and native force assembly,
+inlet rim agreement, dilute UG, implicit gas drag, explicit mixture drag/ramp,
 VM histories/coefficient pairing, alpha postprocessing and interpolation fallback.
 Full NekRS MPI/GPU build and flow stability require a run on the target system.
-
-### Prescribed uniform gas velocity diagnostic
-
-Set `prescribedGasVelocityEnabled = 1` in `[CASEDATA]` to hold
-`UG = (0, 0, gasInitialVelocity)` everywhere, including the boundaries and
-zero-alpha cells. The three UG scalar solvers are disabled through native
-`SOLVER = NONE`; UG boundary updates, regularization, low-alpha masking and
-clipping cannot change the prescribed field. Alpha retains its existing
-conservative cubature transport, diffusion and filters. Pressure and UM still
-advance, including their configured drag and explicit virtual mass terms.
-This is a prescribed transport test, with gas velocity imposed through walls
-rather than the usual gas wall condition.
-
-On fresh starts alpha keeps its plume profile and UM is initialized as
-`alpha * UG` (initial UL zero). On restart only UG is replaced; alpha and UM
-are retained. Use a fresh start to test whether oscillations develop from
-smooth alpha. For the initial diagnostic use `virtualMassEnabled = 0` and
-match `gasInletVelocity` to `gasInitialVelocity`. The log prints the constant
-UG and confirms that its solves are disabled; no UG residuals are expected.
-Set `prescribedGasVelocityEnabled = 0` (default) to restore normal UG solves
-and plume UG initialization.
-
-## Native scalar AVM with user properties
-
-The case explicitly calls `scalar->applyAVM()` at the end of `updateProperties`,
-after restoring baseline scalar diffusion and applying the outlet ramp.
-NekRS skips its automatic AVM call when a user-properties callback is installed.
-Select AVM per scalar using, for example,
-`regularization = avm + noiseThreshold=1e-6`; this is a syntax example, not a
-calibrated threshold. Scalars using HPFRT or no AVM are unaffected by this call.
-The native AVM velocity scale still uses the scalar solver's UM pointer, not
-UG. This change repairs the missing invocation only; it does not adapt that
-velocity scale or diffusion-cancellation settings. Keep `subtractAlphaDiffusion`
-and `subtractUgx/y/zDiffusion` disabled when testing AVM.

@@ -19,7 +19,6 @@ struct Parameters {
   dfloat alphaInlet;
   dfloat ugInlet;
   dfloat ugInitial = 0.0;
-  int prescribedGasVelocityEnabled = 0;
   dfloat initialPlumeHeight = 0.05;
   dfloat initialPlumeThickness = 0.01;
   dfloat gravity[3];
@@ -113,8 +112,8 @@ static deviceMemory<dfloat> o_divGasStress;
 static deviceMemory<dfloat> o_alphaSource;
 static deviceMemory<dfloat> o_ugSource;
 static deviceMemory<dfloat> o_dragLambda;
-static deviceMemory<dfloat> o_mixtureDragRate, o_frozenMixtureDragRate;
-static occa::kernel addExplicitMixtureDragKernel;
+static deviceMemory<dfloat> o_mixtureDragSource;
+static deviceMemory<dfloat> o_previousMixtureDragSource;
 static deviceMemory<dfloat> o_mixtureInterphaseAcceleration;
 static deviceMemory<dfloat> o_mixtureForce;
 static deviceMemory<dfloat> o_monitorMagnitude;
@@ -196,7 +195,6 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
   if (platform->options.compareArgs("REGISTER ONLY", "TRUE")) {
     platform->kernelRequests.add(request, fileName, kernelInfo);
   } else {
-    addExplicitMixtureDragKernel = platform->kernelRequests.load(request, "addExplicitMixtureDrag");
     vectorMagnitudeKernel = platform->kernelRequests.load(request, "vectorMagnitude");
     buildMixtureStressCorrectionKernel = platform->kernelRequests.load(request, "buildMixtureStressCorrection");
     addMixtureStressCorrectionKernel = platform->kernelRequests.load(request, "addMixtureStressCorrection");
@@ -374,9 +372,9 @@ inline void allocate()
   o_alphaSource.resize(offset);
   o_ugSource.resize(3 * offset);
   o_dragLambda.resize(offset);
-  o_mixtureDragRate.resize(offset);
-  o_frozenMixtureDragRate.resize(offset);
-  platform->linAlg->fill(offset, 0.0, o_frozenMixtureDragRate);
+  o_mixtureDragSource.resize(3 * offset);
+  o_previousMixtureDragSource.resize(3 * offset);
+  platform->linAlg->fill(3 * offset, 0.0, o_previousMixtureDragSource);
   o_mixtureInterphaseAcceleration.resize(3 * offset);
   o_mixtureForce.resize(3 * offset);
   o_monitorMagnitude.resize(offset);
@@ -430,7 +428,7 @@ inline void reconstructGasVelocity()
 {
   reconstructGasVelocityKernel(nrs->meshV->Nlocal,
                                nrs->fieldOffset,
-                               p.prescribedGasVelocityEnabled ? 0.0 : p.gasVelocityLowAlphaCutoffEnabled,
+                               p.gasVelocityLowAlphaCutoffEnabled,
                                p.alphaFloor,
                                nrs->scalar->o_solution("alpha"),
                                nrs->scalar->o_solution("ugx"),
@@ -615,7 +613,7 @@ inline void evaluatePointwiseTerms()
                            o_ugSource,
                            o_dragLambda,
                            o_mixtureInterphaseAcceleration,
-                           o_mixtureDragRate);
+                           o_mixtureDragSource);
 
   evaluateGasCubatureTransport(true);
   platform->linAlg->axpby(mesh->Nlocal, -1.0, o_gasTransport, 0.0, o_alphaSource);
@@ -762,9 +760,8 @@ inline void postProcessGasVelocity()
 {
   const dlong Nlocal = nrs->meshV->Nlocal;
   const dlong offset = nrs->fieldOffset;
-  if (p.prescribedGasVelocityEnabled
-      || ((!p.gasVelocityLowAlphaCutoffEnabled || p.smoothGasVelocityMaskEnabled == 0.0)
-          && p.gasVelocityClipEnabled == 0.0)) {
+  if ((!p.gasVelocityLowAlphaCutoffEnabled || p.smoothGasVelocityMaskEnabled == 0.0)
+      && p.gasVelocityClipEnabled == 0.0) {
     for (int i = 0; i < 3; ++i) {
       qgMaskDeltaIntegral[i] = 0.0;
     }
@@ -1029,17 +1026,48 @@ inline dfloat mixtureDragRampFactor(int step)
       (static_cast<dfloat>(step) - p.mixtureDragRampStartStep) / p.mixtureDragRampSteps));
 }
 
+inline void rampMixtureDrag(int step)
+{
+  if (p.mixtureDragRampEnabled == 0.0) return;
+  const dfloat factor = mixtureDragRampFactor(step);
+  const dlong N = nrs->meshV->Nlocal;
+  const dlong offset = nrs->fieldOffset;
+  for (int i = 0; i < 3; ++i) {
+    auto drag = o_mixtureDragSource.slice(i * offset, offset);
+    auto force = o_mixtureForce.slice(i * offset, offset);
+    platform->linAlg->axpby(N, factor - 1.0, drag, 1.0, force);
+    platform->linAlg->axpby(N, 0.0, drag, factor, drag);
+  }
+}
+
+// All EXT history slots must contain the SAME drag contribution for this step.
+// Native makeForcing shifts the modified histories afterward, so every old
+// slot contains o_previous* at the next source call. Non-drag terms are untouched.
+inline void freezeDragHistory()
+{
+  if (nrs->tstep == 0) return;
+  const dlong N = nrs->meshV->Nlocal;
+  const dlong offset = nrs->fieldOffset;
+  for (int stage = 1; stage < nrs->fluid->o_coeffEXT.size(); ++stage) {
+    for (int i = 0; i < 3; ++i) {
+      const dlong dst = stage * nrs->fluid->fieldOffsetSum + i * offset;
+      platform->linAlg->axpby(N, -1.0, o_previousMixtureDragSource, 1.0,
+          nrs->fluid->o_EXT, i * offset, dst);
+      platform->linAlg->axpby(N, 1.0, o_mixtureDragSource, 1.0,
+          nrs->fluid->o_EXT, i * offset, dst);
+    }
+  }
+  o_previousMixtureDragSource.copyFrom(o_mixtureDragSource);
+}
+
 inline void addExplicitSources(double)
 {
   prepareGasAdvection();
   evaluatePointwiseTerms();
   subtractScalarDiffusion();
   evaluateMixtureForce();
-  // Retain the source-stage ramped rate for diagnostics. UM drag uses the
-  // same lagged UM/UG as the other explicit fluid sources, before scalar solves.
-  o_frozenMixtureDragRate.copyFrom(o_mixtureDragRate, nrs->meshV->Nlocal);
-  platform->linAlg->scale(nrs->meshV->Nlocal,
-      mixtureDragRampFactor(nrs->tstep), o_frozenMixtureDragRate);
+  rampMixtureDrag(nrs->tstep);
+  freezeDragHistory();
   captureAlphaAdvectionDiagnostics();
   const dlong Nlocal = nrs->meshV->Nlocal;
   const dlong offset = nrs->fieldOffset;
@@ -1049,15 +1077,15 @@ inline void addExplicitSources(double)
   nrs->scalar->o_explicitTerms("alpha").copyFrom(o_alphaSource, Nlocal);
   // Gas momentum remains material-velocity form: subtract UG.grad(UG),
   // not div(UG tensor UG). Alpha has already received -div(alpha*UG).
-  if (!p.prescribedGasVelocityEnabled) evaluateGasCubatureTransport(false);
+  evaluateGasCubatureTransport(false);
   const char *names[4] = {"alpha", "ugx", "ugy", "ugz"};
-  for (int i = 0; i < (p.prescribedGasVelocityEnabled ? 0 : 3); ++i) {
+  for (int i = 0; i < 3; ++i) {
     auto source = o_ugSource.slice(i * offset, offset);
     platform->linAlg->axpby(Nlocal, -1.0,
         o_gasTransport.slice((i + 1) * offset, offset), 1.0, source);
     nrs->scalar->o_explicitTerms(names[i + 1]).copyFrom(source, Nlocal);
   }
-  for (int i = 0; i < (p.prescribedGasVelocityEnabled ? 1 : 4); ++i) {
+  for (int i = 0; i < 4; ++i) {
     evaluateNativeAlphaAdvection(o_nativeTransportAdvection, true, names[i], true);
     const int index = nrs->scalar->nameToIndex.at(names[i]);
     platform->linAlg->axpby(Nlocal, 1.0,
@@ -1065,9 +1093,6 @@ inline void addExplicitSources(double)
         1.0, nrs->scalar->o_explicitTerms(names[i]));
   }
 
-  // Add the complete acceleration before native fluid EXT/BDF assembly.
-  addExplicitMixtureDragKernel(Nlocal, offset, o_frozenMixtureDragRate,
-      nrs->fluid->o_U, o_ug, o_mixtureForce);
   auto fluidTerms = nrs->fluid->o_explicitTerms();
   for (int i = 0; i < 3; ++i) {
     fluidTerms.copyFrom(o_mixtureForce, Nlocal, i * offset, i * offset);
@@ -1090,10 +1115,6 @@ inline void updateProperties(double)
   nrs->fluid->o_prop.slice(0 * nrs->fieldOffset, nrs->fieldOffset).copyFrom(o_muM);
   nrs->fluid->o_prop.slice(1 * nrs->fieldOffset, nrs->fieldOffset)
       .copyFrom(o_rhoPressure);
-  // A userProperties callback bypasses nrs_t's automatic AVM call.
-  // Apply after evaluatePointwiseTerms restores/ramp-scales scalar diffusion.
-  // Native applyAVM is a no-op for scalars without AVM regularization.
-  nrs->scalar->applyAVM();
 }
 
 inline void enforceZeroDivergence(double)
@@ -1440,7 +1461,7 @@ inline void printDragLocations(double time, int tstep)
     o_ul.copyTo(ul, N, c*offset, c*N);
     nrs->fluid->o_U.slice(c*offset, N).copyTo(um.data()+c*N);
   }
-  const double inertiaRatio = mixtureDragRampFactor(nrs->tstep) * (p.rhoGas + p.virtualMassEnabled * virtualMassRampFactor(nrs->tstep)
+  const double inertiaRatio = (p.rhoGas + p.virtualMassEnabled * virtualMassRampFactor(nrs->tstep)
       * p.virtualMassCoefficient * p.rhoLiquid) / p.rhoGas;
   dlong indices[2] = {0, 0};
   double maxima[2] = {-1.0, -1.0};
@@ -1449,7 +1470,7 @@ inline void printDragLocations(double time, int tstep)
     double force2 = 0.0;
     for (int c = 0; c < 3; ++c) {
       const double f = (p.mixtureDragEnabled != 0.0 ? 1.0 : 0.0)*ac*(1.0-p.rhoGas/p.rhoLiquid)*rate[n]*inertiaRatio
-                       *(um[n+c*N]-ug[n+c*N]);
+                       *(ul[n+c*N]-ug[n+c*N]);
       force2 += f*f;
     }
     const double values[2] = {double(rate[n]), std::sqrt(force2)};
@@ -1482,12 +1503,12 @@ inline void printDragLocations(double time, int tstep)
       data[21] = 0.75*cdRe*p.muLiquid/(p.bubbleDiameter*p.bubbleDiameter);
       const double ac = std::max(0.0, std::min(1.0, double(a[n])));
       data[22] = (p.mixtureDragEnabled != 0.0 ? 1.0 : 0.0)*ac*(1.0-p.rhoGas/p.rhoLiquid)*rate[n]*inertiaRatio;
+      data[23] = data[22]*data[19];
       double delta2 = 0.0;
       for (int c = 0; c < 3; ++c) {
         const double delta = ug[n+c*N]-um[n+c*N]; delta2 += delta*delta;
       }
       data[24] = std::sqrt(delta2);
-      data[23] = data[22] * data[24];
       data[25] = p.dragSlipLimitEnabled != 0.0 && data[24] > p.dragSlipMaximum
           ? p.dragSlipMaximum/data[24] : 1.0;
       data[26] = data[20]*data[25];
@@ -1572,8 +1593,6 @@ inline void printStabilityMonitors(double time, int tstep)
   const dfloat maxDragLambda =
       platform->linAlg->max(Nlocal, o_dragLambda, comm);
   const dfloat maxDragStep = maxDragLambda * nrs->dt[0];
-  const dfloat maxMixtureDragStep = platform->linAlg->max(
-      Nlocal, o_frozenMixtureDragRate, comm) * nrs->dt[0] / nrs->g0;
   printDragLocations(time, tstep);
 
   // Boundary-integrated checks for the alpha inlet.  These distinguish an
@@ -1598,7 +1617,7 @@ inline void printStabilityMonitors(double time, int tstep)
            "max|qg|=%.8e max|qg-alpha*ug|=%.8e "
            "maxActive|gradP|/rhoEff=%.8e maxInactive|gradP|/rhoEff=%.8e "
            "max|ug|=%.8e CFL(ug)=%.8e max|tauDrift|=%.8e "
-           "max(lambdaD*dt)=%.8e max(Dm*dt/g0)=%.8e "
+           "max(lambdaD*dt)=%.8e "
            "inletArea=%.8e inletMean(alpha)=%.8e "
            "inletIntegral(qg.n)=%.8e prescribed|inletFlux|=%.8e\n",
            tstep,
@@ -1615,7 +1634,6 @@ inline void printStabilityMonitors(double time, int tstep)
            gasCfl,
            maxDriftStress,
            maxDragStep,
-           maxMixtureDragStep,
            inletArea,
            inletAlphaAverage,
            inletQgFlux,

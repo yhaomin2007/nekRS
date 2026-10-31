@@ -29,7 +29,7 @@ values=dict(N=2,offset=4,rhoLiquid=998.2,rhoGas=1.2,muLiquid=.001,muGas=.000018,
  dragSlipMaximum=1,bubbleDiameter=.003,virtualMassEnabled=1,virtualMassCoefficient=.5,
  gravityX=.1,gravityY=-.2,gravityZ=-9.81)
 outputs={'rhoMField','rhoPressureField','muMField','driftStress','gasStress','alphaSource','ugSource',
-         'dragLambda','mixtureInterphaseAcceleration','mixtureDragRate'}
+         'dragLambda','mixtureInterphaseAcceleration','mixtureDragSource'}
 common=set();decl=[];calls=[];kernels=[]
 for idx,directory in enumerate([one,case]):
  name=directory.name
@@ -53,13 +53,12 @@ cpp=prefix+'\n'.join(kernels)+'\nint main(){'+''.join('double '+k+'='+str(v)+';'
   for(int i=0;i<3;i++)for(int n=0;n<2;n++){
    int id=n+4*i;ug[id]=.3+.05*i;ul[id]=.1-.02*i;
    gradP[id]=2-i;liquidAcceleration[id]=.2*i;
-   um[id]=(1-fraction)*ul[id]+fraction*ug[id];
   }
 '''+''.join(calls)+r'''
   for(int i=0;i<3;i++)for(int n=0;n<2;n++){
-   int id=n+4*i;assert(std::abs((ugSource0[id]-dragLambda0[n]*ug[id])-(ugSource1[id]-dragLambda1[n]*ug[id]))<1e-9);
+   int id=n+4*i;assert(std::abs(ugSource0[id]-ugSource1[id])<1e-12);
   }
-  for(int n=0;n<2;n++)assert(std::abs(dragLambda0[n]-(1-fraction)*dragLambda1[n])<1e-12);
+  for(int n=0;n<2;n++)assert(std::abs(dragLambda0[n]-dragLambda1[n])<1e-12);
  }
 }
 '''
@@ -69,7 +68,7 @@ with tempfile.TemporaryDirectory() as tmp:
  subprocess.run([str(p/'check')],check=True)
 # Host/kernel call arity check catches wiring errors beyond serial kernel math.
 eq=(case/'bubbleColumn2Equations.okl').read_text()
-for name in ['buildEquationTerms','initializePlume','updateVirtualMassHistory','postProcessGasVelocity','reconstructGasVelocity','addExplicitMixtureDrag']:
+for name in ['buildEquationTerms','initializePlume','updateVirtualMassHistory','postProcessGasVelocity','reconstructGasVelocity']:
  kernel=function(eq,'@kernel void '+name+'(')
  count=len(kernel.split(')\n{')[0].split('(',1)[1].split(','))
  source=t+(case/'bubbleColumn2.udf').read_text()
@@ -87,4 +86,4 @@ for name in ['buildEquationTerms','initializePlume','updateVirtualMassHistory','
   assert nargs==count,(name,nargs,count)
 assert 'nrs->userDivergence = &bubbleColumn2::enforceZeroDivergence;' in source
 assert 'o_rhoPressure' in t and 'volumeWeight' in eq
-print('Method1 alignment: identical transport/filter modules, matching unsplit UG force and reconstructed-UG diagonal at zero/dilute/finite alpha with VM on/off; host/kernel arities and method2 projection retained.')
+print('Method1 alignment: identical transport/filter modules, UG force and implicit drag at zero/dilute/finite alpha with VM on/off; host/kernel arities and method2 projection retained.')
