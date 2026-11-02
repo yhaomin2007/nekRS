@@ -9,6 +9,40 @@ Method1 and other cases are unchanged by this update.
 
 ## Alpha and gas velocity
 
+### Frozen UG isolation test
+
+The supplied `.par` now enables `frozenGasVelocityEnabled=1` and sets
+`virtualMassEnabled=0` for this diagnostic. Start a fresh run for a clean
+comparison. Set `frozenGasVelocityEnabled=0` to restore the evolving UG equations.
+
+The prescribed field is `UG=(0,0,gasInletVelocity*w(r))` at every height,
+including above the initial alpha plume and in zero-alpha regions. For a
+circular column along z, `r=hypot(x-centerX,y-centerY)` and
+`w=s*s*(3-2*s)`, `s=clamp((R-r)/width,0,1)`. Thus the core is uniform,
+the last `frozenGasWallRampWidth=0.005` m tapers smoothly, and the wall is zero.
+`frozenGasRadius=0` infers R from boundary ID 3 across all ranks; a positive
+value supplies R explicitly. The center defaults to `(0,0)` and is controlled
+by `frozenGasCenterX/Y`. These distances use mesh units. Resolve the wall ramp
+with sufficient nodes; a smooth analytic profile can still be underresolved.
+
+UG fields retain their scalar/checkpoint layout, but their native compute
+flags are disabled on both host and device, so they are not advanced or
+subjected to native scalar Dirichlet updates. Reconstruction restores the
+stored prescribed field; gas clipping and alpha masks are bypassed in this
+mode. The inlet uses exactly the same radial weight, including the native UM
+inlet `alphaInlet*gasInletVelocity*w`. On a fresh start, UM is initialized to
+`alpha*UG` (initially stationary liquid); on restart, UM/alpha are retained
+while UG is replaced. A startup `FROZEN UG` message reports the actual radius,
+speed and width.
+
+Alpha still uses the existing conservative cubature source and native UM
+advection cancellation. Its diffusion, HPFRT/AVM, clipping, explicit filter,
+initial plume and boundary conditions are retained for a controlled comparison.
+AVM uses the prescribed UG for alpha; UG AVM and implicit drag callbacks are
+skipped. UM continues to evolve with its configured mixture forces. This is
+a prescribed-gas-velocity diagnostic, not a coupled momentum solution. VM must
+be off (validated at startup).
+
 The scalar transport follows method1 at the synchronization commit:
 
 - Alpha uses direct cubature differentiation of the product `alpha*UG`,

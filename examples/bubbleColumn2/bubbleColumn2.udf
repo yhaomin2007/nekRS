@@ -41,6 +41,18 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   p.ugInitial = p.ugInlet;
   platform->par->extract("casedata", "uginitial", p.ugInitial);
   platform->par->extract("casedata", "gasinitialvelocity", p.ugInitial);
+  platform->par->extract("casedata", "frozengasvelocityenabled", p.frozenGasVelocityEnabled);
+  platform->par->extract("casedata", "frozengaswallrampwidth", p.frozenGasWallRampWidth);
+  platform->par->extract("casedata", "frozengasradius", p.frozenGasRadius);
+  platform->par->extract("casedata", "frozengascenterx", p.frozenGasCenterX);
+  platform->par->extract("casedata", "frozengascentery", p.frozenGasCenterY);
+  nekrsCheck(p.frozenGasVelocityEnabled < 0 || p.frozenGasVelocityEnabled > 1
+                 || (p.frozenGasVelocityEnabled
+                     && (!std::isfinite(p.frozenGasWallRampWidth) || p.frozenGasWallRampWidth <= 0
+                         || !std::isfinite(p.frozenGasRadius) || p.frozenGasRadius < 0
+                         || !std::isfinite(p.frozenGasCenterX) || !std::isfinite(p.frozenGasCenterY))),
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "%s", "Frozen UG requires enabled=0/1, finite width>0, radius>=0, and finite center coordinates.\n");
   platform->par->extract("casedata", "initialplumeheight", p.initialPlumeHeight);
   platform->par->extract("casedata", "initialplumethickness", p.initialPlumeThickness);
   nekrsCheck(!(std::isfinite(p.initialPlumeHeight) && p.initialPlumeHeight >= 0.0
@@ -122,6 +134,9 @@ void UDF_Setup0(MPI_Comm, setupAide &)
                          p.mixtureViscousCorrectionEnabled);
   platform->par->extract("casedata", "virtualmassenabled", p.virtualMassEnabled);
   platform->par->extract("casedata", "virtualmasscoefficient", p.virtualMassCoefficient);
+  nekrsCheck(p.frozenGasVelocityEnabled && p.virtualMassEnabled != 0.0,
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "%s", "Set virtualMassEnabled=0 for the frozen UG isolation test.\n");
   platform->par->extract("casedata", "virtualmasstimederivativeorder", p.virtualMassTimeDerivativeOrder);
   platform->par->extract("casedata", "virtualmassstartstep", p.virtualMassStartStep);
   platform->par->extract("casedata", "virtualmassrampstep", p.virtualMassRampStep);
@@ -168,6 +183,23 @@ void UDF_Setup()
         nrs->meshV->o_z,
         nrs->scalar->o_solution("alpha"), nrs->scalar->o_solution("ugx"),
         nrs->scalar->o_solution("ugy"), nrs->scalar->o_solution("ugz"), nrs->fluid->o_U);
+  }
+  if (bubbleColumn2::p.frozenGasVelocityEnabled) {
+    // Keep fields/properties/checkpoint layout, but skip native UG boundary
+    // updates, forcing, filtering and solves. ALPHA remains an active scalar.
+    std::vector<dlong> compute(nrs->scalar->NSfields, 1);
+    for (int i = 1; i < 4; ++i) {
+      nrs->scalar->compute[i] = 0;
+      compute[i] = 0;
+    }
+    nrs->scalar->o_compute.copyFrom(compute.data(), compute.size());
+    bubbleColumn2::reconstructGasVelocity();
+    if (platform->options.getArgs("RESTART FILE NAME").empty())
+      nrs->fluid->o_U.copyFrom(bubbleColumn2::o_qg, 3*nrs->fieldOffset);
+    if (platform->comm.mpiRank() == 0)
+      printf("bubbleColumn2 FROZEN UG: axial core=%g, radius=%g, wall ramp width=%g; UG solves disabled; alpha uses prescribed UG; VM off\n",
+             bubbleColumn2::p.ugInlet, bubbleColumn2::p.frozenGasRadius,
+             bubbleColumn2::p.frozenGasWallRampWidth);
   }
   bubbleColumn2::initializeHistory();
   nrs->userSource = &bubbleColumn2::addExplicitSources;

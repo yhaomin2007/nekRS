@@ -20,6 +20,10 @@ struct Parameters {
   dfloat alphaInlet;
   dfloat ugInlet;
   dfloat ugInitial = 0.0;
+  int frozenGasVelocityEnabled = 0;
+  dfloat frozenGasWallRampWidth = 0.005;
+  dfloat frozenGasRadius = 0.0; // 0: infer from wall boundary ID 3
+  dfloat frozenGasCenterX = 0.0, frozenGasCenterY = 0.0;
   dfloat initialPlumeHeight = 0.05;
   dfloat initialPlumeThickness = 0.01;
   dfloat gravity[3];
@@ -87,6 +91,7 @@ static deviceMemory<dfloat> o_exactMixtureStress, o_baseNativeStress;
 static deviceMemory<dfloat> o_divExactMixtureStress, o_divBaseNativeStress;
 static occa::kernel buildMixtureStressCorrectionKernel, addMixtureStressCorrectionKernel;
 static deviceMemory<dfloat> o_ug;
+static deviceMemory<dfloat> o_frozenUg;
 static deviceMemory<dfloat> o_ul;
 static deviceMemory<dfloat> o_ulPrevious;
 static deviceMemory<dfloat> o_ugPrevious;
@@ -237,6 +242,14 @@ inline dfloat gasPressureInletRampWeight(dfloat z)
   return t * t * (3.0 - 2.0 * t);
 }
 
+// Axis-aligned circular column: C1 transition from zero at r=R to a
+// uniform core at r<=R-width. Independent of alpha and axial position.
+inline dfloat frozenGasWallWeight(dfloat r, dfloat radius, dfloat width)
+{
+  const dfloat s = std::max(dfloat(0), std::min(dfloat(1), (radius-r)/width));
+  return s*s*(3-2*s);
+}
+
 inline void allocate()
 {
   const dlong offset = nrs->fieldOffset;
@@ -357,6 +370,39 @@ inline void allocate()
     // Wall precedence at shared inlet/wall nodes, including remote copies.
     oogs::startFinish(o_inletVelocityWeight, 1, 0,
                       ogsDfloat, ogsMin, mesh->oogs);
+    if (p.frozenGasVelocityEnabled) {
+      std::vector<dfloat> x(mesh->Nlocal), y(mesh->Nlocal);
+      mesh->o_x.copyTo(x.data(), mesh->Nlocal);
+      mesh->o_y.copyTo(y.data(), mesh->Nlocal);
+      o_inletVelocityWeight.copyTo(weight.data(), offset);
+      double localRadius = 0.0, radius = p.frozenGasRadius;
+      for (dlong n = 0; n < mesh->Nlocal; ++n) {
+        if (weight[n] == 0.0)
+          localRadius = std::max(localRadius, double(std::hypot(
+              x[n]-p.frozenGasCenterX, y[n]-p.frozenGasCenterY)));
+      }
+      if (radius == 0.0)
+        MPI_Allreduce(&localRadius, &radius, 1, MPI_DOUBLE, MPI_MAX,
+                      platform->comm.mpiComm());
+      nekrsCheck(!std::isfinite(radius) || radius <= 0.0
+                     || p.frozenGasWallRampWidth > radius,
+                 platform->comm.mpiComm(), EXIT_FAILURE,
+                 "%s", "Frozen UG requires a circular wall (ID 3), positive radius and wall ramp width <= radius.\n");
+      p.frozenGasRadius = radius;
+      std::vector<dfloat> ug(3*offset, 0.0);
+      for (dlong n = 0; n < mesh->Nlocal; ++n) {
+        weight[n] *= frozenGasWallWeight(std::hypot(x[n]-p.frozenGasCenterX,
+            y[n]-p.frozenGasCenterY), radius, p.frozenGasWallRampWidth);
+      }
+      o_inletVelocityWeight.copyFrom(weight.data(), offset);
+      oogs::startFinish(o_inletVelocityWeight, 1, 0,
+                        ogsDfloat, ogsMin, mesh->oogs);
+      o_inletVelocityWeight.copyTo(weight.data(), offset);
+      for (dlong n = 0; n < mesh->Nlocal; ++n)
+        ug[2*offset+n] = p.ugInlet*weight[n];
+      o_frozenUg.resize(3*offset);
+      o_frozenUg.copyFrom(ug.data(), 3*offset);
+    }
     // This case reserves boundary usrwrk for the nodal inlet velocity weight.
     platform->app->bc->o_usrwrk = o_inletVelocityWeight;
   }
@@ -457,9 +503,15 @@ inline void allocate()
 
 inline void reconstructGasVelocity()
 {
+  if (p.frozenGasVelocityEnabled) {
+    const char *names[3] = {"ugx", "ugy", "ugz"};
+    for (int i = 0; i < 3; ++i)
+      nrs->scalar->o_solution(names[i]).copyFrom(o_frozenUg,
+          nrs->meshV->Nlocal, 0, i*nrs->fieldOffset);
+  }
   reconstructGasVelocityKernel(nrs->meshV->Nlocal,
                                nrs->fieldOffset,
-                               p.gasVelocityLowAlphaCutoffEnabled,
+                               p.frozenGasVelocityEnabled ? 0 : p.gasVelocityLowAlphaCutoffEnabled,
                                p.alphaFloor,
                                nrs->scalar->o_solution("alpha"),
                                nrs->scalar->o_solution("ugx"),
@@ -802,6 +854,10 @@ inline void initializeHistory()
 
 inline void postProcessGasVelocity()
 {
+  if (p.frozenGasVelocityEnabled) {
+    reconstructGasVelocity();
+    return; // Prescribed test velocity is independent of clipping/alpha masks.
+  }
   const dlong Nlocal = nrs->meshV->Nlocal;
   const dlong offset = nrs->fieldOffset;
   if ((!p.gasVelocityLowAlphaCutoffEnabled || p.smoothGasVelocityMaskEnabled == 0.0)
@@ -1130,6 +1186,7 @@ inline void addExplicitSources(double)
     nrs->scalar->o_explicitTerms(names[i + 1]).copyFrom(source, Nlocal);
   }
   for (int i = 0; i < 4; ++i) {
+    if (p.frozenGasVelocityEnabled && i > 0) continue;
     evaluateNativeAlphaAdvection(o_nativeTransportAdvection, true, names[i], true);
     const int index = nrs->scalar->nameToIndex.at(names[i]);
     platform->linAlg->axpby(Nlocal, 1.0,
@@ -1145,6 +1202,7 @@ inline void addExplicitSources(double)
 
 inline occa::memory implicitGasDrag(double, int scalarIndex)
 {
+  if (p.frozenGasVelocityEnabled) return o_NULL;
   if (scalarIndex >= 1 && scalarIndex <= 3) return o_dragLambda;
   return o_NULL;
 }
@@ -1155,6 +1213,7 @@ inline void applyGasVelocityAVM()
 {
   const char *names[4] = {"alpha", "ugx", "ugy", "ugz"};
   for (const auto name : names) {
+    if (p.frozenGasVelocityEnabled && std::string(name) != "alpha") continue;
     const auto sid = scalarDigitStr(nrs->scalar->nameToIndex.at(name));
     const std::string prefix = "SCALAR" + sid + " ";
     if (!platform->options.compareArgs(prefix + "REGULARIZATION METHOD",

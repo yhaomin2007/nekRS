@@ -15,6 +15,7 @@ cpp=r'''
 #include <string>
 #include <vector>
 using dfloat=double;
+struct Params{int frozenGasVelocityEnabled=0;}p;
 struct Mem{
  std::shared_ptr<std::vector<double>> v;
  Mem(int n=0):v(std::make_shared<std::vector<double>>(n,0)){}
@@ -72,16 +73,17 @@ int main(){
   platform->options.values[p+"REGULARIZATION AVM ACTIVATION WIDTH"]=1+j;
   platform->options.strings[p+"REGULARIZATION AVM C0"]=j%2==0?"TRUE":"FALSE";
  }
- for(int mask=0;mask<16;mask++)for(int repeat=0;repeat<2;repeat++){
+ for(int frozen:{0,1})for(int mask=0;mask<16;mask++)for(int repeat=0;repeat<2;repeat++){
+  p.frozenGasVelocityEnabled=frozen;
   int expected=0;calls=0;
   for(int j=0;j<4;j++){
-   bool on=(mask>>j)&1;expected+=on;
+   bool on=(mask>>j)&1;expected+=on && (!frozen || j==0);
    platform->options.strings["SCALAR"+scalarDigitStr(j)+" REGULARIZATION METHOD"]=on?"AVM_AVERAGED_MODAL_DECAY":(j%2?"HPFRT":"NONE");
    for(int n=0;n<6;n++)scalar.diff[j].v->at(n)=2+repeat; // new baseline per callback
   }
   applyGasVelocityAVM();assert(calls==expected);
   for(int j=0;j<4;j++)for(int n=0;n<6;n++){
-   double val=2+repeat+(((mask>>j)&1)&&n<4?.3*(j+1):0);
+   double val=2+repeat+(((mask>>j)&1)&&n<4&&(!frozen || j==0)?.3*(j+1):0);
    assert(std::abs(scalar.diff[j].v->at(n)-val)<1e-12);
   }
  }
