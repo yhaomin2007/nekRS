@@ -147,6 +147,10 @@ void UDF_Setup0(MPI_Comm, setupAide &)
                          p.mixtureViscousCorrectionEnabled);
   platform->par->extract("casedata", "virtualmassenabled", p.virtualMassEnabled);
   platform->par->extract("casedata", "mixturevirtualmassenabled", p.mixtureVirtualMassEnabled);
+  platform->par->extract("casedata", "coupledvirtualmassenabled", p.coupledVirtualMassEnabled);
+  nekrsCheck(p.coupledVirtualMassEnabled < 0 || p.coupledVirtualMassEnabled > 1,
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "%s", "coupledVirtualMassEnabled must be 0 or 1.\n");
   nekrsCheck(p.mixtureVirtualMassEnabled < 0 || p.mixtureVirtualMassEnabled > 1,
              platform->comm.mpiComm(), EXIT_FAILURE,
              "%s", "mixtureVirtualMassEnabled must be 0 or 1.\n");
@@ -168,6 +172,18 @@ void UDF_Setup0(MPI_Comm, setupAide &)
              platform->comm.mpiComm(), EXIT_FAILURE,
              "virtualMassTimeDerivativeOrder must be 1 or 2; virtualMassStartStep and virtualMassRampStep must be >= 0 (order=%d start=%d ramp=%d)\n",
              p.virtualMassTimeDerivativeOrder, p.virtualMassStartStep, p.virtualMassRampStep);
+  nekrsCheck(p.coupledVirtualMassEnabled
+      && (p.frozenGasVelocityEnabled || !p.mixtureVirtualMassEnabled
+          || !p.mixtureForcingEnabled || p.driftStressEnabled != 1.0
+          || p.mixtureDragEnabled != 1.0 || p.mixtureDragRampEnabled != 0.0
+          || p.gasPressureEnabled != 1.0 || p.gasPressureGradientMethod > 1
+          || p.gasPressureGradientFilterEnabled != 0.0
+          || p.gasPressureInletMaskEnabled || p.gasPressureInletRegionEnabled
+          || p.gasVelocityClipEnabled != 0.0 || p.gasVelocityLowAlphaCutoffEnabled
+          || p.volumeVelocityClipEnabled != 0.0),
+      platform->comm.mpiComm(), EXIT_FAILURE,
+      "%s", "Coupled VM requires solved/unclipped velocities, paired VM and mixture forces, "
+      "drift and mixture drag enabled, no independent mixture drag ramp, and full computed UG pressure without masks/filter.\n");
   platform->par->extract("casedata", "stabilitymonitorenabled", p.stabilityMonitorEnabled);
   platform->par->extract("casedata", "stabilitymonitorinterval", p.stabilityMonitorInterval);
   platform->par->extract(
@@ -258,7 +274,10 @@ void UDF_Setup()
   nrs->userSource = &bubbleColumn2::addExplicitSources;
   if (platform->comm.mpiRank() == 0)
     printf("bubbleColumn2 UG: scalars-first order; conservative cubature alpha and material UG transport; scalar EXT1; UM divergence zero\n");
-  if (platform->comm.mpiRank() == 0 && bubbleColumn2::p.virtualMassEnabled != 0.0)
+  if (platform->comm.mpiRank() == 0 && bubbleColumn2::p.coupledVirtualMassEnabled)
+    printf("bubbleColumn2 COUPLED VM: local phase material-inertia elimination; transformed UG/UM pressure, drag and phase stresses; no lagged VM acceleration source; native BDF and UM pressure solve retained\n");
+  if (platform->comm.mpiRank() == 0 && bubbleColumn2::p.virtualMassEnabled != 0.0
+      && !bubbleColumn2::p.coupledVirtualMassEnabled)
     printf("bubbleColumn2 virtual mass: implicit gas material inertia, lagged liquid acceleration order=%d, startStep=%d rampStep=%d; UM VM enabled=%d (explicit when enabled); history collected during delay\n",
            bubbleColumn2::p.virtualMassTimeDerivativeOrder, bubbleColumn2::p.virtualMassStartStep,
            bubbleColumn2::p.virtualMassRampStep, bubbleColumn2::p.mixtureVirtualMassEnabled);
@@ -291,7 +310,8 @@ void UDF_ExecuteStep(double time, int tstep)
   // the bounded volume velocity is used by diagnostics, output, and the next
   // timestep/CFL evaluation.
   bubbleColumn2::clipVolumeVelocity();
-  if (tstep > 0 && bubbleColumn2::p.virtualMassEnabled != 0.0) {
+  if (tstep > 0 && bubbleColumn2::p.virtualMassEnabled != 0.0
+      && !bubbleColumn2::p.coupledVirtualMassEnabled) {
     bubbleColumn2::updateVirtualMassHistory();
   }
   if (tstep > 0) {

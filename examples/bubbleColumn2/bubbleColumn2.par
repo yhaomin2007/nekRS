@@ -141,9 +141,10 @@ dragEnabled = 1.0
 bubbleDiameter = 3.0e-3
 # Set to 0.0 to omit kinematic drift-stress divergence from volume momentum.
 driftStressEnabled = 1.0
-# Test: retain full UG VM inertia/forcing, omit only the explicit UM VM source.
+# Test: analytically eliminate coupled phase VM inertia before time discretization.
 virtualMassEnabled = 1.0
-mixtureVirtualMassEnabled = 0
+mixtureVirtualMassEnabled = 1
+coupledVirtualMassEnabled = 1
 virtualMassCoefficient = 0.5
 # As in method1, UG is retained through dilute/zero-alpha regions.
 gasVelocityLowAlphaCutoffEnabled = 0
@@ -164,6 +165,7 @@ dragAlphaCutoff = 0.0
 dragSlipLimitEnabled = 0.0
 dragSlipMaximum = 1.0
 # Optional explicit two-phase stress correction in volume-mixture momentum.
+# Coupled VM always applies the transformed phase stresses and baseline correction.
 mixtureViscousCorrectionEnabled = 0.0
 # Liquid acceleration time derivative: 1=backward first order; 2=variable-step backward second order.
 virtualMassTimeDerivativeOrder = 1
@@ -171,7 +173,7 @@ virtualMassTimeDerivativeOrder = 1
 virtualMassStartStep = 0
 # Linear ramp duration after start; 0 preserves immediate activation.
 virtualMassRampStep = 0
-# UM retains method2 volume averaging and div(UM)=0; its VM source is explicit.
+# UM retains volume averaging and div(UM)=0; coupled VM uses transformed pressure mobility.
 stabilityMonitorEnabled = 1.0
 stabilityMonitorInterval = 10
 validationOutputInterval = 10

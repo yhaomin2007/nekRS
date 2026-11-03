@@ -45,6 +45,7 @@ struct LA {
  void axpby(long n,double a,const Mem& x,double b,Mem& y){for(long j=0;j<n;j++)y[j]=a*x[j]+b*y[j];}
  void axpbyz(long n,double a,const Mem& x,double b,const Mem& y,Mem& z){for(long j=0;j<n;j++)z[j]=a*x[j]+b*y[j];}
  void axmy(long n,double a,const Mem& x,Mem& y){for(long j=0;j<n;j++)y[j]*=a*x[j];}
+ void axmyz(long n,double a,const Mem& x,const Mem& y,Mem& z){for(long j=0;j<n;j++)z[j]=a*x[j]*y[j];}
  void axmyMany(long n,int nf,long o,int,double a,const Mem& x,Mem& y){for(int c=0;c<nf;c++)for(long j=0;j<n;j++)y[c*o+j]*=a*x[j];}
  double amax(long n,const Mem& x,int){double v=0;for(long j=0;j<n;j++)v=std::max(v,std::abs(x[j]));return v;}
 }la;
@@ -100,6 +101,7 @@ struct Nrs{int tstep=1;long fieldOffset=6;Mesh* meshV=&mesh;Scalar* scalar=&::sc
 auto nrs=&app;
 struct Params {
  int gasPressureCorrectorEnabled=1,gasPressureCorrectorGradientMethod=0;
+ int coupledVirtualMassEnabled=0;
  int frozenGasVelocityEnabled=0,gasPressureInletMaskEnabled=0,gasPressureInletRegionEnabled=0;
  int stabilityMonitorInterval=1;
  double gasPressureEnabled=1,rhoGas=1.2,rhoLiquid=998.2,virtualMassEnabled=0,virtualMassCoefficient=.5;
@@ -107,6 +109,7 @@ struct Params {
 double virtualMassRampFactor(int){return .5;}
 Mem o_gradP(18),o_ugPressureUsed(18),o_ugCorrectorDiff(18),o_ugCorrectorLambda(18);
 Mem o_ugCorrectorRhs(4),o_ugCorrectorDelta(4),o_dragLambda(6);
+Mem o_coupledVMCoefficients(24),o_ugCorrectorPressureResponse(6);
 Mem o_gasPressureInletMask(6),o_gasPressureRegionWeight(6),newGrad(18);
 int ugPressureSourceStep=-1,ugPressureCorrectedStep=-1,ugOperatorStep[3]={-1,-1,-1};
 double ugPressureSourceScale=0;
@@ -129,12 +132,14 @@ int main(){
  for(auto n:names){scalar.u.emplace(n,Mem(6));scalar.diff.emplace(n,Mem(6));scalar.rho.emplace(n,Mem(6));}
  for(int j=0;j<4;j++){mesh.o_LMM[j]=j+2;mesh.o_invLMM[j]=1./mesh.o_LMM[j];fluid.o_P[j]=100+j;}
  const auto originalP=*fluid.o_P.v,originalUM=*fluid.o_U.v;
- for(int method:{0,1})for(int mask:{0,1})for(int vm:{0,1})for(int pressure:{0,1}){
+ for(int coupled:{0,1})for(int method:{0,1})for(int mask:{0,1})for(int vm:{0,1})for(int pressure:{0,1}){
+  p.coupledVirtualMassEnabled=coupled;
   nrs->tstep++;p.gasPressureCorrectorGradientMethod=method;
   p.gasPressureInletMaskEnabled=mask;p.gasPressureInletRegionEnabled=mask;
   p.virtualMassEnabled=vm;p.gasPressureEnabled=pressure;
   Vec expected[3];Matrix A[3];Mem savedDiff[3],savedLambda[3];
   for(int j=0;j<6;j++){o_gasPressureInletMask[j]=j==1?0:1;o_gasPressureRegionWeight[j]=j==2?.4:1;}
+  for(int j=0;j<6;j++)o_coupledVMCoefficients[12+j]=.002+.0003*j;
   for(int c=0;c<3;c++)for(int j=0;j<6;j++){
    o_gradP[c*6+j]=2+c+.2*j;
    newGrad[c*6+j]=5-c+.3*j;
@@ -153,7 +158,8 @@ int main(){
     double base=3+c+j;
     predictorRhs[j]=base+mesh.o_LMM[j]*o_ugPressureUsed[c*6+j];
     double w=mask?o_gasPressureInletMask[j]*o_gasPressureRegionWeight[j]:1;
-    targetRhs[j]=base+mesh.o_LMM[j]*ugPressureSourceScale*newGrad[c*6+j]*w;
+    double pressureScale=coupled?-pressure*o_ugCorrectorPressureResponse[j]:ugPressureSourceScale;
+    targetRhs[j]=base+mesh.o_LMM[j]*pressureScale*newGrad[c*6+j]*w;
    }
    Vec pred=solve(A[c],predictorRhs,.3+c);
    expected[c]=solve(A[c],targetRhs,.3+c);
@@ -164,6 +170,7 @@ int main(){
   for(auto n:names)for(int j=0;j<6;j++)scalar.diff.at(n)[j]=900+j;
   for(int j=0;j<6;j++)o_dragLambda[j]=9000;
   for(int j=0;j<18;j++)o_gradP[j]=-999;
+  for(int j=0;j<6;j++)o_coupledVMCoefficients[12+j]=999; // Preserve predictor mobility snapshot.
   correctGasPressure();
   for(int c=0;c<3;c++){
    for(int j=0;j<4;j++)assert(std::abs(scalar.u.at(names[c])[j]-expected[c][j])<1e-12);
@@ -177,7 +184,7 @@ int main(){
  correctGasPressure();assert(solvers[1].calls==before);
  p.gasPressureCorrectorEnabled=1;bool rejected=false;
  try{correctGasPressure();}catch(const std::runtime_error&){rejected=true;}assert(rejected);
- assert(refreshes==16);
+ assert(refreshes==32);
 }
 '''
 with tempfile.TemporaryDirectory() as tmp:

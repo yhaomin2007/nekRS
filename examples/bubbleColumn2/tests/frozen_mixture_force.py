@@ -22,6 +22,7 @@ struct Mem{
 struct Params{
  int frozenGasVelocityEnabled=1,frozenGasMixtureForcingEnabled=0;
  int mixtureForcingEnabled=1;
+ int coupledVirtualMassEnabled=0;
  double driftStressEnabled=1,alphaFloor=1e-6,gravity[3]={0,0,-9.81};
  double rhoLiquid=998.2,rhoGas=1.2,muLiquid=.001,muGas=1.8e-5;
  double mixtureViscousCorrectionEnabled=1;
@@ -30,11 +31,15 @@ struct Mesh{long Nlocal=4;}mesh;
 struct Scalar{Mem o_solution(const char*){return Mem{};}}scalar;
 struct Nrs{long fieldOffset=6;Mesh* meshV=&mesh;Scalar* scalar=&::scalar;}solver;
 auto nrs=&solver;
-struct LA{void fill(long n,double value,Mem& m){std::fill_n(m.values.begin(),n,value);}}la;
+struct LA{
+ void fill(long n,double value,Mem& m){std::fill_n(m.values.begin(),n,value);}
+ void axpby(long n,double a,const Mem& x,double b,Mem& y){for(long j=0;j<n;j++)y.values[j]=a*x.values[j]+b*y.values[j];}
+}la;
 struct Platform{LA* linAlg=&la;}env;auto platform=&env;
 Mem o_mixtureForce,o_mixtureDragSource,o_driftStress,o_divDriftStress;
 Mem o_mixtureInterphaseAcceleration,o_rhoPressure,o_gradUl,o_gradUg,o_gradUv;
 Mem o_exactMixtureStress,o_baseNativeStress,o_divExactMixtureStress,o_divBaseNativeStress;
+Mem o_coupledMixtureStress;
 int calls=0;
 namespace opSEM{template<class... T>void strongDivergence(T&&...){calls++;}}
 template<class... T>void buildMixtureForceKernel(T&&...){calls++;}

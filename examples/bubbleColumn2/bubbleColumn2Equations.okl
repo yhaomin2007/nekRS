@@ -1,3 +1,83 @@
+// Invert the coupled phase material-inertia block before time discretization.
+// coef rows: gas response to gas/liquid force, gas/liquid pressure mobility.
+// The legacy pointwise kernel has just supplied VM-free drag and gas stress.
+@kernel void configureCoupledVirtualMass(
+    const dlong N, const dlong offset,
+    const dfloat rhoGas, const dfloat rhoLiquid,
+    const dfloat muLiquid, const dfloat muGas, const dfloat alphaFloor,
+    const dfloat addedDensity,
+    const dfloat gx, const dfloat gy, const dfloat gz,
+    @ restrict const dfloat *alpha, @ restrict const dfloat *ul,
+    @ restrict const dfloat *gradP, @ restrict const dfloat *gradUl,
+    @ restrict const dfloat *gradUm,
+    @ restrict dfloat *dragLambda, @ restrict dfloat *gasSource,
+    @ restrict dfloat *mixtureDrag, @ restrict dfloat *mixtureInterphase,
+    @ restrict dfloat *rhoPressure, @ restrict dfloat *muMixture,
+    @ restrict dfloat *coef, @ restrict dfloat *liquidStress,
+    @ restrict dfloat *baseStress)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    const dfloat a = alpha[n] < 0 ? 0 : (alpha[n] > 1 ? 1 : alpha[n]);
+    const dfloat b = 1-a;
+    const dfloat bs = b > alphaFloor ? b : alphaFloor;
+    const dfloat k = addedDensity;
+    // Denominator multiplied by beta avoids alpha/beta overflow.
+    const dfloat den = bs*rhoGas*rhoLiquid + k*(bs*rhoLiquid+a*rhoGas);
+    const dfloat Ggg = (bs*rhoLiquid+a*k)/den;
+    const dfloat Ggl = bs*k/den;
+    const dfloat Bg = (bs*rhoLiquid+k)/den;
+    const dfloat Bl = (bs*rhoGas+k)/den;
+    const dfloat mobility = a*Bg+b*Bl;
+    const dfloat dragScale = bs*rhoGas*rhoLiquid/den;
+    coef[n] = Ggg;
+    coef[n+offset] = Ggl;
+    coef[n+2*offset] = Bg;
+    coef[n+3*offset] = Bl;
+    rhoPressure[n] = 1/mobility;
+    // Preserve the existing native implicit regularization; its baseline
+    // physical stress is subtracted explicitly by addCoupledVMStress.
+    const dfloat muBase = rhoPressure[n]*(b*muLiquid/rhoLiquid+a*muGas/rhoGas);
+    muMixture[n] = muBase;
+    dragLambda[n] *= dragScale;
+    for (int i=0;i<3;++i) {
+      const dlong id=n+i*offset;
+      const dfloat gravity=i==0?gx:(i==1?gy:gz);
+      gasSource[id] = -Bg*gradP[id]+gravity+dragLambda[n]*ul[id];
+      mixtureDrag[id] *= dragScale;
+      mixtureInterphase[id] = mixtureDrag[id]; // No lagged VM acceleration.
+    }
+    const dfloat divL=gradUl[n]+gradUl[n+4*offset]+gradUl[n+8*offset];
+    const dfloat divM=gradUm[n]+gradUm[n+4*offset]+gradUm[n+8*offset];
+    for (int i=0;i<3;++i) for (int j=0;j<3;++j) {
+      const int ij=3*i+j,ji=3*j+i;
+      const dfloat diag=i==j?2.0/3.0:0.0;
+      liquidStress[n+ij*offset]=b*muLiquid*(gradUl[n+ij*offset]+gradUl[n+ji*offset]-diag*divL);
+      baseStress[n+ij*offset]=muBase*(gradUm[n+ij*offset]+gradUm[n+ji*offset]-diag*divM);
+    }
+  }
+}
+
+@kernel void addCoupledVMStress(
+    const dlong N, const dlong offset, const dfloat alphaFloor,
+    @ restrict const dfloat *alpha, @ restrict const dfloat *coef,
+    @ restrict const dfloat *rhoPressure,
+    @ restrict const dfloat *divGas, @ restrict const dfloat *divLiquid,
+    @ restrict const dfloat *divBase,
+    @ restrict dfloat *gasSource, @ restrict dfloat *mixtureStress)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    const dfloat a=alpha[n]<0?0:(alpha[n]>1?1:alpha[n]);
+    const dfloat as=a>alphaFloor?a:alphaFloor;
+    const dfloat bs=1-a>alphaFloor?1-a:alphaFloor;
+    for (int i=0;i<3;++i) {
+      const dlong id=n+i*offset;
+      gasSource[id] += coef[n]*divGas[id]/as+coef[n+offset]*divLiquid[id]/bs;
+      mixtureStress[id] = coef[n+2*offset]*divGas[id]
+          +coef[n+3*offset]*divLiquid[id]-divBase[id]/rhoPressure[n];
+    }
+  }
+}
+
 @kernel void reconstructGasVelocity(const dlong N,
                                     const dlong offset,
                                     const int lowAlphaCutoffEnabled,

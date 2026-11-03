@@ -74,6 +74,7 @@ struct Parameters {
   dfloat mixtureViscousCorrectionEnabled = 0.0;
   dfloat virtualMassEnabled;
   int mixtureVirtualMassEnabled = 1;
+  int coupledVirtualMassEnabled = 0;
   dfloat virtualMassCoefficient;
   int virtualMassTimeDerivativeOrder = 2;
   int virtualMassStartStep = 0;
@@ -116,6 +117,10 @@ static deviceMemory<dfloat> o_ugCorrectorDelta, o_ugCorrectorRhs;
 static int ugPressureSourceStep = -1, ugPressureCorrectedStep = -1;
 static int ugOperatorStep[3] = {-1, -1, -1};
 static dfloat ugPressureSourceScale = 0.0;
+static deviceMemory<dfloat> o_coupledVMCoefficients, o_liquidStress;
+static deviceMemory<dfloat> o_divLiquidStress, o_coupledMixtureStress;
+static deviceMemory<dfloat> o_ugCorrectorPressureResponse;
+static occa::kernel configureCoupledVirtualMassKernel, addCoupledVMStressKernel;
 static deviceMemory<dfloat> o_gradPFilterHistory, o_gasPressureRegionWeight;
 static deviceMemory<dfloat> o_gradPStrong, o_gradPWeak;
 static deviceMemory<dfloat> o_gasPressureInletMask, o_inletVelocityWeight;
@@ -235,6 +240,8 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
     updateVirtualMassHistoryKernel =
         platform->kernelRequests.load(request, "updateVirtualMassHistory");
     buildEquationTermsKernel = platform->kernelRequests.load(request, "buildEquationTerms");
+    configureCoupledVirtualMassKernel = platform->kernelRequests.load(request, "configureCoupledVirtualMass");
+    addCoupledVMStressKernel = platform->kernelRequests.load(request, "addCoupledVMStress");
     buildMixtureForceKernel = platform->kernelRequests.load(request, "buildMixtureForce");
     buildGasPressureAccelerationMonitorKernel =
         platform->kernelRequests.load(request, "buildGasPressureAccelerationMonitor");
@@ -368,6 +375,13 @@ inline void allocate()
   o_qg.resize(3 * offset);
   o_gradUg.resize(9 * offset);
   o_gradP.resize(3 * offset);
+  if (p.coupledVirtualMassEnabled) {
+    o_coupledVMCoefficients.resize(4 * offset);
+    o_liquidStress.resize(9 * offset);
+    o_divLiquidStress.resize(3 * offset);
+    o_coupledMixtureStress.resize(3 * offset);
+    o_ugCorrectorPressureResponse.resize(offset);
+  }
   if (p.gasPressureCorrectorEnabled) {
     o_ugPressureUsed.resize(3 * offset);
     o_ugCorrectorDiff.resize(3 * offset);
@@ -721,7 +735,7 @@ inline void evaluatePointwiseTerms()
                            p.dragSlipLimitEnabled,
                            p.dragSlipMaximum,
                            p.bubbleDiameter,
-                           p.virtualMassEnabled * virtualMassRampFactor(nrs->tstep),
+                           (p.coupledVirtualMassEnabled ? 0.0 : p.virtualMassEnabled) * virtualMassRampFactor(nrs->tstep),
                            p.virtualMassCoefficient,
                            p.mixtureVirtualMassEnabled,
                            p.gravity[0],
@@ -745,6 +759,18 @@ inline void evaluatePointwiseTerms()
                            o_dragLambda,
                            o_mixtureInterphaseAcceleration,
                            o_mixtureDragSource);
+
+  if (p.coupledVirtualMassEnabled) {
+    configureCoupledVirtualMassKernel(mesh->Nlocal, offset,
+        p.rhoGas, p.rhoLiquid, p.muLiquid, p.muGas, p.alphaFloor,
+        p.virtualMassEnabled * virtualMassRampFactor(nrs->tstep)
+          * p.virtualMassCoefficient * p.rhoLiquid,
+        p.gravity[0], p.gravity[1], p.gravity[2], alpha, o_ul,
+        o_gradP, o_gradUl, o_gradUv, o_dragLambda, o_ugSource,
+        o_mixtureDragSource, o_mixtureInterphaseAcceleration,
+        o_rhoPressure, o_muM, o_coupledVMCoefficients,
+        o_liquidStress, o_baseNativeStress);
+  }
 
   evaluateGasCubatureTransport(true);
   platform->linAlg->axpby(mesh->Nlocal, -1.0, o_gasTransport, 0.0, o_alphaSource);
@@ -773,11 +799,24 @@ inline void evaluatePointwiseTerms()
     auto stressRow = o_gasStress.slice(3 * i * offset, 3 * offset);
     auto stressDivergence = o_divGasStress.slice(i * offset, offset);
     opSEM::strongDivergence(mesh, offset, stressRow, stressDivergence);
-    addGasStressKernel(mesh->Nlocal, p.alphaFloor,
+    if (p.coupledVirtualMassEnabled) {
+      auto liquidRow = o_liquidStress.slice(3 * i * offset, 3 * offset);
+      auto liquidDiv = o_divLiquidStress.slice(i * offset, offset);
+      opSEM::strongDivergence(mesh, offset, liquidRow, liquidDiv);
+      auto baseRow = o_baseNativeStress.slice(3 * i * offset, 3 * offset);
+      auto baseDiv = o_divBaseNativeStress.slice(i * offset, offset);
+      opSEM::strongDivergence(mesh, offset, baseRow, baseDiv);
+    } else {
+      addGasStressKernel(mesh->Nlocal, p.alphaFloor,
         p.rhoGas + p.virtualMassEnabled * virtualMassRampFactor(nrs->tstep)
                    * p.virtualMassCoefficient * p.rhoLiquid,
         alpha, stressDivergence, o_ugSource.slice(i * offset, offset));
+    }
   }
+  if (p.coupledVirtualMassEnabled)
+    addCoupledVMStressKernel(mesh->Nlocal, offset, p.alphaFloor, alpha,
+        o_coupledVMCoefficients, o_rhoPressure, o_divGasStress,
+        o_divLiquidStress, o_divBaseNativeStress, o_ugSource, o_coupledMixtureStress);
 }
 
 inline void evaluateNativeAlphaAdvection(deviceMemory<dfloat> &o_advection,
@@ -1079,6 +1118,14 @@ inline void evaluateMixtureForce()
                           o_divDriftStress,
                           o_mixtureInterphaseAcceleration,
                           o_mixtureForce);
+  if (p.coupledVirtualMassEnabled) {
+    for (int i = 0; i < 3; ++i) {
+      auto force = o_mixtureForce.slice(i * offset, offset);
+      platform->linAlg->axpby(mesh->Nlocal, 1.0,
+          o_coupledMixtureStress.slice(i * offset, offset), 1.0, force);
+    }
+    return; // Coupled stress already includes the native-baseline correction.
+  }
   buildMixtureStressCorrectionKernel(mesh->Nlocal, offset,
       p.rhoLiquid, p.rhoGas, p.muLiquid, p.muGas,
       nrs->scalar->o_solution("alpha"), o_rhoPressure, o_gradUl, o_gradUg,
@@ -1192,9 +1239,17 @@ inline void captureGasPressureSource()
     const dfloat rhoEff = p.rhoGas + p.virtualMassEnabled
         * virtualMassRampFactor(nrs->tstep) * p.virtualMassCoefficient * p.rhoLiquid;
     ugPressureSourceScale = -p.gasPressureEnabled / rhoEff;
+    if (p.coupledVirtualMassEnabled)
+      o_ugCorrectorPressureResponse.copyFrom(
+          o_coupledVMCoefficients.slice(2*nrs->fieldOffset, nrs->fieldOffset),
+          nrs->meshV->Nlocal);
     for (int i = 0; i < 3; ++i) {
       auto used = o_ugPressureUsed.slice(i*nrs->fieldOffset, nrs->fieldOffset);
-      platform->linAlg->axpby(nrs->meshV->Nlocal, ugPressureSourceScale,
+      if (p.coupledVirtualMassEnabled) {
+        auto gradient = o_gradP.slice(i*nrs->fieldOffset, nrs->fieldOffset);
+        platform->linAlg->axmyz(nrs->meshV->Nlocal, -p.gasPressureEnabled,
+            o_ugCorrectorPressureResponse, gradient, used);
+      } else platform->linAlg->axpby(nrs->meshV->Nlocal, ugPressureSourceScale,
           o_gradP.slice(i*nrs->fieldOffset, nrs->fieldOffset), 0.0, used);
     }
     ugPressureSourceStep = nrs->tstep;
@@ -1317,8 +1372,12 @@ inline void correctGasPressure()
   for (int i = 0; i < 3; ++i) {
     auto oldAcceleration = o_ugPressureUsed.slice(i*offset, offset);
     auto newGradient = o_gradP.slice(i*offset, offset);
-    platform->linAlg->axpbyz(N, ugPressureSourceScale, newGradient,
-                            -1.0, oldAcceleration, o_ugCorrectorRhs);
+    if (p.coupledVirtualMassEnabled) {
+      platform->linAlg->axmyz(N, -p.gasPressureEnabled,
+          o_ugCorrectorPressureResponse, newGradient, o_ugCorrectorRhs);
+      platform->linAlg->axpby(N, -1.0, oldAcceleration, 1.0, o_ugCorrectorRhs);
+    } else platform->linAlg->axpbyz(N, ugPressureSourceScale, newGradient,
+                                  -1.0, oldAcceleration, o_ugCorrectorRhs);
     // Elliptic::solve gathers element loads internally. Multiply by the
     // element-local mass once; do not pre-assemble this RHS a second time.
     platform->linAlg->axmy(N, 1.0, mesh->o_LMM, o_ugCorrectorRhs);
@@ -1745,7 +1804,7 @@ inline void printDragLocations(double time, int tstep)
     o_ul.copyTo(ul, N, c*offset, c*N);
     nrs->fluid->o_U.slice(c*offset, N).copyTo(um.data()+c*N);
   }
-  const double inertiaRatio = (p.rhoGas + p.virtualMassEnabled * virtualMassRampFactor(nrs->tstep)
+  const double inertiaRatio = p.coupledVirtualMassEnabled ? 1.0 : (p.rhoGas + p.virtualMassEnabled * virtualMassRampFactor(nrs->tstep)
       * p.virtualMassCoefficient * p.rhoLiquid) / p.rhoGas;
   dlong indices[2] = {0, 0};
   double maxima[2] = {-1.0, -1.0};
@@ -1834,8 +1893,12 @@ inline void printStabilityMonitors(double time, int tstep)
       platform->linAlg->amax(Nlocal, nrs->fluid->o_div, comm);
 
   vectorMagnitudeKernel(Nlocal, 3, offset, o_gradP, o_monitorMagnitude);
+  if (p.coupledVirtualMassEnabled) {
+    auto response = o_coupledVMCoefficients.slice(2*offset, offset);
+    platform->linAlg->axmy(Nlocal, 1.0, response, o_monitorMagnitude);
+  }
   buildGasPressureAccelerationMonitorKernel(Nlocal,
-                                            p.rhoGas + p.virtualMassEnabled * virtualMassRampFactor(nrs->tstep)
+                                            p.coupledVirtualMassEnabled ? 1.0 : p.rhoGas + p.virtualMassEnabled * virtualMassRampFactor(nrs->tstep)
                                                        * p.virtualMassCoefficient * p.rhoLiquid,
                                             p.gasMomentumCutoff,
                                             nrs->scalar->o_solution("alpha"),
@@ -1899,7 +1962,7 @@ inline void printStabilityMonitors(double time, int tstep)
     printf("bubbleColumn2 stability step=%d time=%.8e max|divTarget|=%.8e "
            "min(alpha)=%.8e max(alpha)=%.8e mean(alpha)=%.8e "
            "max|qg|=%.8e max|qg-alpha*ug|=%.8e "
-           "maxActive|gradP|/rhoEff=%.8e maxInactive|gradP|/rhoEff=%.8e "
+           "maxActive|aPressureG|=%.8e maxInactive|aPressureG|=%.8e "
            "max|ug|=%.8e CFL(ug)=%.8e max|tauDrift|=%.8e "
            "max(lambdaD*dt)=%.8e "
            "inletArea=%.8e inletMean(alpha)=%.8e "
