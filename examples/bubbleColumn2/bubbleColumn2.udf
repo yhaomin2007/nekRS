@@ -146,6 +146,10 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   platform->par->extract("casedata", "mixtureviscouscorrectionenabled",
                          p.mixtureViscousCorrectionEnabled);
   platform->par->extract("casedata", "virtualmassenabled", p.virtualMassEnabled);
+  platform->par->extract("casedata", "mixturevirtualmassenabled", p.mixtureVirtualMassEnabled);
+  nekrsCheck(p.mixtureVirtualMassEnabled < 0 || p.mixtureVirtualMassEnabled > 1,
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "%s", "mixtureVirtualMassEnabled must be 0 or 1.\n");
   platform->par->extract("casedata", "virtualmasscoefficient", p.virtualMassCoefficient);
   nekrsCheck(p.frozenGasVelocityEnabled && p.virtualMassEnabled != 0.0,
              platform->comm.mpiComm(), EXIT_FAILURE,
@@ -255,9 +259,9 @@ void UDF_Setup()
   if (platform->comm.mpiRank() == 0)
     printf("bubbleColumn2 UG: scalars-first order; conservative cubature alpha and material UG transport; scalar EXT1; UM divergence zero\n");
   if (platform->comm.mpiRank() == 0 && bubbleColumn2::p.virtualMassEnabled != 0.0)
-    printf("bubbleColumn2 virtual mass: implicit gas material inertia, lagged liquid acceleration order=%d, startStep=%d rampStep=%d; UM VM explicit; history collected during delay\n",
+    printf("bubbleColumn2 virtual mass: implicit gas material inertia, lagged liquid acceleration order=%d, startStep=%d rampStep=%d; UM VM enabled=%d (explicit when enabled); history collected during delay\n",
            bubbleColumn2::p.virtualMassTimeDerivativeOrder, bubbleColumn2::p.virtualMassStartStep,
-           bubbleColumn2::p.virtualMassRampStep);
+           bubbleColumn2::p.virtualMassRampStep, bubbleColumn2::p.mixtureVirtualMassEnabled);
   if (platform->comm.mpiRank() == 0)
     printf("bubbleColumn2 drag: UG implicit reaction with lagged liquid velocity; mixture explicit; "
            "drag excluded from EXT extrapolation\n");

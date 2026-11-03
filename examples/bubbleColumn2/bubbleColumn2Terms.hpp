@@ -73,6 +73,7 @@ struct Parameters {
   dfloat driftStressEnabled;
   dfloat mixtureViscousCorrectionEnabled = 0.0;
   dfloat virtualMassEnabled;
+  int mixtureVirtualMassEnabled = 1;
   dfloat virtualMassCoefficient;
   int virtualMassTimeDerivativeOrder = 2;
   int virtualMassStartStep = 0;
@@ -722,6 +723,7 @@ inline void evaluatePointwiseTerms()
                            p.bubbleDiameter,
                            p.virtualMassEnabled * virtualMassRampFactor(nrs->tstep),
                            p.virtualMassCoefficient,
+                           p.mixtureVirtualMassEnabled,
                            p.gravity[0],
                            p.gravity[1],
                            p.gravity[2],

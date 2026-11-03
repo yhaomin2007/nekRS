@@ -13,7 +13,7 @@ args=k.split(')\n{')[0].split('(',1)[1].split(',')
 defaults=dict(N=1,offset=2,rhoLiquid=998.2,rhoGas=1.2,muLiquid=.001,muGas=.000018,
  alphaFloor=1e-6,gasPressureEnabled=1,dragEnabled=0,mixtureDragEnabled=1,
  dragAlphaCutoff=0,dragSlipLimitEnabled=0,dragSlipMaximum=1,bubbleDiameter=.003,
- virtualMassEnabled=1,virtualMassCoefficient=.5,gravityX=0,gravityY=0,gravityZ=0)
+ virtualMassEnabled=1,virtualMassCoefficient=.5,mixtureVirtualMassEnabled=1,gravityX=0,gravityY=0,gravityZ=0)
 declarations=[];names=[]
 for a in args:
  name=a.strip().split()[-1].lstrip('*');names.append(name)
@@ -70,6 +70,15 @@ int main(){
  double physicalVm=added/rhoGas*virtualMassRelativeAcceleration[0];
  assert(std::abs(mixtureInterphaseAcceleration[0]-.02*(1-rhoGas/rhoLiquid)*(physicalDrag+physicalVm))<1e-10);
  assert(std::abs(mixtureDragSource[0]-.02*(1-rhoGas/rhoLiquid)*physicalDrag)<1e-10);
+ // Disable only UM VM. UG added inertia, liquid-acceleration forcing and
+ // implicit drag must remain identical, and UM must retain its drag force.
+ double savedUG=ugSource[0],savedLambda=dragLambda[0],savedDrag=mixtureDragSource[0];
+ mixtureVirtualMassEnabled=0;
+'''+call+r'''
+ assert(ugSource[0]==savedUG && dragLambda[0]==savedLambda);
+ assert(mixtureDragSource[0]==savedDrag);
+ assert(std::abs(mixtureInterphaseAcceleration[0]-savedDrag)<1e-10);
+ mixtureVirtualMassEnabled=1;
  // At zero alpha, UG remains a transported velocity just as in method1.
  alpha[0]=0;
 '''+call+r'''

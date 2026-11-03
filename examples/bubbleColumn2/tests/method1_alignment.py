@@ -26,7 +26,7 @@ for name in ['evaluateGasCubatureTransport','prepareGasAdvection','evaluateNativ
 prefix='#include <cmath>\n#include <cassert>\n#include <initializer_list>\nusing dfloat=double;using dlong=long;\n'
 values=dict(N=2,offset=4,rhoLiquid=998.2,rhoGas=1.2,muLiquid=.001,muGas=.000018,alphaFloor=1e-6,
  gasPressureEnabled=1,dragEnabled=1,mixtureDragEnabled=1,dragAlphaCutoff=0,dragSlipLimitEnabled=0,
- dragSlipMaximum=1,bubbleDiameter=.003,virtualMassEnabled=1,virtualMassCoefficient=.5,
+ dragSlipMaximum=1,bubbleDiameter=.003,virtualMassEnabled=1,virtualMassCoefficient=.5,mixtureVirtualMassEnabled=1,
  gravityX=.1,gravityY=-.2,gravityZ=-9.81)
 outputs={'rhoMField','rhoPressureField','muMField','driftStress','gasStress','alphaSource','ugSource',
          'dragLambda','mixtureInterphaseAcceleration','mixtureDragSource'}

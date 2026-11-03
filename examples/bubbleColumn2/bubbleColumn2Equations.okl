@@ -203,6 +203,7 @@
                                 const dfloat bubbleDiameter,
                                 const dfloat virtualMassEnabled,
                                 const dfloat virtualMassCoefficient,
+                                const int mixtureVirtualMassEnabled,
                                 const dfloat gravityX,
                                 const dfloat gravityY,
                                 const dfloat gravityZ,
@@ -318,7 +319,7 @@
     // phase momentum equations are divided by their densities and summed.
     // If a_g^I is the interphase acceleration in the gas equation, the
     // volume-mixture contribution is alpha*(1-rho_g/rho_l)*a_g^I.
-    const dfloat gasVirtualMassScale = virtualMassEnabled
+    const dfloat gasVirtualMassScale = virtualMassEnabled * mixtureVirtualMassEnabled
                                       * virtualMassCoefficient
                                       * rhoLiquid / rhoGas;
     const dfloat volumeWeight = a * (1.0 - rhoGas / rhoLiquid);

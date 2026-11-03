@@ -25,7 +25,7 @@ values = dict(N=1, offset=2, rhoLiquid=1000, rhoGas=1, muLiquid=.001,
               muGas=.00001, alphaFloor=1e-6, gasPressureEnabled=0,
               dragEnabled=1, mixtureDragEnabled=1,
               dragAlphaCutoff=0, dragSlipLimitEnabled=0, dragSlipMaximum=1,
-              bubbleDiameter=.003, virtualMassEnabled=0, virtualMassCoefficient=0,
+              bubbleDiameter=.003, virtualMassEnabled=0, virtualMassCoefficient=0, mixtureVirtualMassEnabled=1,
               gravityX=0, gravityY=0, gravityZ=0)
 arrays = []
 call = []

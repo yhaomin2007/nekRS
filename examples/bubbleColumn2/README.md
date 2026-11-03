@@ -9,12 +9,25 @@ Method1 and other cases are unchanged by this update.
 
 ## Alpha and gas velocity
 
-### Current test: one gas pressure corrector after native UM/P
+### Current test: UG VM on, UM VM off, gas pressure corrector retained
 
 The supplied `.par` now enables `gasPressureCorrectorEnabled=1`, uses a
 computed strong pressure gradient in both the predictor and corrector
 (`gasPressureGradientMethod=0`, `gasPressureCorrectorGradientMethod=0`), and
-retains solved UG, smooth initial/inlet profile, full mixture forces and VM off.
+retains solved UG, smooth initial/inlet profile and full non-VM mixture forces.
+It now sets `virtualMassEnabled=1`, `virtualMassCoefficient=0.5`, and
+`mixtureVirtualMassEnabled=0`. UG retains its effective inertia
+`rhoGas+Cvm*rhoLiquid`, lagged liquid material acceleration, VM-scaled pressure,
+drag and physical stress. VM histories are still updated after the pressure
+corrector. Only the explicit relative-acceleration VM source in UM is zeroed;
+mixture drag, gravity and drift stress remain active. No VM ramp/delay is added.
+The startup VM message must report `UM VM enabled=0`.
+
+This is an asymmetric VM diagnostic, not the fully paired physical model.
+`mixtureVirtualMassEnabled` defaults to 1 when omitted, preserving previous
+coupled behavior. Set it to 1 to restore the UM VM source; set
+`virtualMassEnabled=0` to disable VM in both equations. The master
+`mixtureForcingEnabled` switch still controls all user UM forces separately.
 Set `gasPressureCorrectorEnabled=0` to recover the original one-through
 algorithm with the selected predictor pressure mode. The code default is 0
 when the new key is absent. For the previous hydrostatic-only test, also set
@@ -225,12 +238,13 @@ The gas BDF time derivative uses native UG histories; its own acceleration is
 not added again as an explicit VM source. All gas physical forces use the same
 `rhoEff=rhoGas+c`. Numerical diffusion/HPFRT remain in their configured UG units.
 
-UM retains the explicit physical volume-mixture source
+With `mixtureVirtualMassEnabled=1`, UM retains the explicit physical volume-mixture source
 
 `alpha*(1-rhoGas/rhoLiquid)*(c/rhoGas)*(aL_lagged-aG_lagged)`.
 
-Do not divide this UM source by rhoEff or omit it as if UM were a density
-average. Its liquid acceleration comes from the same completed-step history
+Do not divide this UM source by rhoEff. The diagnostic switch
+`mixtureVirtualMassEnabled=0` omits it deliberately while retaining UG VM;
+this is not the fully paired physical model. Its liquid acceleration comes from the same completed-step history
 field used in UG. The gas history and liquid history use the same selected
 first/second-order variable-dt derivative and current material convection.
 `virtualMassTimeDerivativeOrder=1` matches method1's liquid-history derivative;
@@ -241,7 +255,8 @@ The implicit gas derivative order is controlled by native `timeStepper`.
 `virtualMassRampStep=R>0` gives `min(1,(step-S)/R)` afterward, and R=0 activates
 immediately. History is collected during the delay when VM is enabled.
 The default is VM on, coefficient 0.5, no delay/ramp, matching method1's
-activation. UM remains explicit with native fluid EXT, while scalar explicit
+activation, but the current diagnostic disables UM VM. When enabled, UM VM
+remains explicit with native fluid EXT, while scalar explicit
 parts use EXT1. Physical coefficients are paired; the coupled equations are
 not solved implicitly together. Pressure mobility remains
 `(1-alpha)/rhoLiquid + alpha/rhoGas`. Stability at larger dt is not established.
