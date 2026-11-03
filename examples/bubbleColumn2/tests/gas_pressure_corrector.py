@@ -27,6 +27,8 @@ cpp=r'''
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include "bubbleColumn2Elliptic.hpp"
+using bubbleColumn2::solveGasPressureCorrection;
 using dfloat=double;using dlong=long;
 struct Mem {
  std::shared_ptr<std::vector<double>> v;long off=0,count=0;
@@ -180,8 +182,18 @@ int main(){
 '''
 with tempfile.TemporaryDirectory() as tmp:
     path=Path(tmp);(path/'check.cpp').write_text(cpp)
-    subprocess.run(['g++','-std=c++17','-Wall','-Wextra','-Werror',str(path/'check.cpp'),'-o',str(path/'check')],check=True)
+    subprocess.run(['g++','-std=c++17','-Wall','-Wextra','-Werror','-I',str(case),str(path/'check.cpp'),'-o',str(path/'check')],check=True)
     subprocess.run([str(path/'check')],check=True)
+    # Repeat the complete algebra/routing test with only the NekRS-LS API.
+    modern=cpp.replace(' void solve(Mem diff,Mem lambda,const Mem& rhs,Mem delta){',
+        ' Mem diff,lambda;\n'
+        ' void coeff0HLM(const Mem& x){diff=x;}\n'
+        ' void coeff1HLM(const Mem& x){lambda=x;}\n'
+        ' void solve(const Mem& rhs,Mem delta){')
+    assert modern != cpp
+    (path/'modern.cpp').write_text(modern)
+    subprocess.run(['g++','-std=c++17','-Wall','-Wextra','-Werror','-I',str(case),str(path/'modern.cpp'),'-o',str(path/'modern')],check=True)
+    subprocess.run([str(path/'modern')],check=True)
 udf=(case/'bubbleColumn2.udf').read_text()
 execute=udf.split('void UDF_ExecuteStep')[1]
 assert execute.index('correctGasPressure();')<execute.index('updateVirtualMassHistory();')

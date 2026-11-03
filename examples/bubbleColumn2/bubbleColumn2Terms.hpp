@@ -9,6 +9,7 @@
 #include "opSEM.hpp"
 #include "avm.hpp"
 #include "explicitFilter.hpp"
+#include "bubbleColumn2Elliptic.hpp"
 
 namespace bubbleColumn2
 {
@@ -1327,9 +1328,9 @@ inline void correctGasPressure()
     const dfloat predictorRes = solver->finalResidual();
     // Reuse exactly the scalar operator/boundary mask. Zero initial delta
     // gives homogeneous Dirichlet corrections; zero Neumann load is natural.
-    solver->solve(o_ugCorrectorDiff.slice(i*offset, offset),
+    solveGasPressureCorrection(solver, o_ugCorrectorDiff.slice(i*offset, offset),
                   o_ugCorrectorLambda.slice(i*offset, offset),
-                  o_ugCorrectorRhs, o_ugCorrectorDelta);
+                  o_ugCorrectorRhs, o_ugCorrectorDelta, 0);
     auto ug = nrs->scalar->o_solution(names[i]);
     platform->linAlg->axpby(N, 1.0, o_ugCorrectorDelta, 1.0, ug);
     if (platform->verbose() || (p.stabilityMonitorInterval > 0
