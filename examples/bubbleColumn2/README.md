@@ -39,9 +39,19 @@ Alpha still uses the existing conservative cubature source and native UM
 advection cancellation. Its diffusion, HPFRT/AVM, clipping, explicit filter,
 initial plume and boundary conditions are retained for a controlled comparison.
 AVM uses the prescribed UG for alpha; UG AVM and implicit drag callbacks are
-skipped. UM continues to evolve with its configured mixture forces. This is
-a prescribed-gas-velocity diagnostic, not a coupled momentum solution. VM must
-be off (validated at startup).
+skipped. UM continues to evolve with its native convection, pressure projection,
+viscosity and boundary conditions, and its properties still depend on alpha.
+By default `frozenGasMixtureForcingEnabled=0` zeros all user mixture forces
+(drag, drift stress, gravity and the optional viscous correction), including
+the drag history contribution. This avoids applying a sum of phase momentum
+equations while one phase velocity is externally fixed. In particular, the
+mixture drag is proportional to `alpha*Ki/(rhoGas*(1-alpha))*(UM-UG)` and has
+positive feedback on UM when UG cannot respond. The original frozen-UG test
+retained this source and could therefore develop a fluid CFL blowup even if
+alpha transport was stable. Set `frozenGasMixtureForcingEnabled=1` only to
+reproduce that coupled-source diagnostic. This switch has no effect when
+`frozenGasVelocityEnabled=0`. This is a prescribed-gas-velocity transport test,
+not a coupled momentum solution. VM must be off (validated at startup).
 
 The scalar transport follows method1 at the synchronization commit:
 

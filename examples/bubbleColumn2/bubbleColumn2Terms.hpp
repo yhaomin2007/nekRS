@@ -21,6 +21,7 @@ struct Parameters {
   dfloat ugInlet;
   dfloat ugInitial = 0.0;
   int frozenGasVelocityEnabled = 0;
+  int frozenGasMixtureForcingEnabled = 0;
   dfloat frozenGasWallRampWidth = 0.005;
   dfloat frozenGasRadius = 0.0; // 0: infer from wall boundary ID 3
   dfloat frozenGasCenterX = 0.0, frozenGasCenterY = 0.0;
@@ -1017,6 +1018,14 @@ inline void evaluateMixtureForce()
 {
   const dlong offset = nrs->fieldOffset;
   auto mesh = nrs->meshV;
+  if (p.frozenGasVelocityEnabled && !p.frozenGasMixtureForcingEnabled) {
+    // The summed phase-momentum forcing assumes both phase velocities evolve.
+    // With UG prescribed, its drag contribution alone feeds back positively
+    // on UM. Use an unforced native UM solve for the transport isolation test.
+    platform->linAlg->fill(3 * offset, 0.0, o_mixtureForce);
+    platform->linAlg->fill(3 * offset, 0.0, o_mixtureDragSource);
+    return;
+  }
   if (p.driftStressEnabled != 0.0) {
     for (int i = 0; i < 3; ++i) {
       auto row = o_driftStress.slice(3 * i * offset, 3 * offset);

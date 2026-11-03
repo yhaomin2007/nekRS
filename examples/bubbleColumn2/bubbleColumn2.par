@@ -72,6 +72,9 @@ gasInitialVelocity = 0.3
 # Frozen-UG isolation test: constant axial core, C1 smooth taper to wall.
 # Set 0 to restore evolving UG. Uses gasInletVelocity throughout the column.
 frozenGasVelocityEnabled = 1
+# Transport isolation: omit user mixture forces while UG is prescribed.
+# 1 reproduces the original frozen-UG test with coupled mixture sources.
+frozenGasMixtureForcingEnabled = 0
 frozenGasWallRampWidth = 0.005
 # Circular column along z; radius=0 infers radius from wall boundary ID 3.
 frozenGasRadius = 0.0

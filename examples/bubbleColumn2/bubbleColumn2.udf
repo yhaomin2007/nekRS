@@ -42,11 +42,13 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   platform->par->extract("casedata", "uginitial", p.ugInitial);
   platform->par->extract("casedata", "gasinitialvelocity", p.ugInitial);
   platform->par->extract("casedata", "frozengasvelocityenabled", p.frozenGasVelocityEnabled);
+  platform->par->extract("casedata", "frozengasmixtureforcingenabled", p.frozenGasMixtureForcingEnabled);
   platform->par->extract("casedata", "frozengaswallrampwidth", p.frozenGasWallRampWidth);
   platform->par->extract("casedata", "frozengasradius", p.frozenGasRadius);
   platform->par->extract("casedata", "frozengascenterx", p.frozenGasCenterX);
   platform->par->extract("casedata", "frozengascentery", p.frozenGasCenterY);
   nekrsCheck(p.frozenGasVelocityEnabled < 0 || p.frozenGasVelocityEnabled > 1
+                 || p.frozenGasMixtureForcingEnabled < 0 || p.frozenGasMixtureForcingEnabled > 1
                  || (p.frozenGasVelocityEnabled
                      && (!std::isfinite(p.frozenGasWallRampWidth) || p.frozenGasWallRampWidth <= 0
                          || !std::isfinite(p.frozenGasRadius) || p.frozenGasRadius < 0
@@ -200,6 +202,9 @@ void UDF_Setup()
       printf("bubbleColumn2 FROZEN UG: axial core=%g, radius=%g, wall ramp width=%g; UG solves disabled; alpha uses prescribed UG; VM off\n",
              bubbleColumn2::p.ugInlet, bubbleColumn2::p.frozenGasRadius,
              bubbleColumn2::p.frozenGasWallRampWidth);
+    if (platform->comm.mpiRank() == 0)
+      printf("bubbleColumn2 FROZEN UG mixture user forcing=%d (0: omit drag, drift, gravity and viscous-correction sources; native UM solve retained)\n",
+             bubbleColumn2::p.frozenGasMixtureForcingEnabled);
   }
   bubbleColumn2::initializeHistory();
   nrs->userSource = &bubbleColumn2::addExplicitSources;
