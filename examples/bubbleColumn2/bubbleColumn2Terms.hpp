@@ -56,6 +56,8 @@ struct Parameters {
   dfloat gasPressureInletRampEndZ = 0.02;
   int gasPressureGradientMethod = 0;
   dfloat gasHydrostaticDensity = 0.0; // 0 uses rhoLiquid
+  int gasPressureCorrectorEnabled = 0;
+  int gasPressureCorrectorGradientMethod = 0; // 0 strong, 1 weak; never hydrostatic
   dfloat gasPressureGradientFilterEnabled = 0.0;
   dfloat gasPressureGradientFilterWeight = 0.2;
   dfloat dragEnabled;
@@ -107,6 +109,11 @@ static deviceMemory<dfloat> o_virtualMassRelativeAcceleration, o_liquidAccelerat
 static deviceMemory<dfloat> o_qg;
 static deviceMemory<dfloat> o_gradUg;
 static deviceMemory<dfloat> o_gradP;
+static deviceMemory<dfloat> o_ugPressureUsed, o_ugCorrectorDiff, o_ugCorrectorLambda;
+static deviceMemory<dfloat> o_ugCorrectorDelta, o_ugCorrectorRhs;
+static int ugPressureSourceStep = -1, ugPressureCorrectedStep = -1;
+static int ugOperatorStep[3] = {-1, -1, -1};
+static dfloat ugPressureSourceScale = 0.0;
 static deviceMemory<dfloat> o_gradPFilterHistory, o_gasPressureRegionWeight;
 static deviceMemory<dfloat> o_gradPStrong, o_gradPWeak;
 static deviceMemory<dfloat> o_gasPressureInletMask, o_inletVelocityWeight;
@@ -359,6 +366,13 @@ inline void allocate()
   o_qg.resize(3 * offset);
   o_gradUg.resize(9 * offset);
   o_gradP.resize(3 * offset);
+  if (p.gasPressureCorrectorEnabled) {
+    o_ugPressureUsed.resize(3 * offset);
+    o_ugCorrectorDiff.resize(3 * offset);
+    o_ugCorrectorLambda.resize(3 * offset);
+    o_ugCorrectorDelta.resize(nrs->meshV->Nlocal);
+    o_ugCorrectorRhs.resize(nrs->meshV->Nlocal);
+  }
   o_gradPFilterHistory.resize(3 * offset);
   {
     auto mesh = nrs->meshV;
@@ -1167,6 +1181,23 @@ inline void rampMixtureDrag(int step)
   }
 }
 
+inline void captureGasPressureSource()
+{
+  if (p.gasPressureCorrectorEnabled) {
+    // EXT1: this is the pressure acceleration actually entering this step's
+    // predictor. Later properties/monitor callbacks may overwrite o_gradP.
+    const dfloat rhoEff = p.rhoGas + p.virtualMassEnabled
+        * virtualMassRampFactor(nrs->tstep) * p.virtualMassCoefficient * p.rhoLiquid;
+    ugPressureSourceScale = -p.gasPressureEnabled / rhoEff;
+    for (int i = 0; i < 3; ++i) {
+      auto used = o_ugPressureUsed.slice(i*nrs->fieldOffset, nrs->fieldOffset);
+      platform->linAlg->axpby(nrs->meshV->Nlocal, ugPressureSourceScale,
+          o_gradP.slice(i*nrs->fieldOffset, nrs->fieldOffset), 0.0, used);
+    }
+    ugPressureSourceStep = nrs->tstep;
+  }
+}
+
 // All EXT history slots must contain the SAME drag contribution for this step.
 // Native makeForcing shifts the modified histories afterward, so every old
 // slot contains o_previous* at the next source call. Non-drag terms are untouched.
@@ -1191,6 +1222,7 @@ inline void addExplicitSources(double)
 {
   prepareGasAdvection();
   evaluatePointwiseTerms();
+  captureGasPressureSource();
   subtractScalarDiffusion();
   evaluateMixtureForce();
   rampMixtureDrag(nrs->tstep);
@@ -1230,8 +1262,92 @@ inline void addExplicitSources(double)
 inline occa::memory implicitGasDrag(double, int scalarIndex)
 {
   if (p.frozenGasVelocityEnabled) return o_NULL;
+  if (p.gasPressureCorrectorEnabled && scalarIndex >= 1 && scalarIndex <= 3) {
+    // Called by scalar_t::solve while the predictor coefficients are live.
+    // Snapshot each component before post-scalar properties can rebuild them.
+    const char *names[3] = {"ugx", "ugy", "ugz"};
+    const int i = scalarIndex - 1;
+    const dlong N = nrs->meshV->Nlocal, offset = nrs->fieldOffset;
+    auto diff = o_ugCorrectorDiff.slice(i*offset, offset);
+    diff.copyFrom(nrs->scalar->o_diffusionCoeff(names[i]), N);
+    auto lambda = o_ugCorrectorLambda.slice(i*offset, offset);
+    platform->linAlg->axpby(N, *nrs->scalar->g0 / nrs->scalar->dt[0],
+        nrs->scalar->o_transportCoeff(names[i]), 0.0, lambda);
+    platform->linAlg->axpby(N, 1.0, o_dragLambda, 1.0, lambda);
+    ugOperatorStep[i] = nrs->tstep;
+  }
   if (scalarIndex >= 1 && scalarIndex <= 3) return o_dragLambda;
   return o_NULL;
+}
+
+// One extra solve per UG component, after native UM/P. No physical history
+// is advanced here. Coefficients and old pressure load belong to the predictor.
+inline void correctGasPressure()
+{
+  if (!p.gasPressureCorrectorEnabled || nrs->tstep <= 0
+      || ugPressureCorrectedStep == nrs->tstep) return;
+  auto mesh = nrs->meshV;
+  const dlong N = mesh->Nlocal, offset = nrs->fieldOffset;
+  nekrsCheck(ugPressureSourceStep != nrs->tstep
+                 || ugOperatorStep[0] != nrs->tstep
+                 || ugOperatorStep[1] != nrs->tstep
+                 || ugOperatorStep[2] != nrs->tstep,
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "%s", "UG pressure corrector is missing this step's predictor snapshots.\n");
+
+  if (p.gasPressureCorrectorGradientMethod == 0) {
+    opSEM::strongGrad(mesh, offset, nrs->fluid->o_P, o_gradP);
+  } else {
+    launchKernel("core-wGradientVolumeHex3D", mesh->Nelements,
+                 mesh->o_vgeo, mesh->o_D, offset, nrs->fluid->o_P, o_gradP);
+    oogs::startFinish(o_gradP, mesh->dim, offset, ogsDfloat, ogsAdd, mesh->oogs);
+    platform->linAlg->axmyMany(N, mesh->dim, offset, 0, -1.0, mesh->o_invLMM, o_gradP);
+  }
+  // Same spatial pressure-source treatment, but no temporal filtering: the
+  // target is the newly solved pressure, not another lagged pressure estimate.
+  if (p.gasPressureInletMaskEnabled)
+    platform->linAlg->axmyMany(N, 3, offset, 0, 1.0, o_gasPressureInletMask, o_gradP);
+  if (p.gasPressureInletRegionEnabled)
+    platform->linAlg->axmyMany(N, 3, offset, 0, 1.0, o_gasPressureRegionWeight, o_gradP);
+
+  const char *names[3] = {"ugx", "ugy", "ugz"};
+  for (int i = 0; i < 3; ++i) {
+    auto oldAcceleration = o_ugPressureUsed.slice(i*offset, offset);
+    auto newGradient = o_gradP.slice(i*offset, offset);
+    platform->linAlg->axpbyz(N, ugPressureSourceScale, newGradient,
+                            -1.0, oldAcceleration, o_ugCorrectorRhs);
+    // Elliptic::solve gathers element loads internally. Multiply by the
+    // element-local mass once; do not pre-assemble this RHS a second time.
+    platform->linAlg->axmy(N, 1.0, mesh->o_LMM, o_ugCorrectorRhs);
+    platform->linAlg->fill(N, 0.0, o_ugCorrectorDelta);
+    auto solver = nrs->scalar->ellipticSolver.at(i+1);
+    const int predictorIters = solver->Niter();
+    const dfloat predictorRes0 = solver->initialResidual();
+    const dfloat predictorGuessRes = solver->initialGuessResidual();
+    const dfloat predictorRes = solver->finalResidual();
+    // Reuse exactly the scalar operator/boundary mask. Zero initial delta
+    // gives homogeneous Dirichlet corrections; zero Neumann load is natural.
+    solver->solve(o_ugCorrectorDiff.slice(i*offset, offset),
+                  o_ugCorrectorLambda.slice(i*offset, offset),
+                  o_ugCorrectorRhs, o_ugCorrectorDelta);
+    auto ug = nrs->scalar->o_solution(names[i]);
+    platform->linAlg->axpby(N, 1.0, o_ugCorrectorDelta, 1.0, ug);
+    if (platform->verbose() || (p.stabilityMonitorInterval > 0
+        && nrs->tstep % p.stabilityMonitorInterval == 0)) {
+      const dfloat maxDelta = platform->linAlg->amax(N, o_ugCorrectorDelta,
+                                                    platform->comm.mpiComm());
+      if (platform->comm.mpiRank() == 0)
+        printf("UG pressure corrector step=%d scalar=%s iter=%d residual=%.8e maxDelta=%.8e\n",
+               nrs->tstep, names[i], solver->Niter(), solver->finalResidual(), maxDelta);
+    }
+    // Keep the native timestep solver report about the predictor solve.
+    solver->Niter(predictorIters);
+    solver->initialResidual(predictorRes0);
+    solver->initialGuessResidual(predictorGuessRes);
+    solver->finalResidual(predictorRes);
+  }
+  ugPressureCorrectedStep = nrs->tstep;
+  reconstructLiquidVelocity(); // Refresh UG, alpha*UG and UL; leave alpha/UM/P.
 }
 
 // Add native AVM using the actual gas transport speed. Baseline diffusion

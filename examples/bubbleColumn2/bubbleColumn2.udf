@@ -109,6 +109,12 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   platform->par->extract(
       "casedata", "gaspressuregradientmethod", p.gasPressureGradientMethod);
   platform->par->extract("casedata", "gashydrostaticdensity", p.gasHydrostaticDensity);
+  platform->par->extract("casedata", "gaspressurecorrectorenabled", p.gasPressureCorrectorEnabled);
+  platform->par->extract("casedata", "gaspressurecorrectorgradientmethod", p.gasPressureCorrectorGradientMethod);
+  nekrsCheck(p.gasPressureCorrectorEnabled < 0 || p.gasPressureCorrectorEnabled > 1
+                 || p.gasPressureCorrectorGradientMethod < 0 || p.gasPressureCorrectorGradientMethod > 1,
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "%s", "UG pressure corrector enabled and gradient method must be 0/1.\n");
   platform->par->extract("casedata",
                          "gaspressuregradientfilterenabled",
                          p.gasPressureGradientFilterEnabled);
@@ -182,6 +188,22 @@ void UDF_Setup()
                "Scalar %s requires transportCoeff=1 for the normalized UG equations\n", names[i]);
   }
   bubbleColumn2::allocate();
+  if (bubbleColumn2::p.gasPressureCorrectorEnabled) {
+    const auto &p = bubbleColumn2::p;
+    nekrsCheck(p.frozenGasVelocityEnabled || p.gasVelocityClipEnabled != 0.0
+                   || p.gasVelocityLowAlphaCutoffEnabled,
+               platform->comm.mpiComm(), EXIT_FAILURE,
+               "%s", "UG pressure corrector requires solved UG with gas clipping/low-alpha masking disabled.\n");
+    for (int i = 1; i < 4; ++i) {
+      const auto sid = scalarDigitStr(i);
+      nekrsCheck(!nrs->scalar->compute[i] || platform->app->bc->hasRobin("SCALAR"+sid),
+                 platform->comm.mpiComm(), EXIT_FAILURE,
+                 "%s", "UG pressure corrector requires active scalar solves and Dirichlet/Neumann boundaries.\n");
+    }
+    if (platform->comm.mpiRank() == 0)
+      printf("bubbleColumn2 UG pressure corrector ON: new pressure gradient method=%d; frozen predictor diffusion/BDF/drag; one correction after native UM/P\n",
+             p.gasPressureCorrectorGradientMethod);
+  }
   if (platform->options.getArgs("RESTART FILE NAME").empty()) {
     const auto &p = bubbleColumn2::p;
     bubbleColumn2::initializePlumeKernel(
@@ -260,6 +282,7 @@ void UDF_Setup()
 
 void UDF_ExecuteStep(double time, int tstep)
 {
+  bubbleColumn2::correctGasPressure();
   // Apply an emergency magnitude limiter immediately after the fluid solve so
   // the bounded volume velocity is used by diagnostics, output, and the next
   // timestep/CFL evaluation.

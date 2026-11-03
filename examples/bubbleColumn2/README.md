@@ -9,9 +9,58 @@ Method1 and other cases are unchanged by this update.
 
 ## Alpha and gas velocity
 
-### Current test: full mixture forces, prescribed hydrostatic UG pressure
+### Current test: one gas pressure corrector after native UM/P
 
-The supplied `.par` selects `frozenGasVelocityEnabled=0`,
+The supplied `.par` now enables `gasPressureCorrectorEnabled=1`, uses a
+computed strong pressure gradient in both the predictor and corrector
+(`gasPressureGradientMethod=0`, `gasPressureCorrectorGradientMethod=0`), and
+retains solved UG, smooth initial/inlet profile, full mixture forces and VM off.
+Set `gasPressureCorrectorEnabled=0` to recover the original one-through
+algorithm with the selected predictor pressure mode. The code default is 0
+when the new key is absent. For the previous hydrostatic-only test, also set
+`gasPressureGradientMethod=2` and leave the corrector off.
+
+The source callback saves the actual predictor pressure acceleration, including
+any hydrostatic replacement, temporal filtering, inlet masks and VM inertia.
+The implicit gas-drag callback snapshots the predictor's three diffusion
+fields (including AVM/outlet ramp) and `g0/dt*transportCoeff+lambdaDrag` at the
+actual scalar solve, before post-scalar properties can overwrite live buffers.
+After the native pressure/UM solve, `UDF_ExecuteStep` solves, componentwise,
+
+`A_g deltaUG = M_local * (aPressure_new - aPressure_used)`
+
+with the saved coefficients, then adds deltaUG to the predictor. New pressure
+uses the current native `o_P` with a strong (0) or weak (1) gradient selected
+independently of the predictor. Spatial inlet weights apply to the new load;
+temporal pressure filtering does not. The scalar elliptic solver performs
+gather-scatter internally, so the element-local RHS mass is applied only once.
+The same Dirichlet mask and zero correction initial guess preserve specified
+gas boundary values; Neumann correction loads are zero. Robin boundaries are
+not supported by this corrector and are rejected when it is enabled.
+
+This adds three scalar Helmholtz solves per physical step. Native predictor
+solver statistics are restored after reuse; separate `UG pressure corrector`
+log lines report correction iterations, residuals and maxDelta at the monitor
+interval (or every step in verbose mode). A startup `UG pressure corrector ON`
+line confirms activation. Snapshot step checks prevent stale loads, and repeat
+execute callbacks cannot apply the correction twice. Corrected UG/alpha*UG/UL
+are refreshed before VM history, diagnostics and checkpoint output. Alpha,
+UM, pressure, BDF history, scalar nonlinear source history and fluid properties
+are not advanced or re-solved by this correction. Thus same-step alpha flux
+and mixture-force consistency still require a future coupled iteration.
+
+The enabled mode requires solved UG and gas clipping/low-alpha masks off, so
+postprocessing cannot invalidate the predictor equation before correction.
+With a hydrostatic predictor, enabling this corrector restores the computed
+pressure contribution; the final UG is no longer hydrostatic-only. Validation
+compiles the actual capture/correction helpers against a small diffusion/drag
+operator and compares with a direct new-pressure solve, including boundary
+values, nonuniform mass, post-predictor coefficient mutations and disabled mode.
+This is host algebra validation, not a full native MPI/GPU stability test.
+
+### Previous test: full mixture forces, prescribed hydrostatic UG pressure
+
+The hydrostatic-only test selects `frozenGasVelocityEnabled=0`,
 `smoothGasVelocityProfileEnabled=1`, `mixtureForcingEnabled=1`, and
 `virtualMassEnabled=0`. Start a fresh run. All three UG scalars are solved
 with gravity, implicit drag, convection and viscosity active. User mixture
