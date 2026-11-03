@@ -374,7 +374,7 @@ inline void allocate()
       std::vector<dfloat> x(mesh->Nlocal), y(mesh->Nlocal);
       mesh->o_x.copyTo(x.data(), mesh->Nlocal);
       mesh->o_y.copyTo(y.data(), mesh->Nlocal);
-      o_inletVelocityWeight.copyTo(weight.data(), offset);
+      o_inletVelocityWeight.copyTo(weight, offset);
       double localRadius = 0.0, radius = p.frozenGasRadius;
       for (dlong n = 0; n < mesh->Nlocal; ++n) {
         if (weight[n] == 0.0)
@@ -397,7 +397,7 @@ inline void allocate()
       o_inletVelocityWeight.copyFrom(weight.data(), offset);
       oogs::startFinish(o_inletVelocityWeight, 1, 0,
                         ogsDfloat, ogsMin, mesh->oogs);
-      o_inletVelocityWeight.copyTo(weight.data(), offset);
+      o_inletVelocityWeight.copyTo(weight, offset);
       for (dlong n = 0; n < mesh->Nlocal; ++n)
         ug[2*offset+n] = p.ugInlet*weight[n];
       o_frozenUg.resize(3*offset);

@@ -2,6 +2,7 @@
 from pathlib import Path
 import subprocess
 import tempfile
+import re
 
 case = Path(__file__).resolve().parents[1]
 s = (case / 'bubbleColumn2Terms.hpp').read_text()
@@ -107,3 +108,42 @@ assert 'if (p.frozenGasVelocityEnabled)' in function('inline void postProcessGas
 assert 'MPI_Allreduce(&localRadius, &radius' in s
 assert 'ug[2*offset+n] = p.ugInlet*weight[n];' in s
 print('Frozen UG: smooth wall ramp, endpoints, padding, repeated restoration, dilute gas, flux consistency and solver/transport routing passed.')
+
+# Compile the actual allocation download calls against the real wrapper's
+# vector-only copyTo overload. The earlier profile mock did not cover allocate.
+header = (case.parents[1]/'src/platform/deviceMemory.hpp').read_text()
+start = header.index('  void copyTo(std::vector<T> &dest, size_type count,')
+end = header.index('\n  void copyTo(std::vector<T> &dest) const', start)
+overload = header[start:end]
+calls = re.findall(r'o_inletVelocityWeight\.copyTo\([^;]+;', function('inline void allocate('))
+assert len(calls) == 2
+transfer_cpp = r'''
+#include <algorithm>
+#include <cassert>
+#include <cstddef>
+#include <vector>
+struct Backend {
+ std::vector<double> data{0., .25, .5, 1.};
+ void copyTo(double* out, std::size_t count, std::size_t offset) const {
+  std::copy_n(data.begin()+offset, count, out);
+ }
+};
+template<class T> struct Wrapper {
+ using size_type=std::size_t;
+ Backend occa_memory_;
+''' + overload + r'''
+};
+int main(){
+ Wrapper<double> o_inletVelocityWeight;
+ const long offset=4;
+ std::vector<double> weight(offset, -1.);
+''' + '\n'.join(calls) + r'''
+ assert(weight==o_inletVelocityWeight.occa_memory_.data);
+}
+'''
+with tempfile.TemporaryDirectory() as temp:
+    path = Path(temp)
+    (path/'transfers.cpp').write_text(transfer_cpp)
+    subprocess.run(['g++','-std=c++17','-Wall','-Wextra','-Werror',str(path/'transfers.cpp'),'-o',str(path/'transfers')],check=True)
+    subprocess.run([str(path/'transfers')],check=True)
+print('Frozen UG allocation: both host downloads compile against the actual deviceMemory vector overload and preserve values.')
