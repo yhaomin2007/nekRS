@@ -69,9 +69,13 @@ alphaInlet = 0.016667
 gasInletVelocity = 0.3
 # Initial UG plume peak (m/s), multiplied by the axial tanh profile.
 gasInitialVelocity = 0.3
-# Frozen-UG isolation test: constant axial core, C1 smooth taper to wall.
-# Set 0 to restore evolving UG. Uses gasInletVelocity throughout the column.
-frozenGasVelocityEnabled = 1
+# Solved-UG test: same smooth initial/inlet profile, user mixture forces off.
+# UG evolves normally; alpha transport/filter settings are unchanged.
+frozenGasVelocityEnabled = 0
+smoothGasVelocityProfileEnabled = 1
+# Master switch for user UM forces, independent of whether UG is frozen.
+# UG pressure, gravity, drag and viscosity remain active (VM stays off).
+mixtureForcingEnabled = 0
 # Transport isolation: omit user mixture forces while UG is prescribed.
 # 1 reproduces the original frozen-UG test with coupled mixture sources.
 frozenGasMixtureForcingEnabled = 0

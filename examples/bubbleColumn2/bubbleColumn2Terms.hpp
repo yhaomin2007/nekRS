@@ -21,6 +21,8 @@ struct Parameters {
   dfloat ugInlet;
   dfloat ugInitial = 0.0;
   int frozenGasVelocityEnabled = 0;
+  int smoothGasVelocityProfileEnabled = 0;
+  int mixtureForcingEnabled = 1;
   int frozenGasMixtureForcingEnabled = 0;
   dfloat frozenGasWallRampWidth = 0.005;
   dfloat frozenGasRadius = 0.0; // 0: infer from wall boundary ID 3
@@ -371,7 +373,7 @@ inline void allocate()
     // Wall precedence at shared inlet/wall nodes, including remote copies.
     oogs::startFinish(o_inletVelocityWeight, 1, 0,
                       ogsDfloat, ogsMin, mesh->oogs);
-    if (p.frozenGasVelocityEnabled) {
+    if (p.frozenGasVelocityEnabled || p.smoothGasVelocityProfileEnabled) {
       std::vector<dfloat> x(mesh->Nlocal), y(mesh->Nlocal);
       mesh->o_x.copyTo(x.data(), mesh->Nlocal);
       mesh->o_y.copyTo(y.data(), mesh->Nlocal);
@@ -1018,7 +1020,8 @@ inline void evaluateMixtureForce()
 {
   const dlong offset = nrs->fieldOffset;
   auto mesh = nrs->meshV;
-  if (p.frozenGasVelocityEnabled && !p.frozenGasMixtureForcingEnabled) {
+  if (!p.mixtureForcingEnabled
+      || (p.frozenGasVelocityEnabled && !p.frozenGasMixtureForcingEnabled)) {
     // The summed phase-momentum forcing assumes both phase velocities evolve.
     // With UG prescribed, its drag contribution alone feeds back positively
     // on UM. Use an unforced native UM solve for the transport isolation test.

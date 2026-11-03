@@ -42,14 +42,18 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   platform->par->extract("casedata", "uginitial", p.ugInitial);
   platform->par->extract("casedata", "gasinitialvelocity", p.ugInitial);
   platform->par->extract("casedata", "frozengasvelocityenabled", p.frozenGasVelocityEnabled);
+  platform->par->extract("casedata", "smoothgasvelocityprofileenabled", p.smoothGasVelocityProfileEnabled);
+  platform->par->extract("casedata", "mixtureforcingenabled", p.mixtureForcingEnabled);
   platform->par->extract("casedata", "frozengasmixtureforcingenabled", p.frozenGasMixtureForcingEnabled);
   platform->par->extract("casedata", "frozengaswallrampwidth", p.frozenGasWallRampWidth);
   platform->par->extract("casedata", "frozengasradius", p.frozenGasRadius);
   platform->par->extract("casedata", "frozengascenterx", p.frozenGasCenterX);
   platform->par->extract("casedata", "frozengascentery", p.frozenGasCenterY);
   nekrsCheck(p.frozenGasVelocityEnabled < 0 || p.frozenGasVelocityEnabled > 1
+                 || p.smoothGasVelocityProfileEnabled < 0 || p.smoothGasVelocityProfileEnabled > 1
+                 || p.mixtureForcingEnabled < 0 || p.mixtureForcingEnabled > 1
                  || p.frozenGasMixtureForcingEnabled < 0 || p.frozenGasMixtureForcingEnabled > 1
-                 || (p.frozenGasVelocityEnabled
+                 || ((p.frozenGasVelocityEnabled || p.smoothGasVelocityProfileEnabled)
                      && (!std::isfinite(p.frozenGasWallRampWidth) || p.frozenGasWallRampWidth <= 0
                          || !std::isfinite(p.frozenGasRadius) || p.frozenGasRadius < 0
                          || !std::isfinite(p.frozenGasCenterX) || !std::isfinite(p.frozenGasCenterY))),
@@ -186,6 +190,17 @@ void UDF_Setup()
         nrs->scalar->o_solution("alpha"), nrs->scalar->o_solution("ugx"),
         nrs->scalar->o_solution("ugy"), nrs->scalar->o_solution("ugz"), nrs->fluid->o_U);
   }
+  if (bubbleColumn2::p.smoothGasVelocityProfileEnabled
+      && platform->options.getArgs("RESTART FILE NAME").empty()) {
+    // Same initial and inlet profile as the frozen test, but no repeated
+    // restoration: native UG solves may change the field from the first step.
+    const char *names[3] = {"ugx", "ugy", "ugz"};
+    for (int i = 0; i < 3; ++i)
+      nrs->scalar->o_solution(names[i]).copyFrom(bubbleColumn2::o_frozenUg,
+          nrs->meshV->Nlocal, 0, i*nrs->fieldOffset);
+    bubbleColumn2::reconstructGasVelocity();
+    nrs->fluid->o_U.copyFrom(bubbleColumn2::o_qg, 3*nrs->fieldOffset);
+  }
   if (bubbleColumn2::p.frozenGasVelocityEnabled) {
     // Keep fields/properties/checkpoint layout, but skip native UG boundary
     // updates, forcing, filtering and solves. ALPHA remains an active scalar.
@@ -207,6 +222,12 @@ void UDF_Setup()
              bubbleColumn2::p.frozenGasMixtureForcingEnabled);
   }
   bubbleColumn2::initializeHistory();
+  if (platform->comm.mpiRank() == 0)
+    printf("bubbleColumn2 test controls: UG solved=%d, smooth initial/inlet profile=%d, user mixture forcing=%d\n",
+           !bubbleColumn2::p.frozenGasVelocityEnabled,
+           bubbleColumn2::p.frozenGasVelocityEnabled || bubbleColumn2::p.smoothGasVelocityProfileEnabled,
+           bubbleColumn2::p.mixtureForcingEnabled
+             && (!bubbleColumn2::p.frozenGasVelocityEnabled || bubbleColumn2::p.frozenGasMixtureForcingEnabled));
   nrs->userSource = &bubbleColumn2::addExplicitSources;
   if (platform->comm.mpiRank() == 0)
     printf("bubbleColumn2 UG: scalars-first order; conservative cubature alpha and material UG transport; scalar EXT1; UM divergence zero\n");

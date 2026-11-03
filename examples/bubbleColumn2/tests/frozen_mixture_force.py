@@ -21,6 +21,7 @@ struct Mem{
 };
 struct Params{
  int frozenGasVelocityEnabled=1,frozenGasMixtureForcingEnabled=0;
+ int mixtureForcingEnabled=1;
  double driftStressEnabled=1,alphaFloor=1e-6,gravity[3]={0,0,-9.81};
  double rhoLiquid=998.2,rhoGas=1.2,muLiquid=.001,muGas=1.8e-5;
  double mixtureViscousCorrectionEnabled=1;
@@ -41,12 +42,13 @@ template<class... T>void buildMixtureStressCorrectionKernel(T&&...){calls++;}
 template<class... T>void addMixtureStressCorrectionKernel(T&&...){calls++;}
 ''' + helper + r'''
 int main(){
- for(int frozen:{0,1})for(int forcing:{0,1}){
+ for(int master:{0,1})for(int frozen:{0,1})for(int forcing:{0,1}){
+  p.mixtureForcingEnabled=master;
   p.frozenGasVelocityEnabled=frozen;p.frozenGasMixtureForcingEnabled=forcing;
   calls=0;std::fill(o_mixtureForce.values.begin(),o_mixtureForce.values.end(),9.);
   std::fill(o_mixtureDragSource.values.begin(),o_mixtureDragSource.values.end(),7.);
   evaluateMixtureForce();
-  if(frozen&&!forcing){
+  if(!master||(frozen&&!forcing)){
    assert(calls==0);
    for(double x:o_mixtureForce.values)assert(x==0);
    for(double x:o_mixtureDragSource.values)assert(x==0);
@@ -74,4 +76,4 @@ with tempfile.TemporaryDirectory() as tmp:
 body=s.split('inline void addExplicitSources(')[1].split('inline occa::memory implicitGasDrag')[0]
 assert body.index('evaluateMixtureForce();')<body.index('rampMixtureDrag(')<body.index('freezeDragHistory();')
 assert 'fluidTerms.copyFrom(o_mixtureForce' in body
-print('Frozen transport: zero user mixture force and drag history input; evolving/coupled modes retained; positive frozen-UG drag feedback confirmed.')
+print('Mixture force master/frozen switches: all eight combinations pass; zero force and drag history input, normal coupled path and positive frozen-UG drag feedback confirmed.')

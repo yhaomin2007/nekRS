@@ -9,11 +9,35 @@ Method1 and other cases are unchanged by this update.
 
 ## Alpha and gas velocity
 
+### Current test: solved UG, user mixture forces off
+
+The supplied `.par` selects `frozenGasVelocityEnabled=0`,
+`smoothGasVelocityProfileEnabled=1`, `mixtureForcingEnabled=0`, and
+`virtualMassEnabled=0`. Start a fresh run. All three UG scalars are solved
+with their existing pressure, gravity, implicit drag, convection and viscosity
+terms. Alpha diffusion, filters, clipping and conservative transport are unchanged.
+
+The initial UG and inlet use the same uniform core / smooth 5 mm wall taper
+as the successful frozen test, using the profile geometry controls below.
+The smooth profile initializes UG throughout the column only on a fresh start;
+it is not restored during timestepping unless freezing is explicitly enabled.
+Fresh UM is initialized to `alpha*UG`, retaining initially stationary liquid.
+Restarts retain the loaded UG/UM/alpha; the inlet still uses the smooth profile.
+
+`mixtureForcingEnabled=0` independently disables all user UM acceleration
+sources (drag, drift stress, gravity and optional viscous correction), including
+mixture drag history. It does not disable gas momentum forces or native UM
+convection, viscosity, pressure projection, boundary conditions, or alpha-dependent
+properties. The startup line must report `UG solved=1, smooth initial/inlet
+profile=1, user mixture forcing=0`. This is a diagnostic, not a fully coupled
+physical solution. Set the master switch to 1 to restore user mixture forces;
+the existing individual switches then apply. Its default when absent is 1.
+
 ### Frozen UG isolation test
 
-The supplied `.par` now enables `frozenGasVelocityEnabled=1` and sets
-`virtualMassEnabled=0` for this diagnostic. Start a fresh run for a clean
-comparison. Set `frozenGasVelocityEnabled=0` to restore the evolving UG equations.
+To reproduce the successful frozen test, set `frozenGasVelocityEnabled=1`
+and keep `mixtureForcingEnabled=0`, `virtualMassEnabled=0`. Start a fresh run
+for a clean comparison. Set `frozenGasVelocityEnabled=0` to solve UG again.
 
 The prescribed field is `UG=(0,0,gasInletVelocity*w(r))` at every height,
 including above the initial alpha plume and in zero-alpha regions. For a
@@ -49,7 +73,8 @@ mixture drag is proportional to `alpha*Ki/(rhoGas*(1-alpha))*(UM-UG)` and has
 positive feedback on UM when UG cannot respond. The original frozen-UG test
 retained this source and could therefore develop a fluid CFL blowup even if
 alpha transport was stable. Set `frozenGasMixtureForcingEnabled=1` only to
-reproduce that coupled-source diagnostic. This switch has no effect when
+reproduce that coupled-source diagnostic (also set `mixtureForcingEnabled=1`).
+This frozen-only switch has no effect when
 `frozenGasVelocityEnabled=0`. This is a prescribed-gas-velocity transport test,
 not a coupled momentum solution. VM must be off (validated at startup).
 

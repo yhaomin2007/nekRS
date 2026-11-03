@@ -107,6 +107,13 @@ assert 'o_gasAdvector.copyFrom(o_ug, 3 * offset);' in function('inline void prep
 assert 'if (p.frozenGasVelocityEnabled)' in function('inline void postProcessGasVelocity(')
 assert 'MPI_Allreduce(&localRadius, &radius' in s
 assert 'ug[2*offset+n] = p.ugInlet*weight[n];' in s
+assert 'if (p.frozenGasVelocityEnabled || p.smoothGasVelocityProfileEnabled)' in function('inline void allocate(')
+initial=udf.split('if (bubbleColumn2::p.smoothGasVelocityProfileEnabled')[1].split('if (bubbleColumn2::p.frozenGasVelocityEnabled)')[0]
+assert 'RESTART FILE NAME' in initial
+assert 'nrs->scalar->o_solution(names[i]).copyFrom(bubbleColumn2::o_frozenUg' in initial
+assert 'compute' not in initial
+assert 'nrs->fluid->o_U.copyFrom(bubbleColumn2::o_qg' in initial
+assert 'p.smoothGasVelocityProfileEnabled' not in function('inline void reconstructGasVelocity(')
 print('Frozen UG: smooth wall ramp, endpoints, padding, repeated restoration, dilute gas, flux consistency and solver/transport routing passed.')
 
 # Compile the actual allocation download calls against the real wrapper's
