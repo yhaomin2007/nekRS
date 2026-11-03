@@ -55,6 +55,7 @@ struct Parameters {
   dfloat gasPressureInletZeroEndZ = 0.01;
   dfloat gasPressureInletRampEndZ = 0.02;
   int gasPressureGradientMethod = 0;
+  dfloat gasHydrostaticDensity = 0.0; // 0 uses rhoLiquid
   dfloat gasPressureGradientFilterEnabled = 0.0;
   dfloat gasPressureGradientFilterWeight = 0.2;
   dfloat dragEnabled;
@@ -264,9 +265,12 @@ inline void allocate()
              platform->comm.mpiComm(), EXIT_FAILURE,
              "%s", "Gas transport requires a fixed mesh.\n");
   nekrsCheck(p.gasPressureInletMaskEnabled < 0 || p.gasPressureInletMaskEnabled > 1
-                 || p.gasPressureGradientMethod < 0 || p.gasPressureGradientMethod > 1,
+                 || p.gasPressureGradientMethod < 0 || p.gasPressureGradientMethod > 2,
              platform->comm.mpiComm(), EXIT_FAILURE,
-             "%s", "Gas pressure mask/gradient method must be 0 or 1.\n");
+             "%s", "Gas pressure mask must be 0/1; gradient method must be 0, 1 or 2.\n");
+  nekrsCheck(!std::isfinite(p.gasHydrostaticDensity) || p.gasHydrostaticDensity < 0.0,
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "%s", "gasHydrostaticDensity must be finite and nonnegative (0 uses rhoLiquid).\n");
   nekrsCheck(p.gasPressureInletRegionEnabled < 0 || p.gasPressureInletRegionEnabled > 1
                  || (p.gasPressureInletRegionEnabled
                      && (!std::isfinite(p.gasPressureInletZeroEndZ)
@@ -589,6 +593,17 @@ inline void prepareGasPressureForcing()
 {
   auto mesh = nrs->meshV;
   const dlong offset = nrs->fieldOffset;
+  if (p.gasPressureGradientMethod == 2) {
+    // Prescribed physical hydrostatic gradient, independent of local pressure
+    // and alpha. Bypass temporal filtering and inlet attenuation in this mode.
+    const dfloat rhoRef = p.gasHydrostaticDensity > 0.0
+        ? p.gasHydrostaticDensity : p.rhoLiquid;
+    for (int i = 0; i < 3; ++i) {
+      auto component = o_gradP.slice(i * offset, offset);
+      platform->linAlg->fill(mesh->Nlocal, rhoRef * p.gravity[i], component);
+    }
+    return;
+  }
   const auto &o_selectedGradP =
       (p.gasPressureGradientMethod == 1) ? o_gradPWeak : o_gradPStrong;
 

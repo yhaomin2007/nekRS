@@ -9,13 +9,28 @@ Method1 and other cases are unchanged by this update.
 
 ## Alpha and gas velocity
 
-### Current test: solved UG, user mixture forces off
+### Current test: full mixture forces, prescribed hydrostatic UG pressure
 
 The supplied `.par` selects `frozenGasVelocityEnabled=0`,
-`smoothGasVelocityProfileEnabled=1`, `mixtureForcingEnabled=0`, and
+`smoothGasVelocityProfileEnabled=1`, `mixtureForcingEnabled=1`, and
 `virtualMassEnabled=0`. Start a fresh run. All three UG scalars are solved
-with their existing pressure, gravity, implicit drag, convection and viscosity
-terms. Alpha diffusion, filters, clipping and conservative transport are unchanged.
+with gravity, implicit drag, convection and viscosity active. User mixture
+forces (gravity, drag and drift stress) are restored. The optional mixture
+viscous correction retains its existing switch; VM remains off by prior choice.
+Alpha diffusion, filters, clipping and conservative transport are unchanged.
+
+`gasPressureGradientMethod=2` replaces only the gas pressure source by the
+constant physical gradient `gradP=rhoRef*gravity`. `gasHydrostaticDensity=0`
+uses `rhoLiquid`; a positive value supplies a fixed reference density.
+For gravity `(0,0,-9.81)` and rhoLiquid=998.2, `gradPz=-9792.342 Pa/m`.
+The gas acceleration contribution is `-gradP/rhoGas+gravity`, hence upward
+buoyancy. Local pressure and alpha fluctuations do not change this prescribed
+gradient. Gas inlet masks/region and temporal gradient filters are bypassed
+in this mode. `gasPressureEnabled` still controls application of the source.
+The native UM pressure solve, coefficients and forcing are unchanged by the
+gradient selector. This is a pressure-coupling diagnostic, not a replacement
+for the shared pressure in the final coupled model. Methods 0/1 restore the
+computed strong/weak gradient (default 0 when the key is absent).
 
 The initial UG and inlet use the same uniform core / smooth 5 mm wall taper
 as the successful frozen test, using the profile geometry controls below.
@@ -29,7 +44,8 @@ sources (drag, drift stress, gravity and optional viscous correction), including
 mixture drag history. It does not disable gas momentum forces or native UM
 convection, viscosity, pressure projection, boundary conditions, or alpha-dependent
 properties. The startup line must report `UG solved=1, smooth initial/inlet
-profile=1, user mixture forcing=0`. This is a diagnostic, not a fully coupled
+profile=1, user mixture forcing=1` for this test. The hydrostatic startup line
+also prints rhoRef and all three imposed gradient components. This is a diagnostic, not a fully coupled
 physical solution. Set the master switch to 1 to restore user mixture forces;
 the existing individual switches then apply. Its default when absent is 1.
 

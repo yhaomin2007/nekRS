@@ -39,6 +39,7 @@ struct Mem{
  void copyFrom(Mem x,long n){std::copy(x.ptr(),x.ptr()+n,ptr());}
 };
 struct LA{
+ void fill(long n,double value,Mem& y){std::fill_n(y.ptr(),n,value);}
  void axpby(long n,double a,const Mem& x,double b,Mem& y){for(long i=0;i<n;i++)y.ptr()[i]=a*x.ptr()[i]+b*y.ptr()[i];}
  void axmyMany(long n,int fields,long offset,int,double a,Mem x,Mem y){assert(fields==3);axmyVector(n,offset,0,a,x.ptr(),y.ptr());}
 } la;
@@ -50,6 +51,7 @@ struct Params{
  int gasPressureInletRegionEnabled=0,gasPressureInletMaskEnabled=0,gasPressureGradientMethod=0;
  double gasPressureInletZeroEndZ=.01,gasPressureInletRampEndZ=.02;
  double gasPressureGradientFilterEnabled=0,gasPressureGradientFilterWeight=.2;
+ double gasHydrostaticDensity=0,rhoLiquid=998.2,gravity[3]={0,0,-9.81};
 }p;
 Mem o_gradP(27),o_gradPStrong(27),o_gradPWeak(27),o_gradPFilterHistory(27);
 Mem o_gasPressureRegionWeight(9),o_gasPressureInletMask(9);
@@ -105,6 +107,24 @@ int main(){
  assert(o_gradP.ptr()[0]==0 && close(o_gradPFilterHistory.ptr()[0],1.2));
  assert(o_gradPStrong.ptr()[4]==10 && o_gradPWeak.ptr()[4]==15);
  prepareGasPressureForcing();assert(close(o_gradP.ptr()[4],3));
+ // Hydrostatic mode must ignore local pressure, masks and filter history.
+ p.gasPressureGradientMethod=2;
+ const auto history=*o_gradPFilterHistory.data;
+ for(double density:{0.,850.})for(int repeat=0;repeat<2;repeat++){
+  p.gasHydrostaticDensity=density;
+  p.gravity[0]=1.25;p.gravity[1]=-.5;p.gravity[2]=-9.81;
+  std::fill(o_gradP.data->begin(),o_gradP.data->end(),123.);
+  std::fill(o_gradPStrong.data->begin(),o_gradPStrong.data->end(),1e12*(repeat+1));
+  prepareGasPressureForcing();
+  double rho=density>0?density:p.rhoLiquid;
+  for(int c=0;c<3;c++)for(int n=0;n<9;n++)
+   assert(close(o_gradP.ptr()[c*9+n],n<7?rho*p.gravity[c]:123.));
+  assert(*o_gradPFilterHistory.data==history);
+  assert(-o_gradP.ptr()[18]/1.2+p.gravity[2]>0); // Upward gas buoyancy.
+ }
+ for(int c=0;c<3;c++)p.gravity[c]=0;
+ prepareGasPressureForcing();
+ for(int c=0;c<3;c++)for(int n=0;n<7;n++)assert(o_gradP.ptr()[c*9+n]==0);
 }
 '''
 with tempfile.TemporaryDirectory() as tmp:
@@ -117,4 +137,4 @@ assert 'o_liquidAcceleration,\n                           o_gradP,' in body
 assert 'o_gradPFilterHistory.resize(3 * offset)' in s
 udf=(case/'bubbleColumn2.udf').read_text()
 for key in ['gaspressureinletregionenabled','gaspressureinletzeroendz','gaspressureinletrampendz']:assert key in udf
-print('UG inlet pressure region: plateau/smoothstep/full recovery, endpoint slopes, validation, strong/weak gradients, legacy mask composition, components/padding, temporal-history isolation and repeated callbacks passed.')
+print('UG pressure: strong/weak modes, inlet recovery, temporal history, prescribed hydrostatic density/gravity, pressure independence, mask bypass, buoyancy sign and padding passed.')
