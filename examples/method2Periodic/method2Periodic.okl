@@ -1,0 +1,37 @@
+@kernel void initializePeriodic(const dlong N, const dlong offset,
+    const int tube, const dfloat a, const dfloat volumeVelocity,
+    const dfloat slip, const dfloat radius,
+    @ restrict const dfloat *x, @ restrict const dfloat *y,
+    @ restrict dfloat *alpha, @ restrict dfloat *ugx,
+    @ restrict dfloat *ugy, @ restrict dfloat *ugz,
+    @ restrict dfloat *um)
+{
+  for(dlong n=0;n<N;++n;@tile(p_blockSize,@outer,@inner)) {
+    dfloat profile=1.0;
+    if(tube) {
+      profile=1.0-(x[n]*x[n]+y[n]*y[n])/(radius*radius);
+      profile=profile>0 ? profile : 0;
+    }
+    alpha[n]=a; ugx[n]=0; ugy[n]=0;
+    ugz[n]=profile*(volumeVelocity+(1-a)*slip);
+    um[n]=0;um[n+offset]=0;um[n+2*offset]=profile*volumeVelocity;
+  }
+}
+// p=G0*z+p'; p' is the native periodic pressure. Add the SAME G0 to
+// both normalized equations, with their distinct physical pressure mobility.
+@kernel void addMeanPressure(const dlong N, const dlong offset,
+    const dfloat G0, const dfloat rhoL, const dfloat rhoG,
+    @ restrict const dfloat *alpha,
+    @ restrict dfloat *ugzSource, @ restrict dfloat *fluidSource)
+{
+  for(dlong n=0;n<N;++n;@tile(p_blockSize,@outer,@inner)) {
+    const dfloat a=alpha[n]<0 ? 0 : (alpha[n]>1 ? 1 : alpha[n]);
+    ugzSource[n]-=G0/rhoG;
+    fluidSource[n+2*offset]-=G0*((1-a)/rhoL+a/rhoG);
+  }
+}
+@kernel void addMeanGradient(const dlong N, const dlong offset,
+    const dfloat G0, @ restrict dfloat *gradient)
+{
+  for(dlong n=0;n<N;++n;@tile(p_blockSize,@outer,@inner)) gradient[n+2*offset]+=G0;
+}

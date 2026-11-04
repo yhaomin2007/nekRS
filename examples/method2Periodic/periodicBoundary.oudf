@@ -1,0 +1,10 @@
+// Only case3 has physical boundaries: no-slip for UM and all UG components.
+// Alpha uses homogeneous Neumann and never calls this Dirichlet handler.
+void udfDirichlet(bcData *bc)
+{
+  if(isField("fluid velocity")) {
+    bc->uxFluid=0;bc->uyFluid=0;bc->uzFluid=0;
+  } else if(isField("scalar ugx") || isField("scalar ugy") || isField("scalar ugz")) {
+    bc->sScalar=0;
+  }
+}

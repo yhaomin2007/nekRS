@@ -1,0 +1,140 @@
+userSections = CASEDATA
+
+[GENERAL]
+polynomialOrder = 5
+cubaturePolynomialOrder = 10
+stopAt = numSteps
+numSteps = 10000
+dt = 1e-5
+timeStepper = tombo2
+checkpointControl = steps
+checkpointInterval = 1000
+scalars = ALPHA, UGX, UGY, UGZ
+
+[PROBLEMTYPE]
+equation = navierStokes+variableViscosity
+
+[MESH]
+file = case1.re2
+
+[FLUID PRESSURE]
+residualTol = 1e-10
+
+[FLUID VELOCITY]
+boundaryTypeMap = none
+residualTol = 1e-10
+rho = 998.2
+viscosity = 1.0e-3
+regularization = none
+
+[SCALAR ALPHA]
+boundaryTypeMap = none
+residualTol = 1e-10
+transportCoeff = 1.0
+diffusionCoeff = 1e-8
+regularization = none
+
+[SCALAR UGX]
+boundaryTypeMap = none
+residualTol = 1e-10
+transportCoeff = 1.0
+diffusionCoeff = 1e-8
+regularization = none
+
+[SCALAR UGY]
+boundaryTypeMap = none
+residualTol = 1e-10
+transportCoeff = 1.0
+diffusionCoeff = 1e-8
+regularization = none
+
+[SCALAR UGZ]
+boundaryTypeMap = none
+residualTol = 1e-10
+transportCoeff = 1.0
+diffusionCoeff = 1e-8
+regularization = none
+
+[CASEDATA]
+rhoLiquid = 998.2
+rhoGas = 1.2
+muLiquid = 1.0e-3
+muGas = 1.8e-5
+initialPlumeHeight = 0
+initialPlumeThickness = 0.01
+alphaInlet = 0.016667
+gasInletVelocity = 0.3
+gasInitialVelocity = 0.3
+frozenGasVelocityEnabled = 0
+smoothGasVelocityProfileEnabled = 0
+mixtureForcingEnabled = 1
+frozenGasMixtureForcingEnabled = 0
+frozenGasWallRampWidth = 0.005
+frozenGasRadius = .075
+frozenGasCenterX = 0.0
+frozenGasCenterY = 0.0
+gravityX = 0.0
+gravityY = 0.0
+gravityZ = 0
+alphaExplicitFilterModes = 1
+alphaExplicitFilterStrength = 0
+alphaFloor = 1e-6
+alphaClipEnabled = 0
+alphaMinimum = 0.0
+alphaMaximum = 1.0
+subtractAlphaDiffusion = 0.0
+subtractUgxDiffusion = 1
+subtractUgyDiffusion = 1
+subtractUgzDiffusion = 1
+zRampBottom = 0.9
+zRampTop = 0.95
+outletDampingFactor = 1
+gasVelocityClipEnabled = 0.0
+gasVelocityMaximum = 0.5
+volumeVelocityClipEnabled = 0.0
+volumeVelocityMaximum = 1.0
+gasMomentumCutoff = 1e-4
+gasMomentumFullyActive = 1e-3
+gasPressureEnabled = 1.0
+gasPressureInletMaskEnabled = 0
+gasPressureInletRegionEnabled = 0
+gasPressureInletZeroEndZ = 0.01
+gasPressureInletRampEndZ = 0.02
+gasPressureGradientMethod = 0
+gasHydrostaticDensity = 0.0
+gasPressureCorrectorEnabled = 1
+gasPressureCorrectorGradientMethod = 0
+gasPressureGradientFilterEnabled = 0
+gasPressureGradientFilterWeight = 0.2
+dragEnabled = 1.0
+bubbleDiameter = 3.0e-3
+driftStressEnabled = 1.0
+virtualMassEnabled = 0
+mixtureVirtualMassEnabled = 1
+coupledVirtualMassEnabled = 0
+explicitVirtualMassEnabled = 0
+virtualMassExtrapolationEnabled = 0
+virtualMassCoefficient = 0.5
+gasVelocityLowAlphaCutoffEnabled = 0
+smoothGasVelocityMaskEnabled = 0.0
+mixtureDragEnabled = 1.0
+mixtureDragRampEnabled = 0.0
+mixtureDragRampStartStep = 0
+mixtureDragRampSteps = 10000
+dragAlphaCutoff = 0.0
+dragSlipLimitEnabled = 0.0
+dragSlipMaximum = 1.0
+mixtureViscousCorrectionEnabled = 1
+virtualMassTimeDerivativeOrder = 1
+virtualMassStartStep = 100
+virtualMassRampStep = 10000
+stabilityMonitorEnabled = 0
+stabilityMonitorInterval = 100
+validationOutputInterval = 100000000
+
+testCase = 1
+periodicAlpha = 0.05
+volumeVelocity = 0.3
+tubeRadius = 0.075
+drivingGradient = 0
+diagnosticInterval = 100

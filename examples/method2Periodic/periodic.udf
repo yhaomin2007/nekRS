@@ -1,0 +1,190 @@
+// Reuse the live bubbleColumn2 equations, BDF/EXT handling and corrector.
+// Only initialization and a prescribed mean pressure-gradient source differ.
+#define UDF_Setup0 method2BaseSetup0
+#define UDF_LoadKernels method2BaseLoadKernels
+#define UDF_Setup method2BaseSetup
+#define UDF_ExecuteStep method2BaseExecuteStep
+#define udfDirichlet method2UnusedInletBoundary
+#include "../bubbleColumn2/bubbleColumn2.udf"
+#undef UDF_Setup0
+#undef UDF_LoadKernels
+#undef UDF_Setup
+#undef UDF_ExecuteStep
+#undef udfDirichlet
+
+
+
+#include "periodicPhysics.hpp"
+namespace method2Periodic {
+static int testCase=1, diagnosticInterval=100;
+static dfloat alpha0=0.05, volumeVelocity=0.3, radius=0.075, drivingGradient=0;
+static dfloat meanGradient=0, slip=0;
+static occa::kernel initKernel, meanPressureKernel, meanGradientKernel;
+static std::vector<dfloat> initialAlpha,initialUg,initialUm;
+static std::ofstream csv;
+
+inline std::vector<dfloat> hostField(const occa::memory &memory,dlong count)
+{
+  // deviceMemory::copyTo(vector) does not resize its destination. Allocate first;
+  // wrapping raw OCCA memories also keeps element counts consistent across APIs.
+  std::vector<dfloat> values(count);
+  deviceMemory<dfloat>(memory).copyTo(values,count);
+  return values;
+}
+
+inline void source(double time)
+{
+  bubbleColumn2::addExplicitSources(time);
+  // All VM modes are forbidden here, so gas inertia is rhoG. The base
+  // corrector replaces only grad(p'), leaving this prescribed mean load intact.
+  meanPressureKernel(nrs->meshV->Nlocal,nrs->fieldOffset,meanGradient,
+      bubbleColumn2::p.rhoLiquid,bubbleColumn2::p.rhoGas,
+      nrs->scalar->o_solution("alpha"),nrs->scalar->o_explicitTerms("ugz"),
+      nrs->fluid->o_explicitTerms());
+}
+
+inline void diagnostics(double time,int step)
+{
+  if(step<=0 || (step%diagnosticInterval && step!=1 && !nrs->checkpointStep)) return;
+  const dlong N=nrs->meshV->Nlocal,O=nrs->fieldOffset;
+  bubbleColumn2::reconstructLiquidVelocity();
+  auto a=hostField(nrs->scalar->o_solution("alpha"),N);
+  auto ug=hostField(bubbleColumn2::o_ug,3*O);
+  auto um=hostField(nrs->fluid->o_U,3*O);
+  auto ul=hostField(bubbleColumn2::o_ul,3*O);
+  auto mass=hostField(nrs->meshV->o_LMM,N);
+  dfloat localMax[3]={0,0,0},globalMax[3];
+  dfloat localSum[5]={0,0,0,0,0},globalSum[5];
+  for(dlong n=0;n<N;++n) {
+    localMax[0]=std::max(localMax[0],std::abs(a[n]-initialAlpha[n]));
+    for(int i=0;i<3;++i) {
+      localMax[1]=std::max(localMax[1],std::abs(ug[n+i*O]-initialUg[n+i*O]));
+      localMax[2]=std::max(localMax[2],std::abs(um[n+i*O]-initialUm[n+i*O]));
+    }
+    localSum[0]+=mass[n];localSum[1]+=mass[n]*a[n];
+    localSum[2]+=mass[n]*ug[n+2*O];localSum[3]+=mass[n]*ul[n+2*O];
+    localSum[4]+=mass[n]*um[n+2*O];
+  }
+  MPI_Allreduce(localMax,globalMax,3,MPI_DFLOAT,MPI_MAX,platform->comm.mpiComm());
+  MPI_Allreduce(localSum,globalSum,5,MPI_DFLOAT,MPI_SUM,platform->comm.mpiComm());
+  const dfloat cfl=bubbleColumn2::computeGasCfl();
+  if(platform->comm.mpiRank()==0) {
+    if(!csv.is_open()) {
+      csv.open("periodic_diagnostics.csv",std::ios::trunc);
+      csv<<"step,time,alpha_change_inf,ug_change_inf,um_change_inf,alpha_mean,ugz_mean,ulz_mean,umz_mean,ug_cfl,G0z\n";
+      csv<<std::setprecision(16);
+    }
+    csv<<step<<','<<time;
+    for(auto x:globalMax) csv<<','<<x;
+    for(int j=1;j<5;++j) csv<<','<<globalSum[j]/globalSum[0];
+    csv<<','<<cfl<<','<<meanGradient<<'\n';csv.flush();
+    printf("METHOD2 PERIODIC case=%d step=%d t=%.8e changeInf(alpha,UG,UM)=(%.8e,%.8e,%.8e) UG_CFL=%.8e\n",
+        testCase,step,time,globalMax[0],globalMax[1],globalMax[2],cfl);
+  }
+}
+}
+
+void UDF_Setup0(MPI_Comm comm,setupAide &options)
+{
+  method2BaseSetup0(comm,options);
+  using namespace method2Periodic;
+  platform->par->extract("casedata","testcase",testCase);
+  platform->par->extract("casedata","periodicalpha",alpha0);
+  platform->par->extract("casedata","volumevelocity",volumeVelocity);
+  platform->par->extract("casedata","tuberadius",radius);
+  platform->par->extract("casedata","drivinggradient",drivingGradient);
+  platform->par->extract("casedata","diagnosticinterval",diagnosticInterval);
+  const auto &p=bubbleColumn2::p;
+  nekrsCheck(testCase<1 || testCase>3 || !(alpha0>0 && alpha0<1)
+      || !std::isfinite(volumeVelocity) || !std::isfinite(drivingGradient)
+      || !(radius>0) || !std::isfinite(radius) || !std::isfinite(p.gravity[2]) || diagnosticInterval<1
+      || p.virtualMassEnabled!=0 || p.coupledVirtualMassEnabled
+      || p.explicitVirtualMassEnabled || p.virtualMassExtrapolationEnabled
+      || p.gasPressureGradientMethod!=0 || p.gasPressureCorrectorGradientMethod!=0
+      || p.gasPressureCorrectorEnabled!=1
+      || p.gasPressureInletMaskEnabled || p.gasPressureInletRegionEnabled
+      || p.gasPressureGradientFilterEnabled!=0 || p.gasPressureEnabled!=1
+      || p.frozenGasVelocityEnabled || !p.mixtureForcingEnabled
+      || p.gasVelocityClipEnabled!=0 || p.volumeVelocityClipEnabled!=0
+      || p.smoothGasVelocityProfileEnabled || p.gasVelocityLowAlphaCutoffEnabled
+      || p.alphaClippingEnabled!=0 || p.alphaExplicitFilterStrength!=0
+      || p.outletDampingFactor!=1 || p.dragEnabled!=1 || p.mixtureDragEnabled!=1
+      || p.driftStressEnabled!=1 || p.mixtureViscousCorrectionEnabled!=1
+      || p.subtractAlphaDiffusion!=0
+      || p.mixtureDragRampEnabled!=0 || p.dragAlphaCutoff!=0 || p.dragSlipLimitEnabled!=0
+      || p.gravity[0]!=0 || p.gravity[1]!=0
+      || (testCase==1 && (p.gravity[2]!=0 || drivingGradient!=0))
+      || (testCase==2 && drivingGradient!=0)
+      || !platform->options.getArgs("RESTART FILE NAME").empty(),
+      platform->comm.mpiComm(),EXIT_FAILURE,"%s",
+      "Periodic baselines require a fresh, solved/unclipped VM-off method2 case with paired full drag and unfiltered computed pressure.\n");
+  const dfloat rhoM=(1-alpha0)*p.rhoLiquid+alpha0*p.rhoGas;
+  meanGradient=rhoM*p.gravity[2]+drivingGradient;
+  slip=equilibriumSlip(alpha0,p.rhoLiquid,p.rhoGas,p.muLiquid,p.bubbleDiameter,p.gravity[2]);
+}
+
+void UDF_LoadKernels(deviceKernelProperties &info)
+{
+  method2BaseLoadKernels(info);
+  const std::string req="method2Periodic";
+  if(platform->options.compareArgs("REGISTER ONLY","TRUE")) {
+    platform->kernelRequests.add(req,"method2Periodic.okl",info);
+  } else {
+    method2Periodic::initKernel=platform->kernelRequests.load(req,"initializePeriodic");
+    method2Periodic::meanPressureKernel=platform->kernelRequests.load(req,"addMeanPressure");
+    method2Periodic::meanGradientKernel=platform->kernelRequests.load(req,"addMeanGradient");
+  }
+}
+
+void UDF_Setup()
+{
+  method2BaseSetup();
+  using namespace method2Periodic;
+  initKernel(nrs->meshV->Nlocal,nrs->fieldOffset,static_cast<int>(testCase==3),
+      alpha0,volumeVelocity,slip,radius,nrs->meshV->o_x,nrs->meshV->o_y,
+      nrs->scalar->o_solution("alpha"),nrs->scalar->o_solution("ugx"),
+      nrs->scalar->o_solution("ugy"),nrs->scalar->o_solution("ugz"),nrs->fluid->o_U);
+  platform->linAlg->fill(nrs->fluid->o_P.size(),0.0,nrs->fluid->o_P);
+  bubbleColumn2::initializeHistory(); // Reinitialize histories from THESE fields.
+  bubbleColumn2::updateProperties(0.0);
+  nrs->userSource=&method2Periodic::source;
+  initialAlpha=hostField(nrs->scalar->o_solution("alpha"),nrs->meshV->Nlocal);
+  initialUg=hostField(bubbleColumn2::o_ug,3*nrs->fieldOffset);
+  initialUm=hostField(nrs->fluid->o_U,3*nrs->fieldOffset);
+  if(platform->comm.mpiRank()==0) {
+    printf("METHOD2 PERIODIC case=%d alpha=%g UM=%g slip=%.16e UG=%.16e UL=%.16e G0z=%.16e\n",
+        testCase,alpha0,volumeVelocity,slip,volumeVelocity+(1-alpha0)*slip,
+        volumeVelocity-alpha0*slip,meanGradient);
+    if(testCase==3)printf("Tube values above are centerline initial values; tube is a transient wall test, not an exact equilibrium.\n");
+  }
+}
+
+void UDF_ExecuteStep(double time,int step)
+{
+  // The column-specific integral checks label inlet/outlet IDs. Use periodic
+  // diagnostics instead; retain the exact UG pressure corrector and output path.
+  bubbleColumn2::correctGasPressure();
+  if(nrs->checkpointStep) {
+    bubbleColumn2::reconstructLiquidVelocity();
+    const dlong O=nrs->fieldOffset,N=nrs->meshV->Nlocal;
+    std::vector<deviceMemory<dfloat>> ug,ul;
+    for(int i=0;i<3;++i){
+      ug.push_back(bubbleColumn2::o_ug.slice(i*O,N));
+      ul.push_back(bubbleColumn2::o_ul.slice(i*O,N));
+    }
+    nrs->writeToFile("ug",time,nrs->meshV,{{"velocity",ug}});
+    nrs->writeToFile("ul",time,nrs->meshV,{{"velocity",ul}});
+    bubbleColumn2::writeGasPressureGradients(time);
+    nrs->copyToNek(time,step);
+    nek::userchk();
+  }
+  method2Periodic::diagnostics(time,step);
+  if(nrs->checkpointStep) {
+    deviceMemory<dfloat> grad;grad.resize(3*nrs->fieldOffset);
+    opSEM::strongGrad(nrs->meshV,nrs->fieldOffset,nrs->fluid->o_P,grad);
+    method2Periodic::meanGradientKernel(nrs->meshV->Nlocal,nrs->fieldOffset,method2Periodic::meanGradient,grad);
+    std::vector<deviceMemory<dfloat>> fields;
+    for(int i=0;i<3;++i)fields.push_back(grad.slice(i*nrs->fieldOffset,nrs->meshV->Nlocal));
+    nrs->writeToFile("gpt",time,nrs->meshV,{{"velocity",fields}});
+  }
+}

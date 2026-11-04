@@ -1,0 +1,13 @@
+# Runtime resources staged from current shared sources by prepare.py.
+case*/bubbleColumn2Equations.okl
+case*/bubbleColumn2Transport.okl
+case*/explicitFilter.okl
+case*/method2Periodic.okl
+case*/*.re2
+case*/*.f[0-9]*
+case*/*.nek5000
+case*/*.csv
+case*/.cache/
+__pycache__/
+tests/__pycache__/
+case*/periodicBoundary.oudf
