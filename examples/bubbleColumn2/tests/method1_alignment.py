@@ -29,7 +29,10 @@ for name in ['evaluateGasCubatureTransport','prepareGasAdvection','evaluateNativ
                   'nrs->scalar->o_compute + alphaIndex')
   old=old.replace('mixture ? (o_divergenceUrstOverride.isInitialized() ? o_divergenceUrstOverride : nrs->fluid->o_relUrst)\n                         : nrs->scalar->o_relUrst',
                   'mixture ? nrs->fluid->o_relUrst : nrs->scalar->o_relUrst')
- assert old==function(t,'inline void '+name+'('),name
+ # Documentation may differ when method2 handles time extrapolation separately.
+ def code_only(text):
+  return re.sub(r'//[^\n]*','',text).split()
+ assert code_only(old)==code_only(function(t,'inline void '+name+'(')),name
 # Compile both actual physical UG kernels with identical prescribed alpha/UL/UG.
 prefix='#include <cmath>\n#include <cassert>\n#include <initializer_list>\nusing dfloat=double;using dlong=long;\n'
 values=dict(N=2,offset=4,rhoLiquid=998.2,rhoGas=1.2,muLiquid=.001,muGas=.000018,alphaFloor=1e-6,

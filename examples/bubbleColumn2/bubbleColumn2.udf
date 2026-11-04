@@ -282,7 +282,7 @@ void UDF_Setup()
              && (!bubbleColumn2::p.frozenGasVelocityEnabled || bubbleColumn2::p.frozenGasMixtureForcingEnabled));
   nrs->userSource = &bubbleColumn2::addExplicitSources;
   if (platform->comm.mpiRank() == 0)
-    printf("bubbleColumn2 UG: scalars-first order; conservative cubature alpha and material UG transport; scalar EXT1; UM divergence zero\n");
+    printf("bubbleColumn2 UG: scalars-first order; conservative cubature alpha and material UG transport; gas convection uses native fluid EXT; other scalar explicit terms use EXT1; UM divergence zero\n");
   if (platform->comm.mpiRank() == 0 && bubbleColumn2::p.coupledVirtualMassEnabled)
     printf("bubbleColumn2 COUPLED VM: local phase material-inertia elimination; transformed UG/UM pressure, drag and phase stresses; no lagged VM acceleration source; native BDF and UM pressure solve retained\n");
   if (platform->comm.mpiRank() == 0 && bubbleColumn2::p.virtualMassEnabled != 0.0

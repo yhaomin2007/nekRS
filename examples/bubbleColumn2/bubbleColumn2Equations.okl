@@ -78,6 +78,43 @@
   }
 }
 
+// Extrapolate the assembled nonlinear gas-convection operators with the
+// native fluid coefficients. Only convection is stored here; scalar sources
+// and native UM-advection cancellation remain under the scalar EXT1 path.
+@kernel void extrapolateScalarConvection(
+    const dlong N, const dlong offset, const int nEXT,
+    const int useHistory, const int firstSample, const int advanceHistory,
+    @ restrict const dfloat *coeffEXT,
+    @ restrict const dfloat *current,
+    @ restrict dfloat *history,
+    @ restrict dfloat *extrapolated)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    for (int field = 0; field < 4; ++field) {
+      const dlong id = n + field * offset;
+      const dlong stride = 4 * offset;
+      if (!useHistory) {
+        // Initial CFL/source probes do not consume a physical history level.
+        extrapolated[id] = current[id];
+      } else {
+        if (firstSample) {
+          // Constant prehistory also avoids an artificial jump on restart.
+          for (int stage = 0; stage < nEXT; ++stage)
+            history[id + stage * stride] = current[id];
+        } else if (advanceHistory) {
+          for (int stage = nEXT - 1; stage > 0; --stage)
+            history[id + stage * stride] = history[id + (stage - 1) * stride];
+        }
+        history[id] = current[id];
+        dfloat value = 0.0;
+        for (int stage = 0; stage < nEXT; ++stage)
+          value += coeffEXT[stage] * history[id + stage * stride];
+        extrapolated[id] = value;
+      }
+    }
+  }
+}
+
 @kernel void reconstructGasVelocity(const dlong N,
                                     const dlong offset,
                                     const int lowAlphaCutoffEnabled,

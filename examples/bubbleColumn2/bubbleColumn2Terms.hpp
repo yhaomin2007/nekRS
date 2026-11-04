@@ -94,6 +94,10 @@ static occa::kernel gasInterpolateKernel, gasCubatureProductsKernel;
 static occa::kernel gasProjectKernel, alphaConservativeCubatureKernel;
 static deviceMemory<dfloat> o_gasAdvector;
 static deviceMemory<dfloat> o_scalarCoeffEXT;
+static deviceMemory<dfloat> o_scalarConvectionCurrent, o_scalarConvectionEXT;
+static deviceMemory<dfloat> o_scalarConvectionHistory;
+static occa::kernel extrapolateScalarConvectionKernel;
+static int scalarConvectionHistoryStep = -1;
 
 static deviceMemory<dfloat> o_nativeTransportAdvection;
 static deviceMemory<dfloat> o_gradUv;
@@ -242,6 +246,8 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
     updateVirtualMassHistoryKernel =
         platform->kernelRequests.load(request, "updateVirtualMassHistory");
     buildEquationTermsKernel = platform->kernelRequests.load(request, "buildEquationTerms");
+    extrapolateScalarConvectionKernel =
+        platform->kernelRequests.load(request, "extrapolateScalarConvection");
     configureCoupledVirtualMassKernel = platform->kernelRequests.load(request, "configureCoupledVirtualMass");
     addCoupledVMStressKernel = platform->kernelRequests.load(request, "addCoupledVMStress");
     buildMixtureForceKernel = platform->kernelRequests.load(request, "buildMixtureForce");
@@ -308,6 +314,9 @@ inline void allocate()
   const dlong cubOffset = nrs->meshV->Nelements * nrs->meshV->cubNp;
   o_gasTransportFields.resize(4 * offset);
   o_gasTransport.resize(4 * offset);
+  o_scalarConvectionCurrent.resize(4 * offset);
+  o_scalarConvectionEXT.resize(4 * offset);
+  o_scalarConvectionHistory.resize(nrs->fluid->o_coeffEXT.size() * 4 * offset);
   o_gasCubatureFields.resize(4 * cubOffset);
   o_gasCubatureProducts.resize(4 * cubOffset);
   o_gasAdvector.resize(3 * offset);
@@ -615,8 +624,9 @@ inline void evaluateGasCubatureTransport(bool conservativeAlpha = false)
 inline void prepareGasAdvection()
 {
   const dlong offset = nrs->fieldOffset;
-  // Evaluate nonlinear convection at one time level. Native sumMakef applies
-  // EXT to its history; predicting the advector here would extrapolate twice.
+  // Evaluate each nonlinear gas-convection operator at one time level.
+  // The case applies fluid EXT coefficients to complete operator histories;
+  // predicting the gas advector here would introduce a second extrapolation.
   reconstructGasVelocity();
   o_gasAdvector.copyFrom(o_ug, 3 * offset);
 }
@@ -914,7 +924,13 @@ inline void initializeHistory()
   std::vector<dfloat> coefficients(nEXT, 0.0);
   coefficients[0] = 1.0;
   o_scalarCoeffEXT.copyFrom(coefficients.data(), nEXT);
+  // Keep non-convective scalar sources and native-advection cancellation
+  // under EXT1. Gas convection is extrapolated separately with fluid EXT.
   nrs->scalar->o_coeffEXT = o_scalarCoeffEXT;
+  scalarConvectionHistoryStep = -1;
+  platform->linAlg->fill(o_scalarConvectionHistory.size(), 0.0, o_scalarConvectionHistory);
+  platform->linAlg->fill(o_scalarConvectionCurrent.size(), 0.0, o_scalarConvectionCurrent);
+  platform->linAlg->fill(o_scalarConvectionEXT.size(), 0.0, o_scalarConvectionEXT);
   prepareGasAdvection();
 
   const dlong offset = nrs->fieldOffset;
@@ -1330,17 +1346,32 @@ inline void addExplicitSources(double)
   const dlong Nlocal = nrs->meshV->Nlocal;
   const dlong offset = nrs->fieldOffset;
 
-  // Copy only entries written by the pointwise kernels. Avoid whole-view
-  // copies because scalar and fluid fields may have different padded extents.
-  nrs->scalar->o_explicitTerms("alpha").copyFrom(o_alphaSource, Nlocal);
-  // Gas momentum remains material-velocity form: subtract UG.grad(UG),
-  // not div(UG tensor UG). Alpha has already received -div(alpha*UG).
+  // Preserve full conservative div(alpha*UG) before material UG evaluation
+  // overwrites transport component zero with its non-conservative diagnostic.
+  o_scalarConvectionCurrent.copyFrom(o_gasTransport, Nlocal);
   evaluateGasCubatureTransport(false);
+  for (int i = 0; i < 3; ++i)
+    o_scalarConvectionCurrent.copyFrom(o_gasTransport, Nlocal,
+        (i + 1) * offset, (i + 1) * offset);
+  extrapolateScalarConvectionKernel(Nlocal, offset,
+      static_cast<int>(nrs->fluid->o_coeffEXT.size()), static_cast<int>(nrs->tstep > 0),
+      static_cast<int>(scalarConvectionHistoryStep < 0),
+      static_cast<int>(scalarConvectionHistoryStep != nrs->tstep),
+      nrs->fluid->o_coeffEXT, o_scalarConvectionCurrent,
+      o_scalarConvectionHistory, o_scalarConvectionEXT);
+  if (nrs->tstep > 0) scalarConvectionHistoryStep = nrs->tstep;
+
+  // Replace only alpha's current convection; retain any diffusion counterterm.
+  nrs->scalar->o_explicitTerms("alpha").copyFrom(o_alphaSource, Nlocal);
+  platform->linAlg->axpby(Nlocal, 1.0, o_scalarConvectionCurrent, 1.0,
+      nrs->scalar->o_explicitTerms("alpha"));
+  platform->linAlg->axpby(Nlocal, -1.0, o_scalarConvectionEXT, 1.0,
+      nrs->scalar->o_explicitTerms("alpha"));
   const char *names[4] = {"alpha", "ugx", "ugy", "ugz"};
   for (int i = 0; i < 3; ++i) {
     auto source = o_ugSource.slice(i * offset, offset);
     platform->linAlg->axpby(Nlocal, -1.0,
-        o_gasTransport.slice((i + 1) * offset, offset), 1.0, source);
+        o_scalarConvectionEXT.slice((i + 1) * offset, offset), 1.0, source);
     nrs->scalar->o_explicitTerms(names[i + 1]).copyFrom(source, Nlocal);
   }
   for (int i = 0; i < 4; ++i) {

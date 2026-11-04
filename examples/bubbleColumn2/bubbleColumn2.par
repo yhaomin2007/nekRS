@@ -150,7 +150,8 @@ virtualMassCoefficient = 0.5
 # As in method1, UG is retained through dilute/zero-alpha regions.
 gasVelocityLowAlphaCutoffEnabled = 0
 smoothGasVelocityMaskEnabled = 0.0
-# Scalar sources/convection use EXT1; native BDF order and fluid EXT are unchanged.
+# Alpha/UG convection uses native fluid EXT; other scalar sources retain EXT1.
+# Native BDF order, fluid EXT and all force treatments are unchanged.
 # Alpha uses cubature div(alpha*UG); UG uses cubature UG.grad(UG).
 # Gas drag is an implicit reaction with lagged liquid velocity; mixture drag stays explicit.
 # 0 disables only mixture drag; implicit UG drag and virtual mass are retained.

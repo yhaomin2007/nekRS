@@ -9,6 +9,28 @@ Method1 and other cases are unchanged by this update.
 
 ## Alpha and gas velocity
 
+### Convection time extrapolation
+
+Alpha and UG now use the same live native fluid EXT coefficients as UM for
+**complete assembled nonlinear convection operators**. For constant dt after
+startup, the current EXT3 setting applies `3*N[n]-3*N[n-1]+N[n-2]`, where
+`Nalpha=div(alpha*UG)` and `Ng=UG.grad(UG)` use the existing conservative and
+material cubature kernels. Startup and variable-dt coefficients come directly
+from `nrs->fluid->o_coeffEXT`; no fixed EXT3 constants are imposed in the case.
+The gas advector is not predicted before forming the operator.
+
+A separate case-local history stores only these four convection fields. It
+advances once per physical source step; repeated source calls refresh the same
+slot, and initial CFL probes do not advance history. First use fills missing
+prehistory with the initial operator. Native scalar coefficients remain EXT1,
+so pressure, VM, viscous sources, diffusion counterterms and the cancellation
+of native UM scalar advection keep their existing time treatment. UG implicit
+drag, UM sources/convection, BDF histories, filters and the VM delay/ramp are
+unchanged. Alpha's instantaneous flux diagnostics retain their existing
+meaning; the actual timestep convection load is the EXT combination of flux
+operators rather than the instantaneous diagnostic alone.
+
+
 ### Current test: fully explicit UG/UM virtual mass, P5 / cubature 10
 
 The supplied `.par` selects `polynomialOrder=5`,
@@ -54,7 +76,7 @@ reconstructed from old algorithm-mode checkpoints.
 
 There is **no added gas inertia** in this mode: gas pressure, drag and stress
 use `rhoGas`, not `rhoGas+c`. The entire VM difference, including the gas
-acceleration, is an explicit RHS load. UG scalar sources already use EXT1.
+acceleration, is an explicit RHS load. UG VM and other non-convective scalar sources retain EXT1.
 `freezeExplicitVirtualMassHistory()` separately holds only the UM VM part
 constant across native fluid EXT slots, so it also applies exactly the last
 completed-step VM load. Other forces retain their existing time treatment:
@@ -309,8 +331,9 @@ The scalar transport follows method1 at the synchronization commit:
 - The exact native mixture-advection contribution is canceled in each scalar
   RHS with matching mass assembly; native scalar velocity pointers still refer
   to UM. There is no temporary replacement of the fluid velocity.
-- All scalar nonlinear sources/advection use EXT1, using separate scalar EXT
-  coefficient storage. Native BDF history/order and fluid EXT are retained.
+- Alpha/UG convection uses separate operator histories with native fluid EXT.
+  Other scalar sources and native-advection cancellation retain EXT1 through
+  separate scalar coefficient storage. Native BDF history/order is unchanged.
 - Gas drag uses the native scalar implicit reaction: `lambda=Ki/rhoEff`,
   with lagged `Ki` and `UL`; the explicit RHS contains `lambda*UL` and the
   left side contains `lambda*UG`. Mixture drag remains a full explicit slip
@@ -401,9 +424,9 @@ The implicit gas derivative order is controlled by native `timeStepper`.
 `virtualMassRampStep=R>0` gives `min(1,(step-S)/R)` afterward, and R=0 activates
 immediately. History is collected during the delay when VM is enabled.
 The default is VM on, coefficient 0.5, no delay/ramp, matching method1's
-activation, but the current diagnostic disables UM VM. When enabled, UM VM
-remains explicit with native fluid EXT, while scalar explicit
-parts use EXT1. Physical coefficients are paired; the coupled equations are
+activation for the legacy mode. When enabled in that mode, UM VM
+remains explicit with native fluid EXT, while non-convective scalar explicit
+parts use EXT1. Scalar convection follows the fluid EXT coefficients as above. Physical coefficients are paired; the coupled equations are
 not solved implicitly together. Pressure mobility remains
 `(1-alpha)/rhoLiquid + alpha/rhoGas`. Stability at larger dt is not established.
 
