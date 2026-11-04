@@ -362,6 +362,7 @@ void UDF_ExecuteStep(double time, int tstep)
         bubbleColumn2::o_ul.slice(2 * offset, nrs->meshV->Nlocal)};
     nrs->writeToFile(
         "ul", time, nrs->meshV, {{"velocity", liquidVelocity}});
+    bubbleColumn2::writeGasPressureGradients(time);
     nrs->copyToNek(time, tstep);
     nek::userchk();
   }

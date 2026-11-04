@@ -7,6 +7,36 @@ The checkpoint scalars are `ALPHA,UGX,UGY,UGZ`; `qg=alpha*UG` is derived.
 NekRS core and scalar / pressure / velocity solve ordering are unchanged.
 Method1 and other cases are unchanged by this update.
 
+## Pressure-gradient output
+
+At every native checkpoint/output step, two additional vector field series are
+written using the same `writeToFile` path as the existing `ug` and `ul` files:
+
+| Prefix | Vector contents | Time represented |
+| --- | --- | --- |
+| `gps` | Raw assembled `opSEM::strongGrad` of the newly solved pressure | Current output time |
+| `gpp` | Selected UG predictor gradient, after any pressure-gradient relaxation or inlet attenuation | Pressure used to assemble this step's UG predictor |
+
+In VisIt, open each corresponding `.nek5000` database and plot the `velocity`
+vector components (especially the z component); these slots contain **positive
+pressure gradients**, not velocities or pressure accelerations. Units are Pa/m
+for this dimensional case. The UG pressure source has the opposite sign and
+includes its density normalization. `gasPressureEnabled` is not included in
+these exported gradients.
+
+With the supplied strong-gradient settings, filtering and inlet attenuation
+off, `gps` is also the gradient targeted by the current-pressure corrector;
+`gpp` shows the previous-pressure gradient used by the predictor. Both files
+carry the output time for alignment, although `gpp` represents the lagged
+predictor pressure. If gradient selection/masking/filtering is changed, `gps`
+continues to show the raw current strong gradient. It does not claim to show
+the configured corrector gradient in those other modes.
+
+The predictor field is snapshotted at source assembly because later property,
+monitor and corrector callbacks overwrite the shared gradient buffers. Current
+strong-gradient output uses a separate temporary buffer. These diagnostics do
+not change forcing, solution histories, pressure or restart scalar layout.
+
 ## Alpha and gas velocity
 
 ### Convection time extrapolation

@@ -107,6 +107,7 @@ struct Params {
  double gasPressureEnabled=1,rhoGas=1.2,rhoLiquid=998.2,virtualMassEnabled=0,virtualMassCoefficient=.5;
 }p;
 double virtualMassRampFactor(int){return .5;}
+Mem o_ugPredictorPressureGradient(18);
 Mem o_gradP(18),o_ugPressureUsed(18),o_ugCorrectorDiff(18),o_ugCorrectorLambda(18);
 Mem o_ugCorrectorRhs(4),o_ugCorrectorDelta(4),o_dragLambda(6);
 Mem o_coupledVMCoefficients(24),o_ugCorrectorPressureResponse(6);
@@ -148,6 +149,7 @@ int main(){
    o_dragLambda[j]=2+.5*j;
   }
   captureGasPressureSource();
+  for(int id=0;id<18;id++)assert(o_ugPredictorPressureGradient[id]==o_gradP[id]);
   if(!coupled){
    double eff=p.rhoGas+(explicitVM?0.:vm*.5*p.virtualMassCoefficient*p.rhoLiquid);
    assert(std::abs(ugPressureSourceScale+pressure/eff)<1e-14);

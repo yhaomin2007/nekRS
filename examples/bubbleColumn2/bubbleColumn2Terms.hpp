@@ -121,6 +121,8 @@ static deviceMemory<dfloat> o_virtualMassRelativeAcceleration, o_liquidAccelerat
 static deviceMemory<dfloat> o_qg;
 static deviceMemory<dfloat> o_gradUg;
 static deviceMemory<dfloat> o_gradP;
+// Snapshot the selected predictor gradient before later callbacks overwrite it.
+static deviceMemory<dfloat> o_ugPredictorPressureGradient;
 static deviceMemory<dfloat> o_ugPressureUsed, o_ugCorrectorDiff, o_ugCorrectorLambda;
 static deviceMemory<dfloat> o_ugCorrectorDelta, o_ugCorrectorRhs;
 static int ugPressureSourceStep = -1, ugPressureCorrectedStep = -1;
@@ -396,6 +398,7 @@ inline void allocate()
   o_qg.resize(3 * offset);
   o_gradUg.resize(9 * offset);
   o_gradP.resize(3 * offset);
+  o_ugPredictorPressureGradient.resize(3 * offset);
   if (p.coupledVirtualMassEnabled) {
     o_coupledVMCoefficients.resize(4 * offset);
     o_liquidStress.resize(9 * offset);
@@ -1270,6 +1273,7 @@ inline void rampMixtureDrag(int step)
 
 inline void captureGasPressureSource()
 {
+  o_ugPredictorPressureGradient.copyFrom(o_gradP, 3 * nrs->fieldOffset);
   if (p.gasPressureCorrectorEnabled) {
     // EXT1: this is the pressure acceleration actually entering this step's
     // predictor. Later properties/monitor callbacks may overwrite o_gradP.
@@ -1509,6 +1513,27 @@ inline void correctGasPressure()
   }
   ugPressureCorrectedStep = nrs->tstep;
   reconstructLiquidVelocity(); // Refresh UG, alpha*UG and UL; leave alpha/UM/P.
+}
+
+// Diagnostics only: do not overwrite the live gradients or pressure/corrector state.
+// Both files use the vector "velocity" slot so VisIt can display their components.
+inline void writeGasPressureGradients(double time)
+{
+  auto mesh = nrs->meshV;
+  const dlong offset = nrs->fieldOffset;
+  deviceMemory<dfloat> o_currentStrongGradient;
+  o_currentStrongGradient.resize(3 * offset);
+  opSEM::strongGrad(mesh, offset, nrs->fluid->o_P, o_currentStrongGradient);
+  std::vector<deviceMemory<dfloat>> current = {
+      o_currentStrongGradient.slice(0 * offset, mesh->Nlocal),
+      o_currentStrongGradient.slice(1 * offset, mesh->Nlocal),
+      o_currentStrongGradient.slice(2 * offset, mesh->Nlocal)};
+  std::vector<deviceMemory<dfloat>> predictor = {
+      o_ugPredictorPressureGradient.slice(0 * offset, mesh->Nlocal),
+      o_ugPredictorPressureGradient.slice(1 * offset, mesh->Nlocal),
+      o_ugPredictorPressureGradient.slice(2 * offset, mesh->Nlocal)};
+  nrs->writeToFile("gps", time, mesh, {{"velocity", current}});
+  nrs->writeToFile("gpp", time, mesh, {{"velocity", predictor}});
 }
 
 // Add native AVM using the actual gas transport speed. Baseline diffusion
