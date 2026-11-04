@@ -148,6 +148,15 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   platform->par->extract("casedata", "virtualmassenabled", p.virtualMassEnabled);
   platform->par->extract("casedata", "mixturevirtualmassenabled", p.mixtureVirtualMassEnabled);
   platform->par->extract("casedata", "coupledvirtualmassenabled", p.coupledVirtualMassEnabled);
+  platform->par->extract("casedata", "explicitvirtualmassenabled", p.explicitVirtualMassEnabled);
+  nekrsCheck(p.explicitVirtualMassEnabled < 0 || p.explicitVirtualMassEnabled > 1
+                 || (p.explicitVirtualMassEnabled && p.coupledVirtualMassEnabled),
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "%s", "explicitVirtualMassEnabled must be 0/1 and cannot be combined with coupledVirtualMassEnabled.\n");
+  nekrsCheck(p.explicitVirtualMassEnabled
+                 && (!p.mixtureVirtualMassEnabled || !p.mixtureForcingEnabled),
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "%s", "Fully explicit VM requires paired UG/UM VM and mixture forcing.\n");
   nekrsCheck(p.coupledVirtualMassEnabled < 0 || p.coupledVirtualMassEnabled > 1,
              platform->comm.mpiComm(), EXIT_FAILURE,
              "%s", "coupledVirtualMassEnabled must be 0 or 1.\n");
@@ -277,10 +286,15 @@ void UDF_Setup()
   if (platform->comm.mpiRank() == 0 && bubbleColumn2::p.coupledVirtualMassEnabled)
     printf("bubbleColumn2 COUPLED VM: local phase material-inertia elimination; transformed UG/UM pressure, drag and phase stresses; no lagged VM acceleration source; native BDF and UM pressure solve retained\n");
   if (platform->comm.mpiRank() == 0 && bubbleColumn2::p.virtualMassEnabled != 0.0
-      && !bubbleColumn2::p.coupledVirtualMassEnabled)
+      && !bubbleColumn2::p.coupledVirtualMassEnabled
+      && !bubbleColumn2::p.explicitVirtualMassEnabled)
     printf("bubbleColumn2 virtual mass: implicit gas material inertia, lagged liquid acceleration order=%d, startStep=%d rampStep=%d; UM VM enabled=%d (explicit when enabled); history collected during delay\n",
            bubbleColumn2::p.virtualMassTimeDerivativeOrder, bubbleColumn2::p.virtualMassStartStep,
            bubbleColumn2::p.virtualMassRampStep, bubbleColumn2::p.mixtureVirtualMassEnabled);
+  if (platform->comm.mpiRank() == 0 && bubbleColumn2::p.explicitVirtualMassEnabled)
+    printf("bubbleColumn2 FULLY EXPLICIT VM: UG and UM use the same last-completed-step (aL-aG); gas inertia=rhoGas; no VM EXT extrapolation; derivative order=%d; coefficient=%g; startStep=%d rampStep=%d; physical phase-stress correction retained\n",
+           bubbleColumn2::p.virtualMassTimeDerivativeOrder, bubbleColumn2::p.virtualMassCoefficient,
+           bubbleColumn2::p.virtualMassStartStep, bubbleColumn2::p.virtualMassRampStep);
   if (platform->comm.mpiRank() == 0)
     printf("bubbleColumn2 drag: UG implicit reaction with lagged liquid velocity; mixture explicit; "
            "drag excluded from EXT extrapolation\n");

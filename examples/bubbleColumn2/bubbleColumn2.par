@@ -1,9 +1,9 @@
 userSections = CASEDATA
 
 [GENERAL]
-polynomialOrder = 7
-# Resolve degree-14 alpha*UG products before conservative differentiation.
-cubaturePolynomialOrder = 14
+polynomialOrder = 5
+# Resolve degree-10 alpha*UG products before conservative differentiation.
+cubaturePolynomialOrder = 10
 # UG scalars require a new run or a converted UG restart.
 # startFrom = bubblecolumn0.f00036
 stopAt = numSteps
@@ -74,7 +74,7 @@ gasInitialVelocity = 0.3
 frozenGasVelocityEnabled = 0
 smoothGasVelocityProfileEnabled = 1
 # Master switch for user UM forces, independent of whether UG is frozen.
-# UG pressure, gravity, drag and viscosity remain active (VM stays off).
+# UG pressure, gravity, drag and viscosity remain active.
 mixtureForcingEnabled = 1
 # Transport isolation: omit user mixture forces while UG is prescribed.
 # 1 reproduces the original frozen-UG test with coupled mixture sources.
@@ -141,10 +141,11 @@ dragEnabled = 1.0
 bubbleDiameter = 3.0e-3
 # Set to 0.0 to omit kinematic drift-stress divergence from volume momentum.
 driftStressEnabled = 1.0
-# Test: analytically eliminate coupled phase VM inertia before time discretization.
+# Test: both UG and UM use the last completed-step VM acceleration difference.
 virtualMassEnabled = 1.0
 mixtureVirtualMassEnabled = 1
-coupledVirtualMassEnabled = 1
+coupledVirtualMassEnabled = 0
+explicitVirtualMassEnabled = 1
 virtualMassCoefficient = 0.5
 # As in method1, UG is retained through dilute/zero-alpha regions.
 gasVelocityLowAlphaCutoffEnabled = 0
@@ -165,15 +166,15 @@ dragAlphaCutoff = 0.0
 dragSlipLimitEnabled = 0.0
 dragSlipMaximum = 1.0
 # Optional explicit two-phase stress correction in volume-mixture momentum.
-# Coupled VM always applies the transformed phase stresses and baseline correction.
+# Coupled/fully explicit VM retain physical phase stresses and baseline correction.
 mixtureViscousCorrectionEnabled = 0.0
 # Liquid acceleration time derivative: 1=backward first order; 2=variable-step backward second order.
 virtualMassTimeDerivativeOrder = 1
-# Added gas inertia and VM forcing activate after this step number.
+# VM activates after this step number; fully explicit mode adds no gas inertia.
 virtualMassStartStep = 0
 # Linear ramp duration after start; 0 preserves immediate activation.
 virtualMassRampStep = 0
-# UM retains volume averaging and div(UM)=0; coupled VM uses transformed pressure mobility.
+# UM retains volume averaging and div(UM)=0; explicit VM uses base pressure mobility.
 stabilityMonitorEnabled = 1.0
 stabilityMonitorInterval = 10
 validationOutputInterval = 10

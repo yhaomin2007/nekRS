@@ -22,7 +22,7 @@ struct Mem{
 struct Params{
  int frozenGasVelocityEnabled=1,frozenGasMixtureForcingEnabled=0;
  int mixtureForcingEnabled=1;
- int coupledVirtualMassEnabled=0;
+ int coupledVirtualMassEnabled=0,explicitVirtualMassEnabled=0;
  double driftStressEnabled=1,alphaFloor=1e-6,gravity[3]={0,0,-9.81};
  double rhoLiquid=998.2,rhoGas=1.2,muLiquid=.001,muGas=1.8e-5;
  double mixtureViscousCorrectionEnabled=1;

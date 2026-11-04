@@ -284,6 +284,7 @@
                                 const dfloat virtualMassEnabled,
                                 const dfloat virtualMassCoefficient,
                                 const int mixtureVirtualMassEnabled,
+                                const int explicitVirtualMassEnabled,
                                 const dfloat gravityX,
                                 const dfloat gravityY,
                                 const dfloat gravityZ,
@@ -381,10 +382,10 @@
     // Freeze Ki and liquid velocity; only -Ki*UG/rhoEff is implicit.
     const dfloat dragRate = (a >= dragAlphaCutoff && dragEnabled != 0.0)
         ? dragEnabled * Ki * dragSlipFactor / rhoGas : 0.0;
-    // Move -C*rho_l*D_g(ug)/Dt to the left, then divide by rhoEff.
-    // Native scalar BDF advances ug, including its own matching history.
+    // Legacy: move gas VM inertia to the LHS. Fully explicit VM instead
+    // keeps rhoGas and uses the entire completed-step (aL-aG) on the RHS.
     const dfloat addedDensity = virtualMassEnabled * virtualMassCoefficient * rhoLiquid;
-    const dfloat rhoEff = rhoGas + addedDensity;
+    const dfloat rhoEff = rhoGas + (explicitVirtualMassEnabled ? 0.0 : addedDensity);
     const dfloat forceScale = rhoGas / rhoEff;
     dragLambda[n] = forceScale * dragRate;
     for (int i = 0; i < 3; ++i) {
@@ -392,7 +393,8 @@
       const dfloat gravity = i == 0 ? gravityX : (i == 1 ? gravityY : gravityZ);
       ugSource[id] = gasActive * (forceScale * (-gasPressureEnabled * gradP[id] / rhoGas
                           + gravity + dragRate * ul[id])
-          + addedDensity / rhoEff * liquidAcceleration[id]);
+          + addedDensity / rhoEff * (explicitVirtualMassEnabled
+              ? virtualMassRelativeAcceleration[id] : liquidAcceleration[id]));
     }
 
     // Interphase forces cancel in mass-weighted momentum, but not after the

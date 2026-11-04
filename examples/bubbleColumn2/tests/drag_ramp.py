@@ -3,7 +3,15 @@ from pathlib import Path
 import subprocess
 import tempfile
 s=(Path(__file__).resolve().parents[1]/'bubbleColumn2Terms.hpp').read_text()
-helper='inline dfloat mixtureDragRampFactor'+s.split('inline dfloat mixtureDragRampFactor')[1].split('// All EXT history')[0]
+def function(source, marker):
+    start = source.index(marker)
+    end = source.index('{', start) + 1
+    depth = 1
+    while depth:
+        depth += (source[end] == '{') - (source[end] == '}')
+        end += 1
+    return source[start:end]
+helper=function(s, 'inline dfloat mixtureDragRampFactor(')+'\n'+function(s, 'inline void rampMixtureDrag(')
 cpp=r'''
 #include <vector>
 #include <memory>

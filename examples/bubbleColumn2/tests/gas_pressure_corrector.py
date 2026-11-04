@@ -101,7 +101,7 @@ struct Nrs{int tstep=1;long fieldOffset=6;Mesh* meshV=&mesh;Scalar* scalar=&::sc
 auto nrs=&app;
 struct Params {
  int gasPressureCorrectorEnabled=1,gasPressureCorrectorGradientMethod=0;
- int coupledVirtualMassEnabled=0;
+ int coupledVirtualMassEnabled=0,explicitVirtualMassEnabled=0;
  int frozenGasVelocityEnabled=0,gasPressureInletMaskEnabled=0,gasPressureInletRegionEnabled=0;
  int stabilityMonitorInterval=1;
  double gasPressureEnabled=1,rhoGas=1.2,rhoLiquid=998.2,virtualMassEnabled=0,virtualMassCoefficient=.5;
@@ -132,8 +132,8 @@ int main(){
  for(auto n:names){scalar.u.emplace(n,Mem(6));scalar.diff.emplace(n,Mem(6));scalar.rho.emplace(n,Mem(6));}
  for(int j=0;j<4;j++){mesh.o_LMM[j]=j+2;mesh.o_invLMM[j]=1./mesh.o_LMM[j];fluid.o_P[j]=100+j;}
  const auto originalP=*fluid.o_P.v,originalUM=*fluid.o_U.v;
- for(int coupled:{0,1})for(int method:{0,1})for(int mask:{0,1})for(int vm:{0,1})for(int pressure:{0,1}){
-  p.coupledVirtualMassEnabled=coupled;
+ for(int coupled:{0,1})for(int method:{0,1})for(int mask:{0,1})for(int vm:{0,1})for(int pressure:{0,1})for(int explicitVM:{0,1}){
+  p.coupledVirtualMassEnabled=coupled; p.explicitVirtualMassEnabled=explicitVM;
   nrs->tstep++;p.gasPressureCorrectorGradientMethod=method;
   p.gasPressureInletMaskEnabled=mask;p.gasPressureInletRegionEnabled=mask;
   p.virtualMassEnabled=vm;p.gasPressureEnabled=pressure;
@@ -148,6 +148,10 @@ int main(){
    o_dragLambda[j]=2+.5*j;
   }
   captureGasPressureSource();
+  if(!coupled){
+   double eff=p.rhoGas+(explicitVM?0.:vm*.5*p.virtualMassCoefficient*p.rhoLiquid);
+   assert(std::abs(ugPressureSourceScale+pressure/eff)<1e-14);
+  }
   for(int c=0;c<3;c++){
    implicitGasDrag(0,c+1);
    savedDiff[c]=o_ugCorrectorDiff.slice(c*6,6);
@@ -184,7 +188,7 @@ int main(){
  correctGasPressure();assert(solvers[1].calls==before);
  p.gasPressureCorrectorEnabled=1;bool rejected=false;
  try{correctGasPressure();}catch(const std::runtime_error&){rejected=true;}assert(rejected);
- assert(refreshes==32);
+ assert(refreshes==64);
 }
 '''
 with tempfile.TemporaryDirectory() as tmp:

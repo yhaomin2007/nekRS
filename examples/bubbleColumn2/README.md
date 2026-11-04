@@ -9,9 +9,73 @@ Method1 and other cases are unchanged by this update.
 
 ## Alpha and gas velocity
 
-### Current test: analytically coupled VM inertia, gas pressure corrector retained
+### Current test: fully explicit UG/UM virtual mass, P5 / cubature 10
 
-The supplied `.par` now enables `gasPressureCorrectorEnabled=1`, uses a
+The supplied `.par` selects `polynomialOrder=5`,
+`cubaturePolynomialOrder=10`, `explicitVirtualMassEnabled=1`,
+`coupledVirtualMassEnabled=0`, `virtualMassEnabled=1`,
+`mixtureVirtualMassEnabled=1`, and `virtualMassCoefficient=0.5`.
+`dt=1e-5`, the pressure corrector, solved UG, smooth initial/inlet profile,
+mixture forces, drag model, filters, scalar diffusion and outlet enhancement
+retain their existing settings. Use a fresh start with the existing mesh.
+Check that startup prints `FULLY EXPLICIT VM` and `UG pressure corrector ON`.
+
+For the step from n to n+1, both equations use the same saved material
+acceleration difference from the last completed step:
+
+```
+aG[n] = (UG[n]-UG[n-1])/dt[n] + UG[n].grad(UG[n])
+aL[n] = (UL[n]-UL[n-1])/dt[n] + UL[n].grad(UL[n])
+c = virtualMassEnabled * ramp(step) * Cvm * rhoLiquid
+UG_VM[n] = (c/rhoGas) * (aL[n]-aG[n])
+UM_VM[n] = alpha[n]*(1-rhoGas/rhoLiquid) * UG_VM[n]
+```
+
+The supplied derivative order is 1; the existing variable-step second-order
+history option remains available. History updates only after the completed
+UM solve and UG pressure correction. The first step uses zero VM acceleration
+because no completed-step time derivative is available. Histories are not
+reconstructed from old algorithm-mode checkpoints.
+
+There is **no added gas inertia** in this mode: gas pressure, drag and stress
+use `rhoGas`, not `rhoGas+c`. The entire VM difference, including the gas
+acceleration, is an explicit RHS load. UG scalar sources already use EXT1.
+`freezeExplicitVirtualMassHistory()` separately holds only the UM VM part
+constant across native fluid EXT slots, so it also applies exactly the last
+completed-step VM load. Other forces retain their existing time treatment:
+UG drag is an implicit reaction with lagged UL, UM drag stays explicit,
+and native fluid convection/other source extrapolation is retained.
+
+The local coupled-inertia inversion is bypassed. Its transformed coefficients
+are replaced by the uneliminated phase-equation coefficients: gas pressure
+response `1/rhoGas` and mixture mobility
+`alpha/rhoGas+(1-alpha)/rhoLiquid`. The gas pressure corrector and pressure
+acceleration monitors use the same ordinary gas density. These coefficient
+changes are required by moving all VM inertia back to the RHS; phase force
+models and material properties are unchanged.
+
+The full physical phase stresses and native-baseline stress subtraction that
+were automatically active in coupled mode remain active in explicit mode,
+even with `mixtureViscousCorrectionEnabled=0`. The existing outlet enhancement
+is retained. This prevents the VM switch from silently removing the mixture
+viscous correction. No VM acceleration is recomputed with a partially solved
+current-step velocity.
+
+`explicitVirtualMassEnabled` defaults to 0 for compatibility and cannot be
+combined with `coupledVirtualMassEnabled=1`. It requires both phase/mixture VM
+and user mixture forcing to remain paired. To restore the older gas
+semi-implicit / UM explicit path, set both mode switches to 0; to restore
+coupled inertia, set explicit=0 and coupled=1.
+
+Host verification covers actual explicit VM kernels, paired coefficients,
+ordinary gas BDF inertia/drag, non-VM coefficient invariance, UM EXT1/2/3
+load handling, padding, pressure corrector equivalence with both elliptic APIs,
+legacy modes, and the actual P5/cubature10 conservative transport kernels.
+Native MPI/GPU compilation and long-time spatial stability require a target run.
+
+### Previous test: analytically coupled VM inertia, gas pressure corrector retained
+
+The previous coupled test enables `gasPressureCorrectorEnabled=1`, uses a
 computed strong pressure gradient in both the predictor and corrector
 (`gasPressureGradientMethod=0`, `gasPressureCorrectorGradientMethod=0`), and
 retains solved UG, smooth initial/inlet profile and mixture forces. It selects
@@ -78,7 +142,7 @@ This mode requires paired mixture forces/VM, computed shared pressure without
 gas-only masks or temporal filters, solved unclipped velocities, drift stress,
 and no independent mixture-drag ramp. Startup rejects incompatible settings.
 It defaults to 0 when absent. To recover the previous UG-only VM diagnostic,
-set `coupledVirtualMassEnabled=0` and `mixtureVirtualMassEnabled=0`; to recover
+set both VM mode switches to 0 and `mixtureVirtualMassEnabled=0`; to recover
 the old paired explicit-UM VM treatment, set coupled=0 and mixture VM=1.
 
 Validation compiles the actual kernels and compares their gas and mixture
@@ -137,7 +201,7 @@ This is host algebra validation, not a full native MPI/GPU stability test.
 
 ### Previous test: full mixture forces, prescribed hydrostatic UG pressure
 
-The hydrostatic-only test selects `coupledVirtualMassEnabled=0`, `frozenGasVelocityEnabled=0`,
+The hydrostatic-only test selects both VM mode switches 0, `frozenGasVelocityEnabled=0`,
 `smoothGasVelocityProfileEnabled=1`, `mixtureForcingEnabled=1`, and
 `virtualMassEnabled=0`. Start a fresh run. All three UG scalars are solved
 with gravity, implicit drag, convection and viscosity active. User mixture
@@ -177,7 +241,8 @@ the existing individual switches then apply. Its default when absent is 1.
 
 ### Frozen UG isolation test
 
-To reproduce the successful frozen test, set `coupledVirtualMassEnabled=0`, `frozenGasVelocityEnabled=1`
+To reproduce the successful frozen test, set both VM mode switches to 0,
+`frozenGasVelocityEnabled=1`
 and keep `mixtureForcingEnabled=0`, `virtualMassEnabled=0`. Start a fresh run
 for a clean comparison. Set `frozenGasVelocityEnabled=0` to solve UG again.
 
@@ -287,7 +352,8 @@ the outlet remains active. Defaults match method1: strong, unfiltered, unmasked.
 
 ## Virtual mass consistency
 
-With `coupledVirtualMassEnabled=0`, the legacy formulation below applies.
+With both `coupledVirtualMassEnabled=0` and `explicitVirtualMassEnabled=0`,
+the legacy formulation below applies.
 Define one physical coefficient for both equations:
 
 `c = virtualMassEnabled * ramp(step) * virtualMassCoefficient * rhoLiquid`.

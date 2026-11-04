@@ -21,12 +21,20 @@ for name in ['explicitFilter.hpp','explicitFilter.okl']:
  assert (one/name).read_bytes()==(case/name).read_bytes(),name
 m=(one/'bubbleColumnTerms.hpp').read_text();t=(case/'bubbleColumn2Terms.hpp').read_text()
 for name in ['evaluateGasCubatureTransport','prepareGasAdvection','evaluateNativeAlphaAdvection']:
- assert function(m,'inline void '+name+'(')==function(t,'inline void '+name+'('),name
+ old=function(m,'inline void '+name+'(')
+ if name=='evaluateNativeAlphaAdvection':
+  # Method1 has a divergence-specific compute/advector override. Compare
+  # the same native scalar operation after removing only that documented routing.
+  old=old.replace('static_cast<occa::memory>(o_userAdvectionCompute) + alphaIndex',
+                  'nrs->scalar->o_compute + alphaIndex')
+  old=old.replace('mixture ? (o_divergenceUrstOverride.isInitialized() ? o_divergenceUrstOverride : nrs->fluid->o_relUrst)\n                         : nrs->scalar->o_relUrst',
+                  'mixture ? nrs->fluid->o_relUrst : nrs->scalar->o_relUrst')
+ assert old==function(t,'inline void '+name+'('),name
 # Compile both actual physical UG kernels with identical prescribed alpha/UL/UG.
 prefix='#include <cmath>\n#include <cassert>\n#include <initializer_list>\nusing dfloat=double;using dlong=long;\n'
 values=dict(N=2,offset=4,rhoLiquid=998.2,rhoGas=1.2,muLiquid=.001,muGas=.000018,alphaFloor=1e-6,
  gasPressureEnabled=1,dragEnabled=1,mixtureDragEnabled=1,dragAlphaCutoff=0,dragSlipLimitEnabled=0,
- dragSlipMaximum=1,bubbleDiameter=.003,virtualMassEnabled=1,virtualMassCoefficient=.5,mixtureVirtualMassEnabled=1,
+ dragSlipMaximum=1,bubbleDiameter=.003,virtualMassEnabled=1,virtualMassCoefficient=.5,mixtureVirtualMassEnabled=1,explicitVirtualMassEnabled=0,
  gravityX=.1,gravityY=-.2,gravityZ=-9.81)
 outputs={'rhoMField','rhoPressureField','muMField','driftStress','gasStress','alphaSource','ugSource',
          'dragLambda','mixtureInterphaseAcceleration','mixtureDragSource'}

@@ -75,6 +75,7 @@ struct Parameters {
   dfloat virtualMassEnabled;
   int mixtureVirtualMassEnabled = 1;
   int coupledVirtualMassEnabled = 0;
+  int explicitVirtualMassEnabled = 0;
   dfloat virtualMassCoefficient;
   int virtualMassTimeDerivativeOrder = 2;
   int virtualMassStartStep = 0;
@@ -142,6 +143,7 @@ static deviceMemory<dfloat> o_ugSource;
 static deviceMemory<dfloat> o_dragLambda;
 static deviceMemory<dfloat> o_mixtureDragSource;
 static deviceMemory<dfloat> o_previousMixtureDragSource;
+static deviceMemory<dfloat> o_mixtureVirtualMassSource, o_previousMixtureVirtualMassSource;
 static deviceMemory<dfloat> o_mixtureInterphaseAcceleration;
 static deviceMemory<dfloat> o_mixtureForce;
 static deviceMemory<dfloat> o_monitorMagnitude;
@@ -372,6 +374,8 @@ inline void allocate()
   o_gradUl.resize(9 * offset);
   o_virtualMassRelativeAcceleration.resize(3 * offset);
   o_liquidAcceleration.resize(3 * offset);
+  o_mixtureVirtualMassSource.resize(3 * offset);
+  o_previousMixtureVirtualMassSource.resize(3 * offset);
   o_qg.resize(3 * offset);
   o_gradUg.resize(9 * offset);
   o_gradP.resize(3 * offset);
@@ -738,6 +742,7 @@ inline void evaluatePointwiseTerms()
                            (p.coupledVirtualMassEnabled ? 0.0 : p.virtualMassEnabled) * virtualMassRampFactor(nrs->tstep),
                            p.virtualMassCoefficient,
                            p.mixtureVirtualMassEnabled,
+                           p.explicitVirtualMassEnabled,
                            p.gravity[0],
                            p.gravity[1],
                            p.gravity[2],
@@ -808,7 +813,7 @@ inline void evaluatePointwiseTerms()
       opSEM::strongDivergence(mesh, offset, baseRow, baseDiv);
     } else {
       addGasStressKernel(mesh->Nlocal, p.alphaFloor,
-        p.rhoGas + p.virtualMassEnabled * virtualMassRampFactor(nrs->tstep)
+        p.rhoGas + (p.explicitVirtualMassEnabled ? 0.0 : p.virtualMassEnabled) * virtualMassRampFactor(nrs->tstep)
                    * p.virtualMassCoefficient * p.rhoLiquid,
         alpha, stressDivergence, o_ugSource.slice(i * offset, offset));
     }
@@ -922,6 +927,8 @@ inline void initializeHistory()
   o_ugPrevious2.copyFrom(o_ug, 3 * offset);
   virtualMassHistorySamples = 0;
   virtualMassPreviousDt = 0.0;
+  platform->linAlg->fill(3 * offset, 0.0, o_mixtureVirtualMassSource);
+  platform->linAlg->fill(3 * offset, 0.0, o_previousMixtureVirtualMassSource);
   platform->linAlg->fill(3 * offset, 0.0, o_virtualMassRelativeAcceleration);
   platform->linAlg->fill(3 * offset, 0.0, o_liquidAcceleration);
 }
@@ -1139,7 +1146,9 @@ inline void evaluateMixtureForce()
     opSEM::strongDivergence(mesh, offset, row, div);
   }
   addMixtureStressCorrectionKernel(mesh->Nlocal, offset,
-      p.mixtureViscousCorrectionEnabled, o_rhoPressure,
+      // Preserve the physical phase-stress/baseline correction already active
+      // in the coupled-VM case when moving VM back to explicit source form.
+      p.explicitVirtualMassEnabled ? 1.0 : p.mixtureViscousCorrectionEnabled, o_rhoPressure,
       o_divExactMixtureStress, o_divBaseNativeStress, o_mixtureForce);
 }
 
@@ -1236,7 +1245,7 @@ inline void captureGasPressureSource()
   if (p.gasPressureCorrectorEnabled) {
     // EXT1: this is the pressure acceleration actually entering this step's
     // predictor. Later properties/monitor callbacks may overwrite o_gradP.
-    const dfloat rhoEff = p.rhoGas + p.virtualMassEnabled
+    const dfloat rhoEff = p.rhoGas + (p.explicitVirtualMassEnabled ? 0.0 : p.virtualMassEnabled)
         * virtualMassRampFactor(nrs->tstep) * p.virtualMassCoefficient * p.rhoLiquid;
     ugPressureSourceScale = -p.gasPressureEnabled / rhoEff;
     if (p.coupledVirtualMassEnabled)
@@ -1276,6 +1285,37 @@ inline void freezeDragHistory()
   o_previousMixtureDragSource.copyFrom(o_mixtureDragSource);
 }
 
+// UM normally uses native fluid EXT. For fully explicit VM, replace only
+// its contribution in older source slots so EXT applies exactly the last
+// completed-step VM load. Drag, gravity, drift and stresses keep their paths.
+inline void freezeExplicitVirtualMassHistory()
+{
+  if (!p.explicitVirtualMassEnabled || nrs->tstep == 0) return;
+  const dlong N = nrs->meshV->Nlocal, offset = nrs->fieldOffset;
+  if (!p.mixtureForcingEnabled
+      || (p.frozenGasVelocityEnabled && !p.frozenGasMixtureForcingEnabled)) {
+    platform->linAlg->fill(3 * offset, 0.0, o_mixtureVirtualMassSource);
+  } else {
+    // Capture before the independent mixture-drag ramp changes its buffer.
+    for (int i = 0; i < 3; ++i) {
+      auto vm = o_mixtureVirtualMassSource.slice(i * offset, offset);
+      platform->linAlg->axpbyz(N, 1.0,
+          o_mixtureInterphaseAcceleration.slice(i * offset, offset), -1.0,
+          o_mixtureDragSource.slice(i * offset, offset), vm);
+    }
+  }
+  for (int stage = 1; stage < nrs->fluid->o_coeffEXT.size(); ++stage) {
+    for (int i = 0; i < 3; ++i) {
+      const dlong dst = stage * nrs->fluid->fieldOffsetSum + i * offset;
+      platform->linAlg->axpby(N, -1.0, o_previousMixtureVirtualMassSource, 1.0,
+          nrs->fluid->o_EXT, i * offset, dst);
+      platform->linAlg->axpby(N, 1.0, o_mixtureVirtualMassSource, 1.0,
+          nrs->fluid->o_EXT, i * offset, dst);
+    }
+  }
+  o_previousMixtureVirtualMassSource.copyFrom(o_mixtureVirtualMassSource);
+}
+
 inline void addExplicitSources(double)
 {
   prepareGasAdvection();
@@ -1283,6 +1323,7 @@ inline void addExplicitSources(double)
   captureGasPressureSource();
   subtractScalarDiffusion();
   evaluateMixtureForce();
+  freezeExplicitVirtualMassHistory();
   rampMixtureDrag(nrs->tstep);
   freezeDragHistory();
   captureAlphaAdvectionDiagnostics();
@@ -1804,7 +1845,7 @@ inline void printDragLocations(double time, int tstep)
     o_ul.copyTo(ul, N, c*offset, c*N);
     nrs->fluid->o_U.slice(c*offset, N).copyTo(um.data()+c*N);
   }
-  const double inertiaRatio = p.coupledVirtualMassEnabled ? 1.0 : (p.rhoGas + p.virtualMassEnabled * virtualMassRampFactor(nrs->tstep)
+  const double inertiaRatio = p.coupledVirtualMassEnabled ? 1.0 : (p.rhoGas + (p.explicitVirtualMassEnabled ? 0.0 : p.virtualMassEnabled) * virtualMassRampFactor(nrs->tstep)
       * p.virtualMassCoefficient * p.rhoLiquid) / p.rhoGas;
   dlong indices[2] = {0, 0};
   double maxima[2] = {-1.0, -1.0};
@@ -1898,7 +1939,7 @@ inline void printStabilityMonitors(double time, int tstep)
     platform->linAlg->axmy(Nlocal, 1.0, response, o_monitorMagnitude);
   }
   buildGasPressureAccelerationMonitorKernel(Nlocal,
-                                            p.coupledVirtualMassEnabled ? 1.0 : p.rhoGas + p.virtualMassEnabled * virtualMassRampFactor(nrs->tstep)
+                                            p.coupledVirtualMassEnabled ? 1.0 : p.rhoGas + (p.explicitVirtualMassEnabled ? 0.0 : p.virtualMassEnabled) * virtualMassRampFactor(nrs->tstep)
                                                        * p.virtualMassCoefficient * p.rhoLiquid,
                                             p.gasMomentumCutoff,
                                             nrs->scalar->o_solution("alpha"),

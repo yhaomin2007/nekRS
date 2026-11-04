@@ -13,7 +13,7 @@ args=k.split(')\n{')[0].split('(',1)[1].split(',')
 defaults=dict(N=1,offset=2,rhoLiquid=998.2,rhoGas=1.2,muLiquid=.001,muGas=.000018,
  alphaFloor=1e-6,gasPressureEnabled=1,dragEnabled=0,mixtureDragEnabled=1,
  dragAlphaCutoff=0,dragSlipLimitEnabled=0,dragSlipMaximum=1,bubbleDiameter=.003,
- virtualMassEnabled=1,virtualMassCoefficient=.5,mixtureVirtualMassEnabled=1,gravityX=0,gravityY=0,gravityZ=0)
+ virtualMassEnabled=1,virtualMassCoefficient=.5,mixtureVirtualMassEnabled=1,explicitVirtualMassEnabled=0,gravityX=0,gravityY=0,gravityZ=0)
 declarations=[];names=[]
 for a in args:
  name=a.strip().split()[-1].lstrip('*');names.append(name)
