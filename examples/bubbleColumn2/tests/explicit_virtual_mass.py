@@ -183,7 +183,7 @@ execute=udf.split('void UDF_ExecuteStep')[1]
 assert execute.index('correctGasPressure();')<execute.index('updateVirtualMassHistory();')<execute.index('printStabilityMonitors(')
 source=function(terms,'inline void addExplicitSources(')
 assert source.index('evaluateMixtureForce();')<source.index('freezeExplicitVirtualMassHistory();')<source.index('rampMixtureDrag(')<source.index('freezeDragHistory();')
-for key,value in [('polynomialOrder','5'),('cubaturePolynomialOrder','10'),('explicitVirtualMassEnabled','1'),('coupledVirtualMassEnabled','0'),('mixtureVirtualMassEnabled','1')]:
+for key,value in [('polynomialOrder','5'),('cubaturePolynomialOrder','10'),('coupledVirtualMassEnabled','0'),('mixtureVirtualMassEnabled','1')]:
  assert re.search(r'^'+key+r'\s*=\s*'+value+r'\s*$',par,re.M)
-assert 'p.explicitVirtualMassEnabled ? 1.0 : p.mixtureViscousCorrectionEnabled' in terms
+assert re.search(r'\(p\.explicitVirtualMassEnabled \|\| p\.virtualMassExtrapolationEnabled\)\s*\? 1\.0 : p\.mixtureViscousCorrectionEnabled', terms)
 print('Fully explicit VM: paired actual-kernel sources, ordinary gas BDF/drag, unchanged non-VM forces, last-step UM load without EXT1/2/3 extrapolation, padding, completed-step ordering and P5/cubature10 passed.')

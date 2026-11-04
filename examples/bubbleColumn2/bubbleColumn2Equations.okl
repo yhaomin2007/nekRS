@@ -115,6 +115,41 @@
   }
 }
 
+// The gas pointwise RHS already contains scale*aL at the current sample.
+// Replace only that explicit liquid-VM load by its native-fluid EXT value.
+// Gas own VM inertia stays in the normalized semi-implicit UG equation.
+@kernel void extrapolateGasVirtualMass(
+    const dlong N, const dlong offset, const int nEXT,
+    const int useHistory, const int firstSample, const int advanceHistory,
+    const dfloat scale,
+    @ restrict const dfloat *coeffEXT,
+    @ restrict const dfloat *liquidAcceleration,
+    @ restrict dfloat *history,
+    @ restrict dfloat *gasSource)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    for (int field = 0; field < 3; ++field) {
+      const dlong id = n + field * offset;
+      const dlong stride = 3 * offset;
+      const dfloat current = scale * liquidAcceleration[id];
+      if (useHistory) {
+        if (firstSample) {
+          for (int stage = 0; stage < nEXT; ++stage)
+            history[id + stage * stride] = current;
+        } else if (advanceHistory) {
+          for (int stage = nEXT - 1; stage > 0; --stage)
+            history[id + stage * stride] = history[id + (stage - 1) * stride];
+        }
+        history[id] = current;
+        dfloat value = 0.0;
+        for (int stage = 0; stage < nEXT; ++stage)
+          value += coeffEXT[stage] * history[id + stage * stride];
+        gasSource[id] += value - current;
+      }
+    }
+  }
+}
+
 @kernel void reconstructGasVelocity(const dlong N,
                                     const dlong offset,
                                     const int lowAlphaCutoffEnabled,

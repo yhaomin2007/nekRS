@@ -76,6 +76,7 @@ struct Parameters {
   int mixtureVirtualMassEnabled = 1;
   int coupledVirtualMassEnabled = 0;
   int explicitVirtualMassEnabled = 0;
+  int virtualMassExtrapolationEnabled = 0;
   dfloat virtualMassCoefficient;
   int virtualMassTimeDerivativeOrder = 2;
   int virtualMassStartStep = 0;
@@ -98,6 +99,9 @@ static deviceMemory<dfloat> o_scalarConvectionCurrent, o_scalarConvectionEXT;
 static deviceMemory<dfloat> o_scalarConvectionHistory;
 static occa::kernel extrapolateScalarConvectionKernel;
 static int scalarConvectionHistoryStep = -1;
+static deviceMemory<dfloat> o_gasVirtualMassHistory;
+static occa::kernel extrapolateGasVirtualMassKernel;
+static int gasVirtualMassHistoryStep = -1;
 
 static deviceMemory<dfloat> o_nativeTransportAdvection;
 static deviceMemory<dfloat> o_gradUv;
@@ -248,6 +252,8 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
     buildEquationTermsKernel = platform->kernelRequests.load(request, "buildEquationTerms");
     extrapolateScalarConvectionKernel =
         platform->kernelRequests.load(request, "extrapolateScalarConvection");
+    extrapolateGasVirtualMassKernel =
+        platform->kernelRequests.load(request, "extrapolateGasVirtualMass");
     configureCoupledVirtualMassKernel = platform->kernelRequests.load(request, "configureCoupledVirtualMass");
     addCoupledVMStressKernel = platform->kernelRequests.load(request, "addCoupledVMStress");
     buildMixtureForceKernel = platform->kernelRequests.load(request, "buildMixtureForce");
@@ -317,6 +323,8 @@ inline void allocate()
   o_scalarConvectionCurrent.resize(4 * offset);
   o_scalarConvectionEXT.resize(4 * offset);
   o_scalarConvectionHistory.resize(nrs->fluid->o_coeffEXT.size() * 4 * offset);
+  if (p.virtualMassExtrapolationEnabled)
+    o_gasVirtualMassHistory.resize(nrs->fluid->o_coeffEXT.size() * 3 * offset);
   o_gasCubatureFields.resize(4 * cubOffset);
   o_gasCubatureProducts.resize(4 * cubOffset);
   o_gasAdvector.resize(3 * offset);
@@ -928,6 +936,9 @@ inline void initializeHistory()
   // under EXT1. Gas convection is extrapolated separately with fluid EXT.
   nrs->scalar->o_coeffEXT = o_scalarCoeffEXT;
   scalarConvectionHistoryStep = -1;
+  gasVirtualMassHistoryStep = -1;
+  if (p.virtualMassExtrapolationEnabled)
+    platform->linAlg->fill(o_gasVirtualMassHistory.size(), 0.0, o_gasVirtualMassHistory);
   platform->linAlg->fill(o_scalarConvectionHistory.size(), 0.0, o_scalarConvectionHistory);
   platform->linAlg->fill(o_scalarConvectionCurrent.size(), 0.0, o_scalarConvectionCurrent);
   platform->linAlg->fill(o_scalarConvectionEXT.size(), 0.0, o_scalarConvectionEXT);
@@ -1164,7 +1175,8 @@ inline void evaluateMixtureForce()
   addMixtureStressCorrectionKernel(mesh->Nlocal, offset,
       // Preserve the physical phase-stress/baseline correction already active
       // in the coupled-VM case when moving VM back to explicit source form.
-      p.explicitVirtualMassEnabled ? 1.0 : p.mixtureViscousCorrectionEnabled, o_rhoPressure,
+      (p.explicitVirtualMassEnabled || p.virtualMassExtrapolationEnabled)
+        ? 1.0 : p.mixtureViscousCorrectionEnabled, o_rhoPressure,
       o_divExactMixtureStress, o_divBaseNativeStress, o_mixtureForce);
 }
 
@@ -1332,10 +1344,25 @@ inline void freezeExplicitVirtualMassHistory()
   o_previousMixtureVirtualMassSource.copyFrom(o_mixtureVirtualMassSource);
 }
 
+inline void applyGasVirtualMassExtrapolation()
+{
+  if (!p.virtualMassExtrapolationEnabled) return;
+  const dfloat added = p.virtualMassEnabled * virtualMassRampFactor(nrs->tstep)
+      * p.virtualMassCoefficient * p.rhoLiquid;
+  extrapolateGasVirtualMassKernel(nrs->meshV->Nlocal, nrs->fieldOffset,
+      static_cast<int>(nrs->fluid->o_coeffEXT.size()), static_cast<int>(nrs->tstep > 0),
+      static_cast<int>(gasVirtualMassHistoryStep < 0),
+      static_cast<int>(gasVirtualMassHistoryStep != nrs->tstep),
+      added / (p.rhoGas + added), nrs->fluid->o_coeffEXT,
+      o_liquidAcceleration, o_gasVirtualMassHistory, o_ugSource);
+  if (nrs->tstep > 0) gasVirtualMassHistoryStep = nrs->tstep;
+}
+
 inline void addExplicitSources(double)
 {
   prepareGasAdvection();
   evaluatePointwiseTerms();
+  applyGasVirtualMassExtrapolation();
   captureGasPressureSource();
   subtractScalarDiffusion();
   evaluateMixtureForce();

@@ -23,17 +23,72 @@ A separate case-local history stores only these four convection fields. It
 advances once per physical source step; repeated source calls refresh the same
 slot, and initial CFL probes do not advance history. First use fills missing
 prehistory with the initial operator. Native scalar coefficients remain EXT1,
-so pressure, VM, viscous sources, diffusion counterterms and the cancellation
-of native UM scalar advection keep their existing time treatment. UG implicit
+so pressure, viscous sources, diffusion counterterms and the cancellation
+of native UM scalar advection keep their existing time treatment. The explicit
+liquid VM source can also use
+its separate native-fluid EXT history in the selected VM mode. UG implicit
 drag, UM sources/convection, BDF histories, filters and the VM delay/ramp are
-unchanged. Alpha's instantaneous flux diagnostics retain their existing
+unchanged by the convection update. Alpha's instantaneous flux diagnostics retain their existing
 meaning; the actual timestep convection load is the EXT combination of flux
 operators rather than the instantaneous diagnostic alone.
 
 
-### Current test: fully explicit UG/UM virtual mass, P5 / cubature 10
+### Current test: semi-implicit UG VM, extrapolated explicit VM loads
 
-The supplied `.par` selects `polynomialOrder=5`,
+The supplied `.par` selects `virtualMassExtrapolationEnabled=1`,
+`explicitVirtualMassEnabled=0`, `coupledVirtualMassEnabled=0`, and paired
+`virtualMassEnabled=1`, `mixtureVirtualMassEnabled=1`, `Cvm=0.5`.
+The existing P5/cubature10, dt=1e-5, pressure corrector, physical phase-stress
+correction, filters and VM delay/ramp (100 / 10000 steps) remain selected.
+Start from a fresh state and confirm startup prints `VM EXTRAPOLATION`.
+
+Let `c=virtualMassEnabled*ramp*Cvm*rhoLiquid`. UG keeps its own VM
+material-inertia contribution on the left:
+
+```
+(rhoGas+c)*Dg(UG)/Dt = -gradP + rhoGas*g + Ki*(UL-UG)
+                       + div(alpha*tauG)/alpha + c*aL
+```
+
+Native BDF handles the gas time derivative and native UG histories; gas
+convection retains the separate fluid-EXT treatment described above. This is
+semi-implicit gas inertia, not a fully implicit convection/phase solve.
+Only the explicit liquid-acceleration VM load in the normalized UG RHS changes
+from its current sample `qG=c/(rhoGas+c)*aL` to `EXT_fluid[qG]`. The history
+stores the full normalized VM source, including the sampled ramp coefficient,
+so no pressure, gravity, drag or viscous source is newly extrapolated with it.
+At constant dt after startup this is `3*qG[n]-3*qG[n-1]+qG[n-2]`.
+
+UM retains its full physical VM acceleration source
+
+```
+qM=alpha*(1-rhoGas/rhoLiquid)*(c/rhoGas)*(aL-aG)
+```
+
+and native fluid EXT applies to this complete source. It is not divided by
+`rhoGas+c`, and its EXT history is not flattened by the fully explicit
+last-step experiment. The UG explicit part uses `aL`; the UM VM uses the
+complete `aL-aG` difference. Both acceleration histories still come from the
+last completed step, with `virtualMassTimeDerivativeOrder=1` as before.
+
+The separate UG VM history uses live native fluid EXT coefficients for startup
+and variable dt. Initial CFL probes do not advance it; repeated same-step
+source calls refresh rather than shift it. The first sample fills prehistory
+with a constant value. The shared ramp multiplies each source sample before
+extrapolation, so the extrapolated load need not equal the instantaneous ramp
+factor times one acceleration sample. Histories continue collecting during
+the VM delay.
+
+`virtualMassExtrapolationEnabled` defaults to 0 and is mutually exclusive with
+both coupled inertia elimination and fully explicit gas inertia. With VM on,
+it requires paired mixture VM and user mixture forces. The phase-stress
+correction remains active automatically in this experiment, preserving the
+physical viscosity treatment from the preceding case. Neither this temporal
+extrapolation nor the ramp establishes full spatial stability.
+
+### Previous test: fully explicit UG/UM virtual mass, P5 / cubature 10
+
+The preceding fully explicit test selects `polynomialOrder=5`,
 `cubaturePolynomialOrder=10`, `explicitVirtualMassEnabled=1`,
 `coupledVirtualMassEnabled=0`, `virtualMassEnabled=1`,
 `mixtureVirtualMassEnabled=1`, and `virtualMassCoefficient=0.5`.
@@ -100,9 +155,9 @@ current-step velocity.
 
 `explicitVirtualMassEnabled` defaults to 0 for compatibility and cannot be
 combined with `coupledVirtualMassEnabled=1`. It requires both phase/mixture VM
-and user mixture forcing to remain paired. To restore the older gas
-semi-implicit / UM explicit path, set both mode switches to 0; to restore
-coupled inertia, set explicit=0 and coupled=1.
+and user mixture forcing to remain paired. With `virtualMassExtrapolationEnabled=0`, restore the older gas
+semi-implicit / UM explicit path by setting both other mode switches to 0;
+restore coupled inertia by setting explicit=0 and coupled=1.
 
 Host verification covers actual explicit VM kernels, paired coefficients,
 ordinary gas BDF inertia/drag, non-VM coefficient invariance, UM EXT1/2/3
@@ -332,7 +387,7 @@ The scalar transport follows method1 at the synchronization commit:
   RHS with matching mass assembly; native scalar velocity pointers still refer
   to UM. There is no temporary replacement of the fluid velocity.
 - Alpha/UG convection uses separate operator histories with native fluid EXT.
-  Other scalar sources and native-advection cancellation retain EXT1 through
+  Other scalar sources (except the selected explicit liquid VM) and native-advection cancellation retain EXT1 through
   separate scalar coefficient storage. Native BDF history/order is unchanged.
 - Gas drag uses the native scalar implicit reaction: `lambda=Ki/rhoEff`,
   with lagged `Ki` and `UL`; the explicit RHS contains `lambda*UL` and the

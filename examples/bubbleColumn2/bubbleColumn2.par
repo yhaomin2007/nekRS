@@ -141,16 +141,17 @@ dragEnabled = 1.0
 bubbleDiameter = 3.0e-3
 # Set to 0.0 to omit kinematic drift-stress divergence from volume momentum.
 driftStressEnabled = 1.0
-# Test: both UG and UM use the last completed-step VM acceleration difference.
+# Test: UG retains semi-implicit VM inertia; explicit UG VM and full UM VM use fluid EXT.
 virtualMassEnabled = 1.0
 mixtureVirtualMassEnabled = 1
 coupledVirtualMassEnabled = 0
-explicitVirtualMassEnabled = 1
+explicitVirtualMassEnabled = 0
+virtualMassExtrapolationEnabled = 1
 virtualMassCoefficient = 0.5
 # As in method1, UG is retained through dilute/zero-alpha regions.
 gasVelocityLowAlphaCutoffEnabled = 0
 smoothGasVelocityMaskEnabled = 0.0
-# Alpha/UG convection uses native fluid EXT; other scalar sources retain EXT1.
+# Alpha/UG convection and explicit liquid VM use fluid EXT; other scalar sources retain EXT1.
 # Native BDF order, fluid EXT and all force treatments are unchanged.
 # Alpha uses cubature div(alpha*UG); UG uses cubature UG.grad(UG).
 # Gas drag is an implicit reaction with lagged liquid velocity; mixture drag stays explicit.
@@ -167,7 +168,7 @@ dragAlphaCutoff = 0.0
 dragSlipLimitEnabled = 0.0
 dragSlipMaximum = 1.0
 # Optional explicit two-phase stress correction in volume-mixture momentum.
-# Coupled/fully explicit VM retain physical phase stresses and baseline correction.
+# All experimental VM modes retain physical phase stresses and baseline correction.
 mixtureViscousCorrectionEnabled = 0.0
 # Liquid acceleration time derivative: 1=backward first order; 2=variable-step backward second order.
 virtualMassTimeDerivativeOrder = 1

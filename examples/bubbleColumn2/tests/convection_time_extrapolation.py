@@ -68,6 +68,7 @@ void evaluatePointwiseTerms(){
   for(int c=0;c<3;c++)o_ugSource[n+c*3]=extra[c+1];
  }
 }
+void applyGasVirtualMassExtrapolation(){}
 void captureGasPressureSource(){}
 void subtractScalarDiffusion(){for(int n=0;n<2;n++)o_alphaSource[n]+=extra[0];}
 void evaluateMixtureForce(){for(int n=0;n<2;n++)for(int c=0;c<3;c++)o_mixtureForce[n+c*3]=.6+c;}
