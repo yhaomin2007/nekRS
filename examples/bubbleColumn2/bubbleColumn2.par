@@ -170,10 +170,10 @@ dragSlipMaximum = 1.0
 mixtureViscousCorrectionEnabled = 0.0
 # Liquid acceleration time derivative: 1=backward first order; 2=variable-step backward second order.
 virtualMassTimeDerivativeOrder = 1
-# VM activates after this step number; fully explicit mode adds no gas inertia.
-virtualMassStartStep = 0
-# Linear ramp duration after start; 0 preserves immediate activation.
-virtualMassRampStep = 0
+# No VM through step 100; completed-step acceleration histories still update.
+virtualMassStartStep = 100
+# Linear ramp over the next 10000 steps; full VM from step 10100 onward.
+virtualMassRampStep = 10000
 # UM retains volume averaging and div(UM)=0; explicit VM uses base pressure mobility.
 stabilityMonitorEnabled = 1.0
 stabilityMonitorInterval = 10

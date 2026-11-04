@@ -20,6 +20,21 @@ mixture forces, drag model, filters, scalar diffusion and outlet enhancement
 retain their existing settings. Use a fresh start with the existing mesh.
 Check that startup prints `FULLY EXPLICIT VM` and `UG pressure corrector ON`.
 
+VM is delayed and then introduced gradually in both equations using the same
+factor. The supplied settings are `virtualMassStartStep=100` and
+`virtualMassRampStep=10000`:
+
+- Steps 1 through 100: VM force is zero in both UG and UM.
+- Steps 101 through 10100: `r=min(1,(step-100)/10000)`.
+- Step 10100 onward: full `Cvm=0.5`.
+
+At the retained `dt=1e-5`, the delay ends at t=0.001 s and full VM is
+reached at t=0.101 s. Completed-step acceleration histories continue updating
+during the delay, so the ramp uses recent accelerations rather than an
+accumulated difference from initialization. All other force settings and the
+fully explicit formulation are unchanged. The ramp tests startup sensitivity;
+it does not establish stability of the fully explicit VM coupling at full strength.
+
 For the step from n to n+1, both equations use the same saved material
 acceleration difference from the last completed step:
 
