@@ -5,7 +5,6 @@
 #include <fstream>
 #include <iomanip>
 #include <vector>
-#include <functional>
 
 #include "explicitFilter.hpp"
 #include "opSEM.hpp"
@@ -77,12 +76,6 @@ struct Parameters {
 };
 
 static Parameters p;
-// Optional user-side inner iteration hooks. Unset in the native one-pass path.
-static bool picardSkipSourceHistory = false;
-static std::function<void()> picardPressureGradientUpdate;
-static std::function<void()> picardAfterScalarPhysics;
-static std::function<void()> picardAlphaRhs;
-static occa::memory o_divergenceUrstOverride;
 
 static deviceMemory<dfloat> o_gasTransportFields;
 static deviceMemory<dfloat> o_gasCubatureFields;
@@ -708,6 +701,71 @@ inline void filterGasPressureGradient()
   }
 }
 
+// advanceTemporalFilter=true only after the current UM/pressure solve.
+inline void evaluateGasPressureGradient(bool advanceTemporalFilter)
+{
+  auto mesh = nrs->meshV;
+  const dlong offset = nrs->fieldOffset;
+  // Compute both pressure-gradient discretizations from the same
+  // pressure field so they can be compared directly.
+  //
+  // Strong: assembled pointwise grad(p), as used previously in this case.
+  opSEM::strongGrad(mesh, offset, nrs->fluid->o_P, o_gradPStrong);
+  //
+  // Weak: reproduce the volume weak-gradient operator used by the native
+  // NekRS velocity RHS. core-wGradientVolumeHex3D returns the element weak
+  // load G_w p. Gather it, divide by the assembled lumped mass, and reverse
+  // sign so o_gradPWeak has the same physical sign convention as +grad(p).
+  // When this field is subsequently multiplied by the scalar mass matrix in
+  // scalar_t::sumMakef, -o_gradPWeak/rhoEff reproduces the weak volume
+  // pressure force (up to the phase coefficient and scalar boundary terms).
+  launchKernel("core-wGradientVolumeHex3D",
+               mesh->Nelements,
+               mesh->o_vgeo,
+               mesh->o_D,
+               offset,
+               nrs->fluid->o_P,
+               o_gradPWeak);
+  oogs::startFinish(
+      o_gradPWeak, mesh->dim, offset, ogsDfloat, ogsAdd, mesh->oogs);
+  platform->linAlg->axmyMany(
+      mesh->Nlocal, mesh->dim, offset, 0, -1.0, mesh->o_invLMM, o_gradPWeak);
+
+  filterGasPressureGradient();
+  const auto &o_selectedGradP = o_gradPSpatial;
+
+  if (p.gasPressureGradientFilterEnabled == 0.0) {
+    o_gradP.copyFrom(o_selectedGradP, 3 * offset);
+  } else {
+    // Only the deferred UG stage advances temporal filtering. Source/property
+    // evaluations leave the previous physical-step filtered gradient intact.
+    const int tstep = nrs->tstep;
+    if (!pressureGradientFilterInitialized) {
+      o_gradP.copyFrom(o_selectedGradP, 3 * offset);
+      pressureGradientFilterInitialized = true;
+      pressureGradientFilterStep = tstep;
+    } else if (advanceTemporalFilter && tstep != pressureGradientFilterStep) {
+      for (int i = 0; i < 3; ++i) {
+        const auto currentGradient =
+            o_selectedGradP.slice(i * offset, offset);
+        auto filteredGradient = o_gradP.slice(i * offset, offset);
+        platform->linAlg->axpby(mesh->Nlocal,
+                                p.gasPressureGradientFilterWeight,
+                                currentGradient,
+                                1.0 - p.gasPressureGradientFilterWeight,
+                                filteredGradient);
+      }
+      pressureGradientFilterStep = tstep;
+    }
+  }
+
+  if (p.gasPressureInletMaskEnabled) {
+    platform->linAlg->axmyMany(mesh->Nlocal, 3, offset, 0, 1.0,
+                               o_gasPressureInletMask, o_gradP);
+  }
+
+}
+
 inline void evaluatePointwiseTerms()
 {
   auto mesh = nrs->meshV;
@@ -732,67 +790,7 @@ inline void evaluatePointwiseTerms()
   opSEM::strongDivergence(mesh, offset, o_qg, o_divQg);
   opSEM::strongGradVec(mesh, offset, o_ug, o_gradUg);
   opSEM::strongGradVec(mesh, offset, o_ul, o_gradUl);
-  // Compute both pressure-gradient discretizations from the same lagged
-  // pressure field so they can be compared directly.
-  //
-  // Strong: assembled pointwise grad(p), as used previously in this case.
-  opSEM::strongGrad(mesh, offset, nrs->fluid->o_P, o_gradPStrong);
-  //
-  // Weak: reproduce the volume weak-gradient operator used by the native
-  // NekRS velocity RHS. core-wGradientVolumeHex3D returns the element weak
-  // load G_w p. Gather it, divide by the assembled lumped mass, and reverse
-  // sign so o_gradPWeak has the same physical sign convention as +grad(p).
-  // When this field is subsequently multiplied by the scalar mass matrix in
-  // scalar_t::sumMakef, -alpha/rho_g*o_gradPWeak reproduces the weak volume
-  // pressure force (up to the phase coefficient and scalar boundary terms).
-  launchKernel("core-wGradientVolumeHex3D",
-               mesh->Nelements,
-               mesh->o_vgeo,
-               mesh->o_D,
-               offset,
-               nrs->fluid->o_P,
-               o_gradPWeak);
-  oogs::startFinish(
-      o_gradPWeak, mesh->dim, offset, ogsDfloat, ogsAdd, mesh->oogs);
-  platform->linAlg->axmyMany(
-      mesh->Nlocal, mesh->dim, offset, 0, -1.0, mesh->o_invLMM, o_gradPWeak);
-
-  filterGasPressureGradient();
-  const auto &o_selectedGradP = o_gradPSpatial;
-
-  if (picardPressureGradientUpdate) {
-    picardPressureGradientUpdate();
-  } else if (p.gasPressureGradientFilterEnabled == 0.0) {
-    o_gradP.copyFrom(o_selectedGradP, 3 * offset);
-  } else {
-    // At source assembly, o_P contains the pressure from the most recently
-    // completed physical step. Advance the exponential history only once per
-    // timestep because this routine can be called more than once in that step.
-    const int tstep = nrs->tstep;
-    if (!pressureGradientFilterInitialized) {
-      o_gradP.copyFrom(o_selectedGradP, 3 * offset);
-      pressureGradientFilterInitialized = true;
-      pressureGradientFilterStep = tstep;
-    } else if (tstep != pressureGradientFilterStep) {
-      for (int i = 0; i < 3; ++i) {
-        const auto laggedGradient =
-            o_selectedGradP.slice(i * offset, offset);
-        auto filteredGradient = o_gradP.slice(i * offset, offset);
-        platform->linAlg->axpby(mesh->Nlocal,
-                                p.gasPressureGradientFilterWeight,
-                                laggedGradient,
-                                1.0 - p.gasPressureGradientFilterWeight,
-                                filteredGradient);
-      }
-      pressureGradientFilterStep = tstep;
-    }
-  }
-
-  if (p.gasPressureInletMaskEnabled) {
-    platform->linAlg->axmyMany(mesh->Nlocal, 3, offset, 0, 1.0,
-                               o_gasPressureInletMask, o_gradP);
-  }
-
+  evaluateGasPressureGradient(false);
 
   buildEquationTermsKernel(mesh->Nlocal,
                            offset,
@@ -880,7 +878,7 @@ inline void evaluateNativeAlphaAdvection(deviceMemory<dfloat> &o_advection,
                  nrs->scalar->vFieldOffset,
                  nrs->scalar->vCubatureOffset,
                  nrs->scalar->o_S,
-                 mixture ? (o_divergenceUrstOverride.isInitialized() ? o_divergenceUrstOverride : nrs->fluid->o_relUrst)
+                 mixture ? nrs->fluid->o_relUrst
                          : nrs->scalar->o_relUrst,
                  nrs->scalar->o_rho,
                  o_advection);
@@ -895,7 +893,7 @@ inline void evaluateNativeAlphaAdvection(deviceMemory<dfloat> &o_advection,
                  nrs->scalar->o_fieldOffsetScan + alphaIndex,
                  nrs->scalar->vFieldOffset,
                  nrs->scalar->o_S,
-                 mixture ? (o_divergenceUrstOverride.isInitialized() ? o_divergenceUrstOverride : nrs->fluid->o_relUrst)
+                 mixture ? nrs->fluid->o_relUrst
                          : nrs->scalar->o_relUrst,
                  nrs->scalar->o_rho,
                  o_advection);
@@ -1271,7 +1269,7 @@ inline void addExplicitSources(double)
   subtractScalarDiffusion();
   // Before native HPF/forcing assembly: alphaSource contains only gas flux
   // transport and the configured explicit diffusion subtraction, if enabled.
-  if (!picardSkipSourceHistory) storeAlphaTransportRhs();
+  storeAlphaTransportRhs();
   evaluateMixtureForce();
   const dlong Nlocal = nrs->meshV->Nlocal;
   const dlong offset = nrs->fieldOffset;
@@ -1309,14 +1307,10 @@ inline void buildDivergenceFromAlphaRhs(deviceMemory<dfloat>& o_divergence)
   const dlong alphaOffset = nrs->scalar->fieldOffsetScan[index];
   // Match alpha's actual explicit time treatment, but deliberately exclude
   // native HPF, BDF history loads and any postprocessing/BC time correction.
-  if (picardAlphaRhs) {
-    picardAlphaRhs();
-  } else {
-    extrapolateAlphaTransportRhsKernel(Nlocal, offset,
-        static_cast<int>(nrs->scalar->o_coeffEXT.size()),
-        nrs->scalar->o_coeffEXT, o_alphaTransportRhsHistory, o_alphaMixtureRhs);
-    assembleDivergence(o_alphaMixtureRhs);
-  }
+  extrapolateAlphaTransportRhsKernel(Nlocal, offset,
+      static_cast<int>(nrs->scalar->o_coeffEXT.size()),
+      nrs->scalar->o_coeffEXT, o_alphaTransportRhsHistory, o_alphaMixtureRhs);
+  assembleDivergence(o_alphaMixtureRhs);
   // Use the native weak diffusion stiffness with its negative RHS sign.
   launchKernel("core-weakLaplacianHex3D", nrs->meshV->Nelements, 1,
       o_scalarFieldOffsetScan, nrs->meshV->o_ggeo, nrs->meshV->o_D,
@@ -1380,14 +1374,10 @@ inline void buildDivergenceFromAlphaBdf(deviceMemory<dfloat>& o_divergence)
 
 inline void updateProperties(double)
 {
-  // Called after all four scalars advance: refresh density, viscosity, and the
-  // mixture divergence from alpha transport + numerical diffusion only.
-  if (picardAfterScalarPhysics) {
-    picardAfterScalarPhysics();
-  } else {
-    postProcessGasFlux();
-    evaluatePointwiseTerms();
-  }
+  // Called after alpha advances, before UM/pressure. UG is still at the old
+  // physical step. Its postprocessing is deferred until after its own solve.
+  // Refresh mixture properties and the alpha transport/diffusion target.
+  evaluatePointwiseTerms();
   // Cache transport/diffusion RHS and full BDF diagnostics. The reduced RHS
   // supplies the pressure target; BDF includes HPF/postprocessing/BC effects.
   const dlong Nlocal = nrs->meshV->Nlocal;

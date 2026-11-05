@@ -5,7 +5,7 @@ import tempfile
 
 case=Path(__file__).resolve().parents[1]
 source=(case/'bubbleColumnTerms.hpp').read_text()
-body=source.split('inline void filterGasPressureGradient()')[1].split('inline void evaluatePointwiseTerms()')[0]
+body=source.split('inline void filterGasPressureGradient()')[1].split('inline void evaluateGasPressureGradient(')[0]
 prefix=r'''
 #include <cassert>
 #include <cmath>
@@ -47,7 +47,10 @@ with tempfile.TemporaryDirectory() as directory:
     path=Path(directory);(path/'test.cpp').write_text(prefix+'inline void filterGasPressureGradient()'+body+main)
     subprocess.run(['g++','-std=c++11',str(path/'test.cpp'),'-o',str(path/'test')],check=True)
     subprocess.run([str(path/'test')],check=True)
-evaluation=source.split('inline void evaluatePointwiseTerms()')[1].split('inline void evaluateNativeAlphaAdvection')[0]
-assert evaluation.index('filterGasPressureGradient();') < evaluation.index('if (p.gasPressureGradientFilterEnabled') < evaluation.index('if (p.gasPressureInletMaskEnabled)') < evaluation.index('buildEquationTermsKernel')
+evaluation=source.split('inline void evaluateGasPressureGradient(bool advanceTemporalFilter)')[1].split('inline void evaluatePointwiseTerms()')[0]
+assert evaluation.index('filterGasPressureGradient();') < evaluation.index('if (p.gasPressureGradientFilterEnabled') < evaluation.index('if (p.gasPressureInletMaskEnabled)')
 assert 'const auto &o_selectedGradP = o_gradPSpatial;' in evaluation
+pointwise=source.split('inline void evaluatePointwiseTerms()')[1].split('inline void evaluateNativeAlphaAdvection')[0]
+assert pointwise.index('evaluateGasPressureGradient(false);') < pointwise.index('buildEquationTermsKernel')
+assert 'advanceTemporalFilter && tstep != pressureGradientFilterStep' in evaluation
 print('Actual pressure-gradient routing: all components, strong/weak selection, zero/full strength, raw preservation, repeated calls and spatial-before-temporal/mask ordering passed.')

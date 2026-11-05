@@ -110,9 +110,9 @@ gasPressureGradientMethod = 0
 # Applied before optional temporal relaxation and inlet masking; 0 strength disables.
 gasPressureGradientExplicitFilterModes = 1
 gasPressureGradientExplicitFilterStrength = 0.05
-# Exponential relaxation of the selected lagged pressure gradient used by UG:
-# gradP_used^n = (1-weight)*gradP_used^(n-1) + weight*gradP_lagged^n.
-# Set enabled=0 or weight=1 to recover the unfiltered lagged gradient.
+# Exponential relaxation of the current-step pressure gradient used by UG:
+# gradP_used^n = (1-weight)*gradP_used^(n-1) + weight*gradP_current^n.
+# Set enabled=0 or weight=1 to recover the unfiltered current gradient.
 gasPressureGradientFilterEnabled = 0
 gasPressureGradientFilterWeight = 0.2
 dragEnabled = 1.0
@@ -134,7 +134,7 @@ alphaTransportForm = 2
 mixtureDivergenceEnabled = 1
 # Spatial inlet layer of thickness delta (mesh units): div(UM)=0 for z<=delta/2.
 # Cosine ramp to the full reconstructed target over delta/2 < z < delta.
-# Inlet is at z=0. Applied after filtering, extrapolation and ramp, every Picard pass.
+# Inlet is at z=0. Applied after filtering, extrapolation and ramp, each physical step.
 # 0 disables the inlet layer; raw divergence exports remain unchanged.
 divergenceInletThickness = 0.01
 # 1: previous (rhoL-rhoG)/rhoM * [alpha transport/diffusion + UM.grad(alpha)].
@@ -156,20 +156,6 @@ stabilityMonitorEnabled = 1.0
 stabilityMonitorInterval = 10
 validationOutputInterval = 10
 
-# User-side block Picard, with selectable UM convection treatment.
-# 0: unchanged one-pass path; 1: frozen repeat test; 2: coupled Picard.
-picardMode = 2
-# 0: retain native EXT; 1: use full UM.grad(UM) from the preceding Picard iterate.
-# Requires picardMode=2. First pass always uses the native predictor.
-picardUmConvection = 0
-innerIterations = 6
-# 0: stop at an unconverged cap; 1: explicitly allow cap acceptance (logged).
-picardAcceptAtCap = 0
-# Per-field max change / (absolute tolerance + relative tolerance * reference max).
-picardRelativeTolerance = 1e-6
-picardAlphaTolerance = 1e-8
-picardUgTolerance = 1e-7
-picardUmTolerance = 1e-7
-picardPressureTolerance = 1e-3
-picardDivergenceTolerance = 1e-6
-picardRepeatTolerance = 1e-9
+# One-through order: ALPHA -> native UM/pressure -> UGX/UGY/UGZ.
+# UG uses the newly solved pressure. All other UG RHS terms retain their
+# pre-step assembly; native UM convection retains its original EXT treatment.

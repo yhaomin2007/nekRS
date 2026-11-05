@@ -1,6 +1,6 @@
 # Density-averaged method1: conservative UG transport of alpha
 
-Alpha and UG have no native mixture convection or matching RHS cancellation: their device-only advection compute flags are disabled before the first timestep. Host compute stays enabled, retaining all four Helmholtz solves, diffusion, HPFRT and boundary conditions. Native alpha/UG advection histories are zero-initialized and remain zero. The alpha RHS directly supplies conservative div(alpha*UG): alphaTransportForm=1 forms the product at GLL nodes then applies assembled opSEM::strongDivergence; alphaTransportForm=2 retains conservative cubature differentiation (default). Both use the same frozen UG and time treatment. The former aliases the nodal product; neither form guarantees boundedness. UGX/UGY/UGZ receive only the user cubature -UG.grad(UG) convection in their explicit RHS. UG remains transported velocity, not QG. Gas drag and effective virtual-mass inertia remain semi-implicit; pressure and liquid acceleration remain lagged.
+Alpha and UG have no native mixture convection or matching RHS cancellation: their device-only advection compute flags are disabled before the first timestep. All four Helmholtz solves, diffusion, HPFRT and boundary conditions remain enabled; a temporary host solve mask defers UG until after UM/pressure. Native alpha/UG advection histories are zero-initialized and remain zero. The alpha RHS directly supplies conservative div(alpha*UG): alphaTransportForm=1 forms the product at GLL nodes then applies assembled opSEM::strongDivergence; alphaTransportForm=2 retains conservative cubature differentiation (default). Both use the same frozen UG and time treatment. The former aliases the nodal product; neither form guarantees boundedness. UGX/UGY/UGZ receive only the user cubature -UG.grad(UG) convection in their explicit RHS. UG remains transported velocity, not QG. Gas drag and effective virtual-mass inertia remain semi-implicit; pressure uses the current native UM/pressure solution, while liquid acceleration and other nonpressure UG sources remain lagged.
 
 For alphaTransportForm=2, set cubaturePolynomialOrder >= 2*N because the conservative cubature kernel differentiates the sampled product. With alphaTransportForm=1 this extra requirement is lifted; native/UG cubature still requires sufficient quadrature for its own operator. The example N=7 uses order 14 (15 Gauss points). Scalar explicit histories use EXT1; native fluid/BDF integration is unchanged.
 
@@ -14,7 +14,7 @@ UG reconstruction and pressure/drag/gravity/VM sources are not switched off at l
 
 mixtureDivergenceEnabled=1 supplies a reduced target using alpha conservative transport and numerical diffusion only; 0 imposes zero divergence. divergenceRampEnabled and divergenceRampSteps retain the cosine startup ramp. Optional divergence filtering remains available.
 
-`divergenceInletThickness = delta` applies a spatial inlet weight to the final pressure target, assuming the inlet is at `z=0`: zero for `z <= delta/2`, `0.5*(1-cos(pi*(2*z/delta-1)))` for `delta/2 < z < delta`, and one for `z >= delta`. Both value and first derivative match at the transition endpoints. Set the thickness to `0` to disable the layer (the default for older par files). The example uses `0.01` mesh units: a zero region up to `z=0.005`, followed by smooth recovery to `z=0.01`. The weight is applied after filtering, extrapolation and temporal ramp on every pass, including Picard correctors. Raw divergence comparisons remain unchanged; exported applied target includes this weight. This is a diagnostic modification of mixture continuity, not a correction of the underlying boundary reconstruction.
+`divergenceInletThickness = delta` applies a spatial inlet weight to the final pressure target, assuming the inlet is at `z=0`: zero for `z <= delta/2`, `0.5*(1-cos(pi*(2*z/delta-1)))` for `delta/2 < z < delta`, and one for `z >= delta`. Both value and first derivative match at the transition endpoints. Set the thickness to `0` to disable the layer (the default for older par files). The example uses `0.01` mesh units: a zero region up to `z=0.005`, followed by smooth recovery to `z=0.01`. The weight is applied after filtering, extrapolation and temporal ramp on each physical timestep. Raw divergence comparisons remain unchanged; exported applied target includes this weight. This is a diagnostic modification of mixture continuity, not a correction of the underlying boundary reconstruction.
 
 Divergence uses the standalone user module explicitFilter.hpp / explicitFilter.okl, ported from the supplied explicitFilterApply. It uses the original Legendre bubble basis (1, x, P_k-P_(k-2)), whose higher modes vanish at endpoints. divergenceFilterModes selects 1..N-1 high modes; divergenceFilterStrength in [0,1] sets their parabolic attenuation. The module directly applies F tensor F tensor F in-place to raw divergence. It preserves element corner values and compatible face traces; this is not the former ordinary-Legendre filter. Strength 0 is identity. Filtered divergence is assembled before optional extrapolation and ramp and supplied to pressure; raw comparisons stay unfiltered.
 
@@ -99,140 +99,61 @@ are unchanged. Div s1 now means the selected formula's raw target; s2 remains
 the full BDF comparison, s3 the applied target, s4=s1-s2 and s5 the original
 nodal material-advection lag diagnostic (not a complete form-2 residual).
 
-## User-side block Picard iteration
+## One-through solve order
 
-`bubbleColumnPicard.hpp` composes the existing source, post-scalar, properties,
-pressure and accepted-step callbacks using v26's inner-step loop. No core
-files are changed. The example par selects coupled mode:
+The case advances **alpha -> UM/pressure -> UG** once per physical timestep.
+The former iteration module, replay mode, convergence/cap controls and iteration
+CSV are removed. No NekRS core files are changed.
 
-```ini
-picardMode = 2
-picardUmConvection = 0
-innerIterations = 6
-picardAcceptAtCap = 0
-picardRelativeTolerance = 1e-6
-picardAlphaTolerance = 1e-8
-picardUgTolerance = 1e-7
-picardUmTolerance = 1e-7
-picardPressureTolerance = 1e-3
-picardDivergenceTolerance = 1e-6
-picardRepeatTolerance = 1e-9
+At userSource time, alpha/UG transport and mixture forcing are evaluated with
+the old physical-step fields. UG's native HPF and BDF/EXT1 forcing are assembled
+before solution histories are lagged, using native `scalar_t::sumMakef` and an
+explicit zero native-advection history. UG is then temporarily disabled in the
+**host** compute mask. Native alpha forcing assembly still shifts the entire
+scalar source history once, and native lagSolution shifts the entire scalar
+solution history once; neither loop limits these copies to enabled fields.
+
+The native scalar solve advances only alpha. Its configured filtering/clipping
+runs once; mixture properties and the configured divergence target are then
+updated before the native UM/pressure solve. Native UM convection retains its
+original EXT handling. The existing inlet zero region and cosine divergence
+ramp remain active.
+
+At the start of UDF_ExecuteStep, after UM/pressure has completed, the current
+pressure gradient is evaluated with the existing strong/weak selection,
+spatial filter, optional temporal relaxation, and inlet mask. Only its change
+from the gradient used in source assembly is added to each cached UG RHS:
+
+```
+delta_RHS_g = -M_alpha * gasPressureEnabled / rhoEff * (gradP_current - gradP_source)
+rhoEff = rhoGas + virtualMassEnabled * virtualMassCoefficient * rhoLiquid
 ```
 
-Modes:
+This replaces the old pressure load; it does not add a second full pressure
+force. No BDF, HPF, convection or source history is rebuilt or shifted here.
+The implicit drag coefficient is restored from source assembly, retaining
+consistency with the frozen explicit liquid-velocity drag load. Scalar EXT1
+is required; high-order source extrapolation is not silently approximated.
 
-- 0: old one-pass path; no iteration hooks are installed. This is also the C++
-  default for existing par files without picardMode.
-- 1: frozen-repeat control. Every pass solves from the same starting fields,
-  coefficients, pressure-filter cache and native forcing. All four scalar
-  fields, pressure and applied divergence are compared with pass 1.
-- 2: the native first pass is the predictor. Later passes replace scalar user
-  forcing with current-iterate conservative alpha transport, UG material
-  convection and gas forces. UM physical force is refreshed after the scalar
-  block. UM convection follows `picardUmConvection`; HPF retains its original EXT treatment.
+A temporary UG-only host mask is used to reapply UG Dirichlet values and solve
+each gas-velocity component exactly once. Alpha is not solved or filtered again.
+UG postprocessing runs once after this solve. The full enabled mask is restored
+before diagnostics/checkpoint output; the device native-advection mask remains
+zero throughout. VM, divergence and cumulative physical-step diagnostics are
+committed once after all fields are complete. The raw gradpStrong/gradpWeak
+exports now show the current pressure used for this UG stage.
 
-One pass (innerIterations=1) performs no corrector. For comparison the example
-sets all initialGuess entries to previous; iteration modes also select these
-before elliptic setup. An old par with projection/extrapolated linear guesses
-may differ by linear-solve error when switching to iteration. Compare matching
-linear settings and choose residual tolerances tight enough to resolve the
-requested Picard changes; outer iterate convergence is not linear accuracy.
+This is a sequential, lagged coupling: the pressure constraint uses the UG
+available before its final solve, and the new UG is not fed back into the
+same-step pressure solve. It does not impose within-step nonlinear consistency.
 
-`picardUmConvection=0` (default) retains native EXT convection. Set it to `1`
-with `picardMode=2` to recompute the full `N(U)=U.grad(U)` from the preceding
-UM iterate before each corrector fluid solve. Both the advecting and advected
-velocity use that iterate; the new nonlinear product is not extrapolated.
-The native first pass remains unchanged, including when innerIterations=1.
-This uses the native GLL/cubature operator selected by ADVECTION TYPE, with
-UDF-owned advector and output buffers. It never overwrites native ADV/Urst or
-shifts physical histories. Modes 0/1 reject this option rather than silently
-ignoring it. All other existing Picard restrictions still apply.
+Restrictions: one fixed-mesh session, exactly four active elliptic gas scalars,
+no scalar/source EXT beyond EXT1, no advection subcycling or NekNek. The driver
+must complete one native stage per timestep; unsupported repeated stages and
+missing/duplicate UG solves fail explicitly.
 
-The scalar base load is `native_JwF - M_LMM*EXT(original_user_scalar_source)`.
-A corrector adds `M_LMM*current_user_scalar_source`, without EXT of the current
-nonlinear product. The fluid base is
-`native_JwF - M_Jw*EXT(original_user_mixture_force)`; it retains BDF history,
-native EXT convection and HPF when the option is zero. When enabled, the
-base additionally adds `M_Jw*EXT(N)` to cancel the original negative convection
-load. `EXT(N)` is reconstructed once from the pre-lag physical U history using
-the native operator and fluid EXT coefficients. preFluid then subtracts
-`M_Jw*N(U_iter)` and adds `M_Jw*current_mixture_force` using
-new alpha/UG and the preceding UM iterate. Native sumMakef's fluid load is an
-acceleration load; no extra rho factor is added here. The native pressure and
-velocity solvers use refreshed mixture coefficients, including variable 1/rho
-in pressure. Scalars keep transportCoeff=1 and semi-implicit drag. Native
-predictors (including native predictor-dependent viscous terms) remain fixed.
-This is a user-side nonlinear RHS fixed-point iteration, not an Oseen/Newton
-operator. With `picardUmConvection=1`, UM convection participates in the nonlinear fixed point, but no convection matrix is added to the native linear solves.
-
-Each complete preceding iterate supplies alpha/UG transport, gas pressure,
-drag and liquid acceleration for the next four-scalar block. UG does not use
-new alpha from within that same scalar block. VM acceleration uses
-`(UL_iter-UL_old)/dt + UL_iter.grad(UL_iter)`, retaining the case's first-order
-physical-time definition and a fixed UL_old. The helper restores UL_old after
-each evaluation; a Picard difference is never divided by dt as acceleration.
-Pressure-gradient temporal relaxation uses the same old-time filtered anchor
-for every pass; spatial filtering and the inlet mask remain active. The
-accepted pressure gradient is committed from the final pressure once.
-
-After each fresh scalar solve, configured alpha filtering/clipping and gas
-limiting are applied. Per-pass cumulative counters start from the same old
-step totals, so only the accepted corrections remain accumulated. Properties
-and the selected divergence are updated. Form 2 uses current alpha/UG with the
-preceding UM iterate in `div(alpha*(UM-UG))`; form 1 uses a separate current-UM
-contravariant buffer for its material term. Neither overwrites native fluid
-relUrst. Numerical diffusion remains on the pre-filter implicit alpha solution;
-HPF/filter/clipping-rate sources remain excluded from divergence. Divergence
-filtering, assembly, ramp and the master switch are retained. Coupled mode
-requires divergenceExtrapolationEnabled=0 so a fresh target reaches pressure.
-
-Native BDF/ADV/EXT histories shift only during normal physical-step entry.
-Separate UDF histories track the ORIGINAL predictor user sources solely to
-remove their exact EXT contribution from native forcing. They do not substitute
-accepted corrector samples into native history; the native predictor retains
-its historical predictor-source convention. Scalar and fluid EXT arrays can
-have different orders/coefficients. Correctors never call initStep,
-makeForcing, lagSolution or native makeAdvection. The existing alpha transport
-history is not overwritten by residual or corrector evaluations.
-
-Only accepted steps execute the parent UDF end-step work: divergence history,
-VM history, conservation histories, checkpoint exports and final UM limiting.
-The original checkpoint request survives intermediate suppression. As in the
-old case, the emergency UM limiter acts AFTER the convergence callback; a
-limited exported state need not satisfy the measured pre-limit constraint.
-Restart loading uses normal native startup plus freshly initialized UDF source
-histories; these are transient arrays, not additional restart variables. The
-first native startup coefficients select only available samples.
-
-`bubbleColumn_picard.csv` and `bubblePicard` log lines report separate field
-changes, a scaled change and immutable-history errors. Each field is scaled by
-`absoluteTolerance + relativeTolerance * max|previous field|`; all fields and
-the applied divergence must have scaled change <=1 after at least two passes.
-Statuses distinguish predictor, iterating, converged and maxPasses. A strict
-cap stops an unconverged step; picardAcceptAtCap=1 explicitly permits acceptance
-with maxPasses. Frozen mode uses an absolute repeatTolerance and must run the
-requested number of passes. No within-step dt reduction is performed.
-
-The logged strongDivMismatchRms compares an assembled SEM strong divergence
-of the completed UM with its applied target. It is a history-neutral spatial
-diagnostic, NOT an exact native pressure-projection or full nonlinear residual,
-and is not used as a convergence criterion. BDF density/gas-balance diagnostics
-and raw-vs-applied divergence remain separate. In coupled mode s1-s2 can
-contain both excluded regularization effects and incomplete nonlinear
-convergence; it is not merely an RHS recovery error. Picard convergence does not
-restore the regularization terms deliberately excluded from continuity.
-
-Restrictions: fixed mesh, no advection subcycling, four transported gas
-scalars, no density splitting, thermodynamic low-Mach, constant-flow correction
-or NekNek coupling. Existing unrelated preFluid/convergence callbacks are not
-overwritten. First validate modes 0 and 1 with matched linear settings, then
-compare more passes and smaller dt at equal physical times in mode 2.
-
-Local verification: `python tests/picard_inner.py` (set OCCA_DIR if needed).
-It uses actual OCCA Serial memory, v26 deviceMemory, native sumMakef kernels,
-native solution-history lagging and runInnerStep with the production Picard
-module/step guard. Controlled nonlinear physics and elliptic doubles exercise
-BDF1/2/3, separate scalar/fluid EXT, variable mixture properties, pressure
-filter anchoring, VM anchoring, current forces, one-time commits, frozen replay,
-convergence/cap policies and intentional history corruption. Elliptic/spatial
-physics are test doubles: full GPU/MPI bubbleColumn validation is still needed.
+Verification: `node tests/one_through.js` executes the actual C++ orchestration
+translated to JavaScript over controlled CPU fields and elliptic doubles, plus
+the native sumMakef arithmetic. It covers BDF1/2/3, VM, pressure on/off, optional
+temporal filtering, source/solution histories, masks, padding and one-time
+postprocessing. It is not a C++ compilation or a full GPU/MPI bubble-column run.
