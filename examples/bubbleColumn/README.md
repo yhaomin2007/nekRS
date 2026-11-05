@@ -1,8 +1,8 @@
 # Density-averaged method1: conservative UG transport of alpha
 
-Alpha and UG have no native mixture convection or matching RHS cancellation: their device-only advection compute flags are disabled before the first timestep. All four Helmholtz solves, diffusion, HPFRT and boundary conditions remain enabled; a temporary host solve mask defers UG until after UM/pressure. Native alpha/UG advection histories are zero-initialized and remain zero. The alpha RHS directly supplies conservative div(alpha*UG): alphaTransportForm=1 forms the product at GLL nodes then applies assembled opSEM::strongDivergence; alphaTransportForm=2 retains conservative cubature differentiation (default). Both use the same frozen UG and time treatment. The former aliases the nodal product; neither form guarantees boundedness. UGX/UGY/UGZ receive only the user cubature -UG.grad(UG) convection in their explicit RHS. UG remains transported velocity, not QG. Gas drag and effective virtual-mass inertia remain semi-implicit; pressure uses the current native UM/pressure solution, while liquid acceleration and other nonpressure UG sources remain lagged.
+Alpha and UG have no native mixture convection or matching RHS cancellation: their device-only advection compute flags are disabled before the first timestep. All four Helmholtz solves, diffusion, HPFRT and boundary conditions remain enabled. The native scalar loop solves alpha then UG before the native pressure/UM solve; host solve masks are never changed. Native alpha/UG advection histories are zero-initialized and remain zero. The alpha RHS directly supplies conservative div(alpha*UG): alphaTransportForm=1 forms the product at GLL nodes then applies assembled opSEM::strongDivergence; alphaTransportForm=2 retains conservative cubature differentiation (default). Both use the same frozen UG and time treatment. The former aliases the nodal product; neither form guarantees boundedness. UGX/UGY/UGZ receive only the user cubature -UG.grad(UG) convection in their explicit RHS. UG remains transported velocity, not QG. Gas drag and effective virtual-mass inertia remain semi-implicit; pressure uses the latest completed pressure or independently selected gradient EXT; liquid acceleration and other nonconvection sources retain their previous latest-sample treatment.
 
-For alphaTransportForm=2, set cubaturePolynomialOrder >= 2*N because the conservative cubature kernel differentiates the sampled product. With alphaTransportForm=1 this extra requirement is lifted; native/UG cubature still requires sufficient quadrature for its own operator. The example N=7 uses order 14 (15 Gauss points). Scalar explicit histories use EXT1; native fluid/BDF integration is unchanged.
+For alphaTransportForm=2, set cubaturePolynomialOrder >= 2*N because the conservative cubature kernel differentiates the sampled product. With alphaTransportForm=1 this extra requirement is lifted; native/UG cubature still requires sufficient quadrature for its own operator. The example N=7 uses order 14 (15 Gauss points). The complete alpha and UG convection products use native fluid EXT coefficients. Scalar EXT1 carries already-selected sources, avoiding double extrapolation; native fluid/BDF integration is unchanged.
 
 Fresh starts have only the axial plume: f(z)=0.5*(1-tanh((z-H)/delta)), alpha=alphaInlet*f, UGz=gasInitialVelocity*f. Initial liquid is stationary and mixture velocity follows the density-weighted relation. initialPlumeHeight and initialPlumeThickness remain configurable. Restart files take precedence. Uniform initialization selectors were removed.
 
@@ -20,7 +20,7 @@ Divergence uses the standalone user module explicitFilter.hpp / explicitFilter.o
 
 To reuse the module in another v26 case, include explicitFilter.hpp, call userExplicitFilter::registerKernels(kernelInfo) during UDF_LoadKernels, then call userExplicitFilter::explicitFilterApply(tag, mesh, modes, strength, field). Register the kernel for the case polynomial degree; fields may be padded or scalar slices with at least mesh Nlocal entries. The module performs element-local filtering only; the caller handles gather-scatter as needed. Matrices are cached by tag and rebuilt when mesh, degree, modes or strength changes.
 
-The reduced alpha RHS is `R_transport_diff = EXT[-div_h(alpha*UG) + explicit_diffusion_compensation] - M^-1 K_D alpha_solved`. It is not recovered from native o_JwF. The user source caches alphaSource after optional subtractAlphaDiffusion compensation, before native HPFRT/forcing assembly. A separate user history shifts once per timestep and uses the same scalar EXT coefficients (EXT1 by default). Post-solve property evaluations do not overwrite it. With subtractAlphaDiffusion=0, only conservative gas transport and the implicit numerical diffusion remain.
+The reduced alpha RHS is `R_transport_diff = EXT_fluid[-div_h(alpha*UG)] + explicit_diffusion_compensation - M^-1 K_D alpha_solved`. Raw transport is cached before diffusion compensation and receives native fluid EXT once. Current explicit diffusion compensation is added after transport extrapolation; it is not extrapolated or recovered from native o_JwF. Property evaluations do not overwrite the cached selected transport. With subtractAlphaDiffusion=0, only conservative gas transport and implicit numerical diffusion remain.
 
 Native weak diffusion uses the original implicit alpha solution, before explicit filtering/clipping. No HPFRT source, filter/clipping-rate correction, or Dirichlet-node BDF override is included. This does not disable these operations in the alpha solve itself: they still affect the evolved fields, but their equivalent rates are omitted from this divergence RHS. The weak diffusion operator is evaluated at boundary nodes as well; the former boundary temporal override is removed.
 
@@ -30,9 +30,14 @@ The full BDF alternative remains an exported diagnostic only; no par selector ch
 
 This reduced target deliberately does not enforce the full discrete density continuity identity for all alpha regularization/postprocessing changes. Divergence filtering, startup ramp and optional history extrapolation can further change the target. Pressure still does not correct UG within the same timestep.
 
-## UG pressure-gradient explicit filter
+## UG pressure gradient
 
-Set gasPressureGradientExplicitFilterModes and gasPressureGradientExplicitFilterStrength to apply the standalone bubble-basis filter separately to all three selected pressure-gradient components. The example uses one mode at strength 0.05; strength 0 disables it. Sequence: compute raw strong/weak gradients, copy the selected field, spatial filter, shared-node assembly, optional existing temporal relaxation, then optional inlet mask. Raw diagnostic gradients stay unchanged. Each evaluation starts from raw gradients, preventing repeated filter application to cached history. This filters the gradient entering UG forcing only; it does not filter pressure or the native mixture momentum pressure term.
+UG always uses the raw assembled strong gradient. The old weak-gradient
+selection, pressure spatial filter, temporal relaxation and inlet mask settings
+have been removed. The raw weak gradient is still exported for diagnostics only.
+`gasPressureGradientExtrapolation=0` uses grad(p^n), the latest completed pressure
+available before this step's pressure solve. `=1` uses the native fluid EXT
+weights on raw strong-gradient histories. This is independent of convection EXT.
 
 ## Alpha explicit filter
 
@@ -76,15 +81,15 @@ advection operators or the measured final divergence/projection residual.
 ## Mixture divergence formula selector
 
 `mixtureDivergenceForm=1` retains the previous reduced material-alpha formula:
-`d=(rhoL-rhoG)/rhoM * (EXT[-div(alpha*UG)+diffusion_compensation] + diffusion_implicit + A_UMused(alpha_final))`.
+`d=(rhoL-rhoG)/rhoM * (EXT_fluid[-div(alpha*UG)] + diffusion_compensation + diffusion_implicit + A_UMused(alpha_final))`.
 
 `mixtureDivergenceForm=2` (example par setting) uses the relative conservative flux:
-`d=(rhoL-rhoG)/rhoL * (EXT[div(alpha*(UMused-UG))+diffusion_compensation] + diffusion_implicit)`.
+`d=(rhoL-rhoG)/rhoL * (EXT_fluid[div(alpha*(UMused-UG))] + diffusion_compensation + diffusion_implicit)`.
 The C++ default is 1 for existing par files. Only values 1 and 2 are accepted.
 The relative flux is constructed once at the alpha source time using the same
 alpha, step-start UM, and frozen UG time level. It follows alphaTransportForm:
 1 uses assembled nodal-product SEM divergence; 2 uses conservative cubature.
-The saved source receives the same scalar EXT coefficients as alpha transport.
+The saved raw flux receives the same native fluid EXT coefficients as alpha transport.
 Native weak implicit diffusion still uses the pre-filter/clipping solved alpha.
 Configured explicit alpha diffusion compensation is included; HPF/filter/
 clipping-rate sources and boundary BDF overrides remain excluded.
@@ -99,87 +104,42 @@ are unchanged. Div s1 now means the selected formula's raw target; s2 remains
 the full BDF comparison, s3 the applied target, s4=s1-s2 and s5 the original
 nodal material-advection lag diagnostic (not a complete form-2 residual).
 
-## One-through solve order
+## Fixed solve order and time extrapolation
 
-The case advances **alpha -> UM/pressure -> UG** once per physical timestep.
-The former iteration module, replay mode, convergence/cap controls and iteration
-CSV are removed. No NekRS core files are changed.
+The order is alpha -> UG -> pressure -> UM, once per physical step, with no
+Picard iteration or deferred gas solve. Native scalar solve order is checked
+against ALPHA, UGX, UGY, UGZ. No core or method2 code is changed.
 
-At userSource time, alpha/UG transport and mixture forcing are evaluated with
-the old physical-step fields. UG's native HPF and BDF/EXT1 forcing are assembled
-before solution histories are lagged, using native `scalar_t::sumMakef` and an
-explicit zero native-advection history. UG is then temporarily disabled in the
-**host** compute mask. Native alpha forcing assembly still shifts the entire
-scalar source history once, and native lagSolution shifts the entire scalar
-solution history once; neither loop limits these copies to enabled fields.
+At source assembly, nonlinear products are computed from a single physical-time
+state and stored as separate histories. The complete conservative alpha flux
+divergence and UG material convection are extrapolated using exactly the current
+native fluid `o_coeffEXT`, including startup order and variable-step weights.
+Velocity factors are not independently predicted first. The relative-flux
+divergence target uses the same weights; current explicit diffusion compensation
+and the solved implicit diffusion are added separately. HPF, filtering and
+clipping remain excluded from this reduced divergence target.
 
-The native scalar solve advances only alpha. Its configured filtering/clipping
-runs once; mixture properties and the configured divergence target are then
-updated before the native UM/pressure solve. Native UM convection retains its
-original EXT handling. The existing inlet zero region and cosine divergence
-ramp remain active.
+The native scalar EXT array remains an independent EXT1 carrier. Thus each
+pre-extrapolated convection/pressure source enters the native BDF forcing once;
+other explicit sources and native scalar HPF retain latest-sample treatment.
+Implicit diffusion, implicit gas drag and native UM convection are unchanged.
+Pressure history is independent of convection history, so the pressure option
+does not switch convection EXT off or apply EXT a second time.
 
-At the start of UDF_ExecuteStep, after UM/pressure has completed, the current
-pressure gradient is evaluated with the existing strong/weak selection,
-spatial filter, optional temporal relaxation, and inlet mask. Only its change
-from the gradient used in source assembly is added to each cached UG RHS:
+Histories advance only during source assembly. Setup/property/diagnostic
+evaluations cannot advance them or replace the selected gradient. No user
+history files are written: after restart, missing slots are filled by constant
+continuation of the first available sample, then replaced by real samples over
+the next few steps. A restarted trajectory need not match uninterrupted EXT
+during this short warmup.
 
-```
-delta_RHS_g = -M_alpha * gasPressureEnabled / rhoEff * (gradP_current - gradP_source)
-rhoEff = rhoGas + virtualMassEnabled * virtualMassCoefficient * rhoLiquid
-```
+`oneThroughLogInterval=1` logs every step; default 10 logs step 1 and each tenth
+step; 0 disables. Rank 0 logs ALPHA_UG_PENDING, ALPHA_UG_DONE,
+PRESSURE_UM_BEGIN and PRESSURE_UM_DONE, all with the enabled mask (1,1,1,1).
+Native scalar solver residuals appear between the first two markers in the
+checked alpha/UG order; pressure and UM residuals appear between the latter two.
 
-This replaces the old pressure load; it does not add a second full pressure
-force. No BDF, HPF, convection or source history is rebuilt or shifted here.
-The implicit drag coefficient is restored from source assembly, retaining
-consistency with the frozen explicit liquid-velocity drag load. Scalar EXT1
-is required; high-order source extrapolation is not silently approximated.
-
-A temporary UG-only host mask is used to reapply UG Dirichlet values and solve
-each gas-velocity component exactly once. Alpha is not solved or filtered again.
-UG postprocessing runs once after this solve. The full enabled mask is restored
-before diagnostics/checkpoint output; the device native-advection mask remains
-zero throughout. VM, divergence and cumulative physical-step diagnostics are
-committed once after all fields are complete. The raw gradpStrong/gradpWeak
-exports now show the current pressure used for this UG stage.
-
-This is a sequential, lagged coupling: the pressure constraint uses the UG
-available before its final solve, and the new UG is not fed back into the
-same-step pressure solve. It does not impose within-step nonlinear consistency.
-
-Restrictions: one fixed-mesh session, exactly four active elliptic gas scalars,
-no scalar/source EXT beyond EXT1, no advection subcycling or NekNek. The driver
-must complete one native stage per timestep; unsupported repeated stages and
-missing/duplicate UG solves fail explicitly.
-
-Verification: `node tests/one_through.js` executes the actual C++ orchestration
-translated to JavaScript over controlled CPU fields and elliptic doubles, plus
-the native sumMakef arithmetic. It covers BDF1/2/3, VM, pressure on/off, optional
-temporal filtering, source/solution histories, masks, padding and one-time
-postprocessing. It is not a C++ compilation or a full GPU/MPI bubble-column run.
-
-### Runtime solve-order trace
-
-Set `oneThroughLogInterval = 1` in CASEDATA to print every step; the default
-`10` prints step 1 and every tenth step, and `0` disables the trace. Rank 0
-prints `method1Order` records with the timestep, stage and actual host solve mask
-in named order `(alpha,ugx,ugy,ugz)`:
-
-```text
-ALPHA_PENDING             (1,0,0,0)
-ALPHA_DONE                (1,0,0,0)
-UM_PRESSURE_BEGIN         (1,0,0,0)
-UM_PRESSURE_DONE          (1,0,0,0)
-UG_BEGIN_CURRENT_PRESSURE (0,1,1,1)
-UG_DONE                   (0,1,1,1)
-STEP_FIELDS_READY         (1,1,1,1)
-```
-
-ALPHA_PENDING is emitted after source preparation, before the native alpha
-solve. ALPHA_DONE follows that solve and alpha postprocessing. The UM markers
-bracket the native fluid solve via preFluid and the beginning of the deferred
-UG callback. UG_BEGIN_CURRENT_PRESSURE follows the current-pressure RHS
-replacement and UG boundary application; UG_DONE is immediately after the UG
-solve. STEP_FIELDS_READY follows UG postprocessing and mask restoration, before
-accepted-step diagnostics/output. Logging introduces no additional field solves,
-history updates or device synchronizations.
+Verification: `python3 tests/time_extrapolation.py` compiles actual C++ history,
+pressure selection and convection routing against controlled CPU arrays. The
+remaining spatial/operator regressions are separate; full GPU/MPI integration
+is still required.

@@ -65,5 +65,7 @@ reconstruction=host.split('inline void buildDivergenceFromAlphaRhs')[1].split('i
 assert all(x not in reconstruction for x in ['o_JwF','o_alphaPostprocessRate','o_coeffBDF','Nmasked','alphaBoundaryRhs'])
 assert 'o_alphaBeforePostprocess' in reconstruction
 source=host.split('inline void addExplicitSources(double)')[1].split('inline void buildDivergenceFromAlphaRhs')[0]
-assert source.index('subtractScalarDiffusion();')<source.index('storeAlphaTransportRhs();')
+assert source.index('storeAlphaTransportRhs();') < source.index('extrapolateGasConvection();') < source.index('subtractScalarDiffusion();')
+assert 'o_alphaExplicitDiffusion' in reconstruction
 print('Actual reduced RHS/divergence kernels: EXT1/EXT2 transport + weak diffusion + UM advection only; HPF/filter/clipping corrections excluded, full BDF discrepancy predicted, padding preserved.')
+

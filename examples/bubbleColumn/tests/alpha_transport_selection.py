@@ -5,7 +5,7 @@ import tempfile
 
 case=Path(__file__).resolve().parents[1]
 source=(case/'bubbleColumnTerms.hpp').read_text()
-body=source.split('inline void evaluateAlphaTransport()')[1].split('inline void filterGasPressureGradient()')[0]
+body=source.split('inline void evaluateAlphaTransport()')[1].split('// Raw assembled strong gradient only.')[0]
 cpp=r'''
 #include <cassert>
 #include <algorithm>
@@ -54,3 +54,4 @@ with tempfile.TemporaryDirectory() as directory:
     subprocess.run([str(path/'test')],check=True)
 assert '"alphatransportform", p.alphaTransportForm' in (case/'bubbleColumn.udf').read_text()
 print('Actual selection: nodal alpha*frozenUG, assembled SEM divergence, negative RHS sign, cubature fallback and padded storage passed.')
+

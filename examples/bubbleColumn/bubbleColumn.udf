@@ -82,15 +82,7 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   platform->par->extract(
       "casedata", "gasmomentumfullyactive", p.gasMomentumFullyActive);
   platform->par->extract("casedata", "gaspressureenabled", p.gasPressureEnabled);
-  platform->par->extract("casedata", "gaspressureinletmaskenabled", p.gasPressureInletMaskEnabled);
-  platform->par->extract(
-      "casedata", "gaspressuregradientmethod", p.gasPressureGradientMethod);
-  platform->par->extract("casedata",
-                         "gaspressuregradientfilterenabled",
-                         p.gasPressureGradientFilterEnabled);
-  platform->par->extract("casedata",
-                         "gaspressuregradientfilterweight",
-                         p.gasPressureGradientFilterWeight);
+  platform->par->extract("casedata", "gaspressuregradientextrapolation", p.gasPressureGradientExtrapolation);
   platform->par->extract("casedata", "dragenabled", p.dragEnabled);
   platform->par->extract("casedata", "bubblediameter", p.bubbleDiameter);
   platform->par->extract("casedata", "driftstressenabled", p.driftStressEnabled);
@@ -104,10 +96,6 @@ void UDF_Setup0(MPI_Comm, setupAide &)
              "%s", "mixtureDivergenceEnabled must be 0 or 1.\n");
   platform->par->extract("casedata", "divergencecomparisoninterval", p.divergenceComparisonInterval);
   platform->par->extract("casedata", "divergencefiltermodes", p.divergenceFilterModes);
-  platform->par->extract("casedata", "gaspressuregradientexplicitfiltermodes",
-                         p.gasPressureGradientExplicitFilterModes);
-  platform->par->extract("casedata", "gaspressuregradientexplicitfilterstrength",
-                         p.gasPressureGradientExplicitFilterStrength);
   platform->par->extract("casedata", "alphatransportform", p.alphaTransportForm);
   platform->par->extract("casedata", "divergencefilterstrength", p.divergenceFilterStrength);
   platform->par->extract("casedata", "divergenceinletthickness", p.divergenceInletThickness);
@@ -145,9 +133,8 @@ void UDF_Setup()
 
 void UDF_ExecuteStep(double time, int tstep)
 {
-  // Native UM/pressure has completed. Advance UG once with the new pressure
-  // before diagnostics, accepted-step histories, and checkpoint output.
-  if (tstep > 0) bubbleColumn::oneThrough::solveGas(time, tstep);
+  // Alpha/UG and then native pressure/UM have completed exactly once.
+  if (tstep > 0) bubbleColumn::oneThrough::finishStep();
   // Measure the fluid update before optional emergency clipping.
   bubbleColumn::diagnoseDivergenceCoupling(time, tstep);
   // Use bounded velocity for the remaining diagnostics, output and next step.
@@ -182,8 +169,8 @@ void UDF_ExecuteStep(double time, int tstep)
     nrs->writeToFile(
         "ul", time, nrs->meshV, {{"velocity", liquidVelocity}});
 
-    // Export both raw current-pressure gradients cached immediately before
-    // the deferred UG solve (before spatial/temporal filtering and masking).
+    // Raw gradients cached before this step's fluid solve. UG uses raw strong
+    // or its independently selected EXT; weak is diagnostic only.
     std::vector<deviceMemory<dfloat>> gradPStrong = {
         bubbleColumn::o_gradPStrong.slice(0 * offset, nrs->meshV->Nlocal),
         bubbleColumn::o_gradPStrong.slice(1 * offset, nrs->meshV->Nlocal),
@@ -226,3 +213,4 @@ void UDF_ExecuteStep(double time, int tstep)
     bubbleColumn::writeValidationChecks(time, tstep);
   }
 }
+

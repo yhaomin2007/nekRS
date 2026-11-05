@@ -47,4 +47,5 @@ assert 'o_scalarCoeffEXT.resize(nEXT)' in case
 assert 'nrs->o_coeffEXT.copyFrom' not in case
 assert 'nrs->scalar->o_relUrst = nrs->fluid->o_relUrst;' in case
 assert 'nrs->scalar->o_U = nrs->fluid->o_U;' in case
-print('Native forcing: EXT1 applies latest convection/RHS to all four scalars; BDF and fluid EXT preserved. Native alpha/UG advection is zero; fluid aliases remain for BCs/divergence, and gas RHS uses latest UG.')
+print('Native forcing: EXT1 carries the preselected convection/pressure and latest remaining RHS to all four scalars; BDF and fluid EXT preserved. Native alpha/UG advection is zero; fluid aliases remain for BCs/divergence, and gas convection histories use physical-time UG products.')
+

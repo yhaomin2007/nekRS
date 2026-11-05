@@ -23,6 +23,8 @@ struct Scalar {Mem o_explicitTerms(std::string s){int f=s=="alpha"?0:s=="ugx"?1:
 struct Fluid {Mem o_U{velocity};Mem o_explicitTerms(){return {fluidRhs};}}fluid;
 struct Nrs {Mesh *meshV=&mesh;Scalar *scalar;Fluid *fluid;long fieldOffset=5;} nr{&mesh,&scalar,&fluid},*nrs=&nr;
 double ugSource[15],transport[20],alphaSource[5],mixtureForce[15],snapshot[15];
+bool assemblingExplicitSources=false;
+double conv[20],alphaDiff[5];Mem o_convectionEXT{conv},o_alphaExplicitDiffusion{alphaDiff};
 Mem o_ugSource{ugSource},o_gasTransport{transport},o_alphaSource{alphaSource},o_mixtureForce{mixtureForce},o_mixtureAdvectorUsed{snapshot};
 void prepareGasAdvection(){}
 void evaluatePointwiseTerms(){
@@ -30,9 +32,13 @@ void evaluatePointwiseTerms(){
  for(int n=0;n<3;++n)alphaSource[n]=-.1*(n+1);
 }
 void prepareRelativeDivergenceRhs(){}void subtractScalarDiffusion(){}void storeAlphaTransportRhs(){}void evaluateMixtureForce(){}
+void extrapolateGasConvection();
 void evaluateGasCubatureTransport(bool conservative){assert(!conservative);
  for(int c=0;c<3;++c)for(int n=0;n<3;++n)transport[(c+1)*5+n]=(c+1)+.25*n;
 }
+'''
+pre+=r'''
+void extrapolateGasConvection(){for(int n=0;n<3;++n)conv[n]=alphaSource[n];evaluateGasCubatureTransport(false);for(int i=5;i<20;++i)conv[i]=transport[i];}
 '''
 main=r'''
 int main(){
@@ -53,3 +59,4 @@ with tempfile.TemporaryDirectory() as d:
  subprocess.run(['g++','-std=c++17',str(p/'check.cpp'),'-o',str(p/'check')],check=True)
  subprocess.run([str(p/'check')],check=True)
 print('Actual source callback: all three UG RHS components are physical source minus gas convection; no UM cancellation, correct sign/padding, alpha and fluid forcing preserved.')
+

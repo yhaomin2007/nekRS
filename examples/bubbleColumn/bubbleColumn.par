@@ -98,23 +98,11 @@ mixtureVelocityMaximum = 1.0
 gasMomentumCutoff = 1e-4
 gasMomentumFullyActive = 1e-3
 gasPressureEnabled = 1.0
-# 1: suppress all UG pressure-gradient components at inlet nodes (boundary ID 1).
-# Includes shared inlet/wall corner nodes; 0 retains pressure forcing everywhere.
-gasPressureInletMaskEnabled = 0
-# Pressure gradient used in the UG source:
-# 0 = assembled strong gradient, 1 = mass-normalized weak gradient matching
-# the volume pressure operator used by the native NekRS velocity RHS.
-# Both raw forms are always computed, compared, and exported at checkpoints.
-gasPressureGradientMethod = 0
-# Spatial explicit bubble-basis filter on each selected grad(P) component.
-# Applied before optional temporal relaxation and inlet masking; 0 strength disables.
-gasPressureGradientExplicitFilterModes = 1
-gasPressureGradientExplicitFilterStrength = 0.05
-# Exponential relaxation of the current-step pressure gradient used by UG:
-# gradP_used^n = (1-weight)*gradP_used^(n-1) + weight*gradP_current^n.
-# Set enabled=0 or weight=1 to recover the unfiltered current gradient.
-gasPressureGradientFilterEnabled = 0
-gasPressureGradientFilterWeight = 0.2
+# UG always uses the raw assembled strong pressure gradient.
+# 0: latest completed pressure, grad(p^n); 1: EXT of raw gradient history,
+# with the same time-dependent EXT coefficients used by native UM convection.
+# No pressure spatial filter, temporal relaxation, weak selection or inlet mask.
+gasPressureGradientExtrapolation = 0
 dragEnabled = 1.0
 bubbleDiameter = 3.0e-3
 # Set to 0.0 to omit -div(tau_d)/rho_m from mixture momentum.
@@ -123,7 +111,8 @@ virtualMassEnabled = 1.0
 virtualMassCoefficient = 0.5
 # Native alpha/UG scalar convection is disabled; user gas transport is supplied directly.
 # Alpha uses selected conservative div(alpha*UG); UG uses cubature UG.grad(UG).
-# Scalar explicit terms use EXT1; diffusion and gas drag remain implicit.
+# Full alpha/UG convection products use native UM EXT coefficients.
+# Scalar EXT1 only carries already-selected sources; diffusion/drag stay implicit.
 gasTransportMethod = 1
 # 1: form alpha*UG at GLL nodes, then assembled SEM strong divergence.
 # 2: conservative cubature flux differentiation (existing default).
@@ -139,7 +128,7 @@ mixtureDivergenceEnabled = 1
 divergenceInletThickness = 0.01
 # 1: previous (rhoL-rhoG)/rhoM * [alpha transport/diffusion + UM.grad(alpha)].
 # 2: (rhoL-rhoG)/rhoL * [div(alpha*(UM-UG)) + numerical diffusion].
-# Relative flux follows alphaTransportForm and scalar explicit time treatment.
+# Relative flux follows alphaTransportForm and the same UM EXT coefficients.
 mixtureDivergenceForm = 2
 # Raw method0/method1/difference statistics in log and comparison CSV.
 divergenceComparisonInterval = 10
@@ -156,10 +145,10 @@ stabilityMonitorEnabled = 1.0
 stabilityMonitorInterval = 10
 validationOutputInterval = 10
 
-# One-through order: ALPHA -> native UM/pressure -> UGX/UGY/UGZ.
-# UG uses the newly solved pressure. All other UG RHS terms retain their
-# pre-step assembly; native UM convection retains its original EXT treatment.
-
+# Fixed native order: ALPHA -> UGX/UGY/UGZ -> pressure -> UM.
+# Only convection and the independently enabled pressure gradient use EXT.
+# Other explicit sources keep their previous latest-sample treatment.
 # Rank-0 solve-order trace: first step plus every N steps.
 # 1 prints every step; 0 disables the trace.
 oneThroughLogInterval = 10
+
