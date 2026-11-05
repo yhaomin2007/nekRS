@@ -65,8 +65,14 @@ class Mem {
   }
   values() { return this.data.slice(this.start,this.start+this.count); }
 }
-const translated = orchestration('beginStep','time') + orchestration('solveGas','time,tstep');
+const translated = orchestration('beginStep','time') + orchestration('solveGas','time,tstep')
+  + orchestration('postScalar','time,tstep') + orchestration('preFluid','time,tstep');
 let total = 0;
+assert(moduleSource.includes('nrs->postScalar = &postScalar'));
+assert(moduleSource.includes('nrs->preFluid = &preFluid'));
+assert(moduleSource.includes('platform->comm.mpiRank() != 0'));
+assert(moduleSource.includes('logInterval == 0'));
+assert(moduleSource.includes('nrs->tstep != 1 && nrs->tstep % logInterval != 0'));
 for(const order of [1,2,3]) for(const vm of [0,1]) for(const pressureEnabled of [0,1])
 for(const temporal of [0,1]) {
   const N=2, offset=4, stride=16, states=Math.max(3,order), mass=new Mem(N); mass.data=[2,7];
@@ -74,6 +80,7 @@ for(const temporal of [0,1]) {
   const sumMakef=forcing(order);
   const enabled=[1,1,1,1], names=['alpha','ugx','ugy','ugz'];
   let preparedStep=-1, solvedStep=-1, temporalUpdates=0, postprocessed=0;
+  const stageEvents=[]; let alphaPostprocessed=0;
   let enabledAtBC=[], solveCounts=[0,0,0,0], hpfCounts=[0,0,0,0], lagCount=0, extShift=0;
   const pressureAtSource=new Mem(12), dragAtSource=new Mem(4), pressureDelta=new Mem(12);
   const zeroAdvection=new Mem(3*stride), o_gradP=new Mem(12), o_dragLambda=new Mem(4);
@@ -139,8 +146,10 @@ for(const temporal of [0,1]) {
     args.at(-1).data.splice(0,stride,...values.at(-1));
   }
   function postProcessGasFlux(){++postprocessed;}
+  function postProcessAlpha(){++alphaPostprocessed;}
+  function stageLog(stage){stageEvents.push([nrs.tstep,stage,scalar.compute.slice()]);}
   // Evaluate actual orchestration in the mock lexical environment.
-  const api=eval('('+ 'function(){'+translated+';return {beginStep,solveGas};}' +')')();
+  const api=eval('('+ 'function(){'+translated+';return {beginStep,solveGas,postScalar,preFluid};}' +')')();
   for(let step=1;step<=2;++step){
     nrs.tstep=step; nrs.timeStepConverged=false;
     scalar.o_EXT.data.fill(0);const old=scalar.o_S.values();
@@ -156,6 +165,7 @@ for(const temporal of [0,1]) {
     for(let h=states-1;h>0;--h)scalar.o_S.copyFrom(scalar.o_S,stride,h*stride,(h-1)*stride);
     ++lagCount;
     scalar.applyDirichlet();scalar.solve(step,1);
+    api.postScalar(step,step);api.preFluid(step,step);
     assert.deepEqual(solveCounts,[step,step-1,step-1,step-1]);
     const alpha=scalar.o_S.values().slice(0,offset),alphaRhs=scalar.o_JwF.values().slice(0,offset);
     const solutionHistory=scalar.o_S.values().slice(stride),extHistory=scalar.o_EXT.values();
@@ -164,6 +174,16 @@ for(const temporal of [0,1]) {
     rawPressure=-21-step;nrs.timeStepConverged=true; // one native UM/pressure solve
     api.solveGas(step,step);
     assert.deepEqual(scalar.compute,enabled);assert.deepEqual(solveCounts,Array(4).fill(step));
+    assert.equal(alphaPostprocessed,step);
+    assert.deepEqual(stageEvents.filter(e=>e[0]===step).map(e=>[e[1],e[2]]),[
+      ['ALPHA_PENDING',[1,0,0,0]],
+      ['ALPHA_DONE',[1,0,0,0]],
+      ['UM_PRESSURE_BEGIN',[1,0,0,0]],
+      ['UM_PRESSURE_DONE',[1,0,0,0]],
+      ['UG_BEGIN_CURRENT_PRESSURE',[0,1,1,1]],
+      ['UG_DONE',[0,1,1,1]],
+      ['STEP_FIELDS_READY',[1,1,1,1]]
+    ]);
     assert.deepEqual(hpfCounts,Array(4).fill(step));assert.equal(postprocessed,step);
     assert.deepEqual(enabledAtBC.at(-1),[0,1,1,1]);
     assert.deepEqual(o_dragLambda.values().slice(0,N),[2,3]);

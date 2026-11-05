@@ -159,3 +159,7 @@ validationOutputInterval = 10
 # One-through order: ALPHA -> native UM/pressure -> UGX/UGY/UGZ.
 # UG uses the newly solved pressure. All other UG RHS terms retain their
 # pre-step assembly; native UM convection retains its original EXT treatment.
+
+# Rank-0 solve-order trace: first step plus every N steps.
+# 1 prints every step; 0 disables the trace.
+oneThroughLogInterval = 10

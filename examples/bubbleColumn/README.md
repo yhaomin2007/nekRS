@@ -157,3 +157,29 @@ translated to JavaScript over controlled CPU fields and elliptic doubles, plus
 the native sumMakef arithmetic. It covers BDF1/2/3, VM, pressure on/off, optional
 temporal filtering, source/solution histories, masks, padding and one-time
 postprocessing. It is not a C++ compilation or a full GPU/MPI bubble-column run.
+
+### Runtime solve-order trace
+
+Set `oneThroughLogInterval = 1` in CASEDATA to print every step; the default
+`10` prints step 1 and every tenth step, and `0` disables the trace. Rank 0
+prints `method1Order` records with the timestep, stage and actual host solve mask
+in named order `(alpha,ugx,ugy,ugz)`:
+
+```text
+ALPHA_PENDING             (1,0,0,0)
+ALPHA_DONE                (1,0,0,0)
+UM_PRESSURE_BEGIN         (1,0,0,0)
+UM_PRESSURE_DONE          (1,0,0,0)
+UG_BEGIN_CURRENT_PRESSURE (0,1,1,1)
+UG_DONE                   (0,1,1,1)
+STEP_FIELDS_READY         (1,1,1,1)
+```
+
+ALPHA_PENDING is emitted after source preparation, before the native alpha
+solve. ALPHA_DONE follows that solve and alpha postprocessing. The UM markers
+bracket the native fluid solve via preFluid and the beginning of the deferred
+UG callback. UG_BEGIN_CURRENT_PRESSURE follows the current-pressure RHS
+replacement and UG boundary application; UG_DONE is immediately after the UG
+solve. STEP_FIELDS_READY follows UG postprocessing and mask restoration, before
+accepted-step diagnostics/output. Logging introduces no additional field solves,
+history updates or device synchronizations.

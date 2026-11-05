@@ -6,6 +6,32 @@ namespace bubbleColumn { namespace oneThrough {
 static std::vector<int> enabled;
 static deviceMemory<dfloat> zeroAdvection, pressureAtSource, dragAtSource, pressureDelta;
 static int preparedStep = -1, solvedStep = -1;
+static int logInterval = 10;
+
+inline void stageLog(const char *stage)
+{
+  if (logInterval == 0 || (nrs->tstep != 1 && nrs->tstep % logInterval != 0)
+      || platform->comm.mpiRank() != 0) return;
+  const auto &scalar = nrs->scalar;
+  printf("method1Order step=%d stage=%s hostSolve(alpha,ugx,ugy,ugz)=(%d,%d,%d,%d)\n",
+      nrs->tstep, stage,
+      scalar->compute[scalar->nameToIndex.at("alpha")],
+      scalar->compute[scalar->nameToIndex.at("ugx")],
+      scalar->compute[scalar->nameToIndex.at("ugy")],
+      scalar->compute[scalar->nameToIndex.at("ugz")]);
+  fflush(stdout);
+}
+
+inline void postScalar(double time, int tstep)
+{
+  postProcessAlpha(time, tstep);
+  stageLog("ALPHA_DONE");
+}
+
+inline void preFluid(double, int)
+{
+  stageLog("UM_PRESSURE_BEGIN");
+}
 
 inline bool singlePass(int stage)
 {
@@ -42,6 +68,7 @@ inline void beginStep(double time)
         scalar->o_S, zeroAdvection, scalar->o_EXT, scalar->o_JwF);
     scalar->compute[is] = 0;
   }
+  stageLog("ALPHA_PENDING");
   // Native initStep now builds only alpha's forcing. Its makeForcing shifts
   // ALL scalar source histories once; native lagSolution also shifts ALL
   // scalar solution histories once, regardless of this host solve mask.
@@ -56,6 +83,7 @@ inline void solveGas(double time, int tstep)
   auto &scalar = nrs->scalar;
   const dlong N = nrs->meshV->Nlocal, offset = nrs->fieldOffset;
 
+  stageLog("UM_PRESSURE_DONE");
   // Evaluate current p after the native projection. Spatial filter, optional
   // temporal relaxation, and inlet mask are shared with source evaluation.
   // This is the ONLY per-step temporal-filter advance.
@@ -82,15 +110,21 @@ inline void solveGas(double time, int tstep)
   scalar->compute = enabled;
   scalar->compute[scalar->nameToIndex.at("alpha")] = 0;
   scalar->applyDirichlet(time);
+  stageLog("UG_BEGIN_CURRENT_PRESSURE");
   scalar->solve(time, 1);
+  stageLog("UG_DONE");
   scalar->compute = enabled;
   postProcessGasFlux();
   solvedStep = tstep;
+  stageLog("STEP_FIELDS_READY");
 }
 
 inline void configure()
 {
   const auto comm = platform->comm.mpiComm();
+  platform->par->extract("casedata", "onethroughloginterval", logInterval);
+  nekrsCheck(logInterval < 0, comm, EXIT_FAILURE,
+      "%s", "oneThroughLogInterval must be nonnegative.\n");
   nekrsCheck(nrs->Nscalar != 4 || nrs->geom || nrs->neknek
       || nrs->advectionSubcycingSteps || nrs->scalar->cvode
       || p.scalarExtrapolationEnabled, comm, EXIT_FAILURE,
@@ -111,6 +145,8 @@ inline void configure()
   dragAtSource.resize(offset);
   zeroAdvection.resize(nrs->scalar->o_coeffEXT.size() * nrs->scalar->fieldOffsetSum);
   platform->linAlg->fill(zeroAdvection.size(), 0.0, zeroAdvection);
+  nrs->postScalar = &postScalar;
+  nrs->preFluid = &preFluid;
   nrs->userConvergenceCheck = &singlePass;
   if (platform->comm.mpiRank() == 0)
     printf("Method1 one-through: ALPHA -> native UM/pressure -> UG (current pressure).\n");
