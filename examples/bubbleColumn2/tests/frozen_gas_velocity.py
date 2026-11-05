@@ -99,7 +99,7 @@ assert 'nrs->scalar->compute[i] = 0;' in udf
 assert 'nrs->scalar->o_compute.copyFrom(compute.data(), compute.size());' in udf
 assert udf.index('bubbleColumn2::reconstructGasVelocity();') < udf.index('bubbleColumn2::initializeHistory();')
 assert 'p.frozenGasVelocityEnabled && p.virtualMassEnabled != 0.0' in udf
-assert 'p.frozenGasVelocityEnabled && i > 0' in function('inline void addExplicitSources(')
+assert '(p.frozenGasVelocityEnabled || p.gasSolveAfterFluid) && i > 0' in function('inline void addExplicitSources(')
 assert 'if (p.frozenGasVelocityEnabled) return o_NULL;' in function('inline occa::memory implicitGasDrag(')
 assert 'p.frozenGasVelocityEnabled && std::string(name) != "alpha"' in function('inline void applyGasVelocityAVM(')
 assert 'reconstructGasVelocity();' in function('inline void prepareGasAdvection(')

@@ -4,8 +4,73 @@ The native velocity is the volume average
 `UM=(1-alpha)*UL+alpha*UG`, with `div(UM)=0`.
 `UL=(UM-alpha*UG)/(1-alpha)` uses denominator protection near alpha=1.
 The checkpoint scalars are `ALPHA,UGX,UGY,UGZ`; `qg=alpha*UG` is derived.
-NekRS core and scalar / pressure / velocity solve ordering are unchanged.
+NekRS core is unchanged; the supplied case defers UG until after native P/UM.
 Method1 and other cases are unchanged by this update.
+
+## Current solve order: alpha -> P -> UM -> UG
+
+The supplied `.par` selects `gasSolveAfterFluid=1`. NekRS core is unchanged:
+the first native scalar solve advances only alpha; native fluid pressure and UM
+then advance; the case calls the native scalar solver once for UG at the end
+of the accepted step, using the newly solved pressure. `div(UM)=0` is retained.
+There is no Picard iteration and no second UG pressure-corrector solve.
+
+At source preparation, the case builds alpha and UG convection with their
+existing live fluid EXT coefficients and prepares UG's native BDF/EXT1/HPF
+right-hand sides **before** native solution/history lagging. It then sets the
+host solve mask to `(1,0,0,0)`. Native makeForcing shifts source histories once,
+and native lagSolution shifts solution histories once. After P/UM, the case
+changes the host mask to `(0,1,1,1)`, applies UG boundary conditions and solves
+UG once. It restores `(1,1,1,1)` before diagnostics and output.
+
+UG's private native UM-advection arrays are not exposed by v26. The case keeps
+the device gas-advection flags zero from initialization and omits their matching
+source-side cancellation; manual UG BDF forcing uses a separate zero-advection
+buffer. The actual UG cubature convection and its independent fluid-EXT history
+are retained. Alpha's native-advection cancellation is unchanged. Host and device
+masks intentionally serve different purposes: device flags disable only unwanted
+native gas-scalar advection, while host flags schedule actual solves.
+
+For `rhoEff=rhoGas+ramp*Cvm*rhoLiquid` in the selected semi-implicit VM mode,
+only the saved direct pressure load is replaced in the already prepared UG RHS:
+
+```
+RHS_UG += M * (-gasPressureEnabled/rhoEff)
+              * (G_selected(p_new) - G_selected(p_source))
+```
+
+The pressure difference is mass-weighted once. It is followed by one full UG
+solve, not by a predictor solve plus a corrector. Strong/weak gradient selection
+and inlet spatial masks remain available. Temporal pressure relaxation and the
+hydrostatic-only gradient option are incompatible with this latest-pressure mode.
+
+All other explicit forces/convection stay at their source-time levels; UG drag
+still uses lagged UL. This change does **not** recalculate drag from newly solved
+UM, nor does it make the phase coupling fully implicit. The source-time implicit
+drag coefficient is snapshotted to keep it paired with its explicit UL load.
+UG diffusion/AVM coefficients are captured after alpha properties update and
+restored for the deferred solve. Final phase fields/properties are refreshed
+after UG; completed-step VM acceleration histories update only afterward.
+P5/cubature10, dt, VM ramp, VM-source EXT and all force switches are retained.
+
+`gasSolveAfterFluid` defaults to 0 for other cases that reuse these headers;
+those retain the legacy order. Set it to 0 and explicitly set
+`gasPressureCorrectorEnabled=1` to restore the preceding pressure-corrector test.
+Setting it to 1 automatically turns that corrector off. The mode requires four
+active elliptic scalars, fixed mesh, one native stage, no scalar/fluid advection
+subcycling or NekNek, and no coupled-VM inertia-elimination mode.
+
+`gasSolveOrderLogInterval=10` prints the first step and every tenth step on rank
+zero. Set 1 for every step or 0 to disable. The stages are `ALPHA_PENDING`,
+`ALPHA_DONE`, `P_UM_BEGIN`, `P_UM_DONE`, `UG_BEGIN_CURRENT_PRESSURE`, `UG_DONE`,
+and `STEP_FIELDS_READY`, with the actual host solve mask on each line. Native solver residual summaries
+retain their usual end-of-step reporting.
+
+For a fresh run, rebuild the UDF cache after pulling this change. The new host
+orchestration is checked in C++ against native scalar BDF forcing and direct
+new-pressure solves, including variable dt, VM ramp normalization, operator
+snapshots, boundary values, masks and history preservation. Full target MPI/GPU
+build and long-time stability still require a run on the target installation.
 
 ## Pressure-gradient output
 
@@ -15,7 +80,7 @@ written using the same `writeToFile` path as the existing `ug` and `ul` files:
 | Prefix | Vector contents | Time represented |
 | --- | --- | --- |
 | `gps` | Raw assembled `opSEM::strongGrad` of the newly solved pressure | Current output time |
-| `gpp` | Selected UG predictor gradient, after any pressure-gradient relaxation or inlet attenuation | Pressure used to assemble this step's UG predictor |
+| `gpp` | Selected gradient actually used by UG, including inlet attenuation | Latest pressure in after-fluid mode; lagged predictor pressure in legacy mode |
 
 In VisIt, open each corresponding `.nek5000` database and plot the `velocity`
 vector components (especially the z component); these slots contain **positive
@@ -25,15 +90,16 @@ includes its density normalization. `gasPressureEnabled` is not included in
 these exported gradients.
 
 With the supplied strong-gradient settings, filtering and inlet attenuation
-off, `gps` is also the gradient targeted by the current-pressure corrector;
-`gpp` shows the previous-pressure gradient used by the predictor. Both files
-carry the output time for alignment, although `gpp` represents the lagged
-predictor pressure. If gradient selection/masking/filtering is changed, `gps`
+off, `gps` and `gpp` both show the latest gradient used by the deferred UG solve.
+In legacy order, `gpp` instead records the lagged predictor gradient. Both files
+carry the output time for alignment, although in legacy order `gpp` represents
+the lagged predictor pressure. If gradient selection/masking/filtering is changed, `gps`
 continues to show the raw current strong gradient. It does not claim to show
 the configured corrector gradient in those other modes.
 
-The predictor field is snapshotted at source assembly because later property,
-monitor and corrector callbacks overwrite the shared gradient buffers. Current
+The UG gradient is snapshotted at source assembly in legacy order and refreshed
+immediately before the deferred solve in after-fluid mode, because later
+property/monitor callbacks overwrite the shared gradient buffers. Current
 strong-gradient output uses a separate temporary buffer. These diagnostics do
 not change forcing, solution histories, pressure or restart scalar layout.
 
@@ -53,8 +119,9 @@ A separate case-local history stores only these four convection fields. It
 advances once per physical source step; repeated source calls refresh the same
 slot, and initial CFL probes do not advance history. First use fills missing
 prehistory with the initial operator. Native scalar coefficients remain EXT1,
-so pressure, viscous sources, diffusion counterterms and the cancellation
-of native UM scalar advection keep their existing time treatment. The explicit
+so viscous sources and diffusion counterterms keep their existing time treatment.
+Direct pressure is refreshed separately in after-fluid mode. Native UM scalar
+advection is canceled for alpha; its UG pair is disabled in after-fluid mode. The explicit
 liquid VM source can also use
 its separate native-fluid EXT history in the selected VM mode. UG implicit
 drag, UM sources/convection, BDF histories, filters and the VM delay/ramp are
@@ -68,9 +135,11 @@ operators rather than the instantaneous diagnostic alone.
 The supplied `.par` selects `virtualMassExtrapolationEnabled=1`,
 `explicitVirtualMassEnabled=0`, `coupledVirtualMassEnabled=0`, and paired
 `virtualMassEnabled=1`, `mixtureVirtualMassEnabled=1`, `Cvm=0.5`.
-The existing P5/cubature10, dt=1e-5, pressure corrector, physical phase-stress
+The existing P5/cubature10, dt=1e-5, physical phase-stress
 correction, filters and VM delay/ramp (100 / 10000 steps) remain selected.
-Start from a fresh state and confirm startup prints `VM EXTRAPOLATION`.
+The supplied case now uses the after-fluid order above with its separate pressure
+corrector disabled. Start from a fresh state and confirm startup prints both
+`VM EXTRAPOLATION` and `Method2 solve order`.
 
 Let `c=virtualMassEnabled*ramp*Cvm*rhoLiquid`. UG keeps its own VM
 material-inertia contribution on the left:

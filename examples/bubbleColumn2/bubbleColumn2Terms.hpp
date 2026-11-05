@@ -22,6 +22,7 @@ struct Parameters {
   dfloat ugInlet;
   dfloat ugInitial = 0.0;
   int frozenGasVelocityEnabled = 0;
+  int gasSolveAfterFluid = 0; // opt-in, legacy order retained by default
   int smoothGasVelocityProfileEnabled = 0;
   int mixtureForcingEnabled = 1;
   int frozenGasMixtureForcingEnabled = 0;
@@ -121,7 +122,7 @@ static deviceMemory<dfloat> o_virtualMassRelativeAcceleration, o_liquidAccelerat
 static deviceMemory<dfloat> o_qg;
 static deviceMemory<dfloat> o_gradUg;
 static deviceMemory<dfloat> o_gradP;
-// Snapshot the selected predictor gradient before later callbacks overwrite it.
+// Snapshot the gradient used by UG; deferred solves refresh it before solving.
 static deviceMemory<dfloat> o_ugPredictorPressureGradient;
 static deviceMemory<dfloat> o_ugPressureUsed, o_ugCorrectorDiff, o_ugCorrectorLambda;
 static deviceMemory<dfloat> o_ugCorrectorDelta, o_ugCorrectorRhs;
@@ -1406,7 +1407,7 @@ inline void addExplicitSources(double)
     nrs->scalar->o_explicitTerms(names[i + 1]).copyFrom(source, Nlocal);
   }
   for (int i = 0; i < 4; ++i) {
-    if (p.frozenGasVelocityEnabled && i > 0) continue;
+    if ((p.frozenGasVelocityEnabled || p.gasSolveAfterFluid) && i > 0) continue;
     evaluateNativeAlphaAdvection(o_nativeTransportAdvection, true, names[i], true);
     const int index = nrs->scalar->nameToIndex.at(names[i]);
     platform->linAlg->axpby(Nlocal, 1.0,
@@ -2112,3 +2113,4 @@ inline void printStabilityMonitors(double time, int tstep)
   }
 }
 } // namespace bubbleColumn2
+
