@@ -143,3 +143,101 @@ Verification: `python3 tests/time_extrapolation.py` compiles actual C++ history,
 pressure selection and convection routing against controlled CPU arrays. The
 remaining spatial/operator regressions are separate; full GPU/MPI integration
 is still required.
+
+## UG equation diagnostics
+
+Set these CASEDATA options (enabled by default for this diagnostic run):
+
+```ini
+ugTermDiagnosticsEnabled = 1
+ugTermDiagnosticsInterval = 10
+```
+
+The interval selects rank-0 log/CSV statistics: step 1, each Nth step, and every
+checkpoint. Use 1 for every step; 0 means step 1/checkpoints only. Setting enabled
+to 0 disables runtime snapshots, reductions and exports. Enabled diagnostics
+retain source/solved snapshots every step so checkpoint timing cannot miss them;
+they use additional device memory and weak-operator evaluations (about 76
+padded scalar fields, or 608 bytes per padded node in FP64).
+
+All equation terms below are **accelerations** (m/s^2 for dimensional inputs),
+with their signed contribution to the RHS, except the positive LHS BDF fields.
+With c_VM=C_VM*rhoLiquid*virtualMassEnabled and rhoEff=rhoGas+c_VM, the
+implemented normalized equation is:
+
+```text
+BDF(UG) = pressure + convection_EXT + gravity + drag_liquid + VM_liquid
+        + gas_stress + diffusion_compensation + native_regularization
+        + drag_implicit + diffusion_implicit_weak
+BDF(UG) = BDF_diagonal - BDF_history
+```
+
+The gas-side VM inertia is already absorbed into rhoEff; VM_liquid is the
+explicit liquid-acceleration contribution, not a second complete virtual-mass
+force. Do not add the extra comparison fields (raw convection, net drag,
+separate BDF pieces, defects or postprocess rate) to rhs_sum.
+
+Each checkpoint writes the following independent vector databases. Open the
+**velocity** field in each database; it contains the three components of that
+term, not a velocity solution.
+
+| Database | Log/CSV term | Definition |
+| --- | --- | --- |
+| gpr.nek5000 | pressure | -gasPressureEnabled * gradP_used/rhoEff; selected raw strong or EXT |
+| gcv.nek5000 | convection_EXT | -EXT_fluid[UG dot grad(UG)], actually used |
+| ggr.nek5000 | gravity | rhoGas/rhoEff * gravity |
+| gdl.nek5000 | drag_liquid | lambda_source * UL_source |
+| gvm.nek5000 | VM_liquid | c_VM/rhoEff * liquidAcceleration_source |
+| gvs.nek5000 | gas_stress | div(alpha*tauGas)/(max(alpha,alphaFloor)*rhoEff) |
+| gdc.nek5000 | diffusion_compensation | Configured positive weak-stiffness compensation at source time |
+| gus.nek5000 | user_rhs | Actual UG user source copied before native regularization |
+| ghp.nek5000 | native_regularization | Actual native explicit source minus cached user source; HPFRT in the current par |
+| gdi.nek5000 | drag_implicit | -lambda_source * UG_solved |
+| gnd.nek5000 | diffusion_implicit_weak | -M_assembled^-1 K_D UG_solved |
+| gdt.nek5000 | BDF_time | Actual BDF derivative before gas postprocessing |
+| grs.nek5000 | rhs_sum | user_rhs + native_regularization + drag_implicit + diffusion_implicit_weak |
+| grb.nek5000 | balance_free | BDF_time - rhs_sum on free equation rows; zero on Dirichlet rows |
+| gse.nek5000 | source_defect | user_rhs minus the sum of the seven explicit physical/transport terms |
+| gpc.nek5000 | postprocess_rate | (g0/dt)*(UG_after_postprocessing - UG_solved); diagnostic only |
+| gcr.nek5000 | convection_raw | -UG dot grad(UG) at the source time before EXT; comparison only |
+| gdn.nek5000 | drag_net | drag_liquid + drag_implicit; comparison only |
+| gbd.nek5000 | BDF_diagonal | (g0/dt)*UG_solved; comparison only |
+| gbh.nek5000 | BDF_history | Sum of old-state BDF loads, cached before native history lagging |
+| gmk.nek5000 | mask only | Per-component vector: 1=free equation row, 0=Dirichlet row; dimensionless |
+| gcf.nek5000 | source coefficients | scalar00=source alpha; scalar01=source lambda (1/s); scalar02=rhoEff (kg/m^3) |
+
+Source fields are captured **immediately after addExplicitSources**, including
+the selected pressure gradient and already extrapolated convection. Later
+properties, pressure/UM or VM-history evaluations cannot overwrite them.
+Implicit diffusion, drag and BDF terms use the actual solved UG **before**
+alpha/UG postprocessing. The native regularization is obtained from the actual
+native explicit buffer after makeExplicit, not from a second filter application.
+Sources are mass-weighted and assembled at shared nodes to match the weak
+equation, including element-local native regularization.
+
+The implicit diffusion field is a mass-normalized **weak residual**, not a
+pointwise Laplacian at constrained boundaries. Inspect gmk when interpreting
+boundary peaks. balance_free applies to the current zero-Neumann UG boundaries;
+nonzero Neumann or Robin loads would require additional boundary-load accounting.
+It is a spatial weak-equation diagnostic, not the elliptic solver's internal
+preconditioned convergence norm.
+
+UGTERMS log lines contain timestep, stage, term and MPI-global min/max for x/y/z.
+bubbleColumn_ug_terms.csv stores the same ranges plus source_time. Source-stage
+records are emitted before the gas solve, solved-stage records before pressure/UM,
+and checkpoint-stage records cover all exported vectors. If any component has a
+nonfinite value on any rank, nonfinite=1 is reported and that vector's range is
+printed as NaN; the original field is preserved for inspection.
+
+Start by inspecting source_defect (should be roundoff-level), then pressure,
+gas_stress, VM_liquid, convection_EXT versus convection_raw, and drag_net.
+Compare BDF_time with rhs_sum only where gmk=1. A nonzero postprocess_rate
+identifies changes introduced after solving rather than by the Helmholtz equation.
+
+Local verification: python3 tests/ug_term_diagnostics.py compiles the actual
+diagnostic kernels together with the actual physical source kernels, and the
+whole diagnostic host header over controlled CPU/IO doubles. It checks source
+recomposition, VM/drag/pressure switches, low alpha, weak balance, component
+masks, nonfinite values, postprocessing and BDF-history capture, CSV rows, and
+all checkpoint names (including source alpha/drag/inertia coefficients). These checks do not replace full NekRS MPI/GPU validation.
+

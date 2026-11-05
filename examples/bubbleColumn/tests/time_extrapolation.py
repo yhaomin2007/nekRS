@@ -70,6 +70,7 @@ template<class...T>void launchKernel(const char*,T...){}
 '''
 physics=r'''
 namespace bubbleColumn {
+namespace ugTerms {void captureSource(double){} void captureSolved(double){} void capturePostprocessed(double){}}
 struct Parameters{int gasPressureGradientExtrapolation=0,mixtureDivergenceForm=1;}p;
 bool assemblingExplicitSources=false;
 ExplicitHistory convectionHistory,pressureHistory,divergenceTransportHistory;

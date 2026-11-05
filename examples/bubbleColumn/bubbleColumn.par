@@ -152,3 +152,9 @@ validationOutputInterval = 10
 # 1 prints every step; 0 disables the trace.
 oneThroughLogInterval = 10
 
+
+# Read-only UG equation snapshots, extrema/CSV and vector files at checkpoints.
+# 1 enables; 0 disables snapshots and their diagnostic work.
+ugTermDiagnosticsEnabled = 1
+# First step + every N steps + every checkpoint; 0 means first/checkpoints only.
+ugTermDiagnosticsInterval = 10

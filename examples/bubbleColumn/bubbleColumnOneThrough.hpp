@@ -17,12 +17,15 @@ inline void stageLog(const char *stage)
 inline void beginStep(double time)
 {
   addExplicitSources(time);
+  ugTerms::captureSource(time);
   stageLog("ALPHA_UG_PENDING");
 }
 inline void postScalar(double time, int tstep)
 {
+  ugTerms::captureSolved(time);
   postProcessAlpha(time, tstep);
   postProcessGasFlux();
+  ugTerms::capturePostprocessed(time);
   stageLog("ALPHA_UG_DONE");
 }
 inline void preFluid(double, int) { stageLog("PRESSURE_UM_BEGIN"); }

@@ -1,0 +1,102 @@
+#include <math.h>
+
+// Acceleration-normalized UG equation diagnostics; solver fields are read-only.
+// Packed layout: (term * 3 + component) * fieldOffset + node.
+@kernel void ugCaptureTerms(const dlong N, const dlong offset,
+    const dfloat rhoGas, const dfloat rhoEff, const dfloat virtualInertia,
+    const dfloat pressureEnabled, const dfloat alphaFloor,
+    const dfloat gx, const dfloat gy, const dfloat gz,
+    const dfloat dx, const dfloat dy, const dfloat dz,
+    @ restrict const dfloat *alpha, @ restrict const dfloat *gradP,
+    @ restrict const dfloat *lambda, @ restrict const dfloat *ul,
+    @ restrict const dfloat *liquidAcceleration,
+    @ restrict const dfloat *divStress, @ restrict const dfloat *diffusionComp,
+    @ restrict const dfloat *convection, @ restrict const dfloat *convectionRaw,
+    @ restrict const dfloat *userRhs, @ restrict dfloat *terms)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    const dfloat aSafe = alpha[n] > alphaFloor ? alpha[n] : alphaFloor;
+    for (int c = 0; c < 3; ++c) {
+      const dlong v = n + c * offset;
+      const dfloat gravity = c == 0 ? gx : (c == 1 ? gy : gz);
+      const dfloat subtraction = c == 0 ? dx : (c == 1 ? dy : dz);
+      const dfloat fp = -pressureEnabled * gradP[v] / rhoEff;
+      const dfloat fc = -convection[n + (c + 1) * offset];
+      const dfloat fg = rhoGas / rhoEff * gravity;
+      const dfloat fd = lambda[n] * ul[v];
+      const dfloat fv = virtualInertia / rhoEff * liquidAcceleration[v];
+      const dfloat fs = divStress[v] / (aSafe * rhoEff);
+      // A disabled subtraction must not read stale/uninitialized scratch.
+      const dfloat fn = subtraction == 0.0 ? 0.0 : subtraction * diffusionComp[v];
+      terms[v + 0 * 3 * offset] = fp;
+      terms[v + 1 * 3 * offset] = fc;
+      terms[v + 2 * 3 * offset] = fg;
+      terms[v + 3 * 3 * offset] = fd;
+      terms[v + 4 * 3 * offset] = fv;
+      terms[v + 5 * 3 * offset] = fs;
+      terms[v + 6 * 3 * offset] = fn;
+      terms[v + 7 * 3 * offset] = userRhs[v];
+      terms[v + 14 * 3 * offset] = userRhs[v] - (fp + fc + fg + fd + fv + fs + fn);
+      terms[v + 16 * 3 * offset] = -convectionRaw[n + (c + 1) * offset];
+    }
+  }
+}
+
+@kernel void ugFinishTerms(const dlong N, const dlong offset,
+    const dfloat g0idt, @ restrict const dfloat *ugSolved,
+    @ restrict const dfloat *lambda, @ restrict const dfloat *nativeExplicit,
+    @ restrict const dfloat *weakDiffusion, @ restrict const dfloat *freeMask,
+    @ restrict dfloat *terms)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    for (int c = 0; c < 3; ++c) {
+      const dlong v = n + c * offset;
+      const dfloat user = terms[v + 7 * 3 * offset];
+      const dfloat regularization = nativeExplicit[v] - user;
+      const dfloat dragImplicit = -lambda[n] * ugSolved[v];
+      const dfloat timeDiagonal = g0idt * ugSolved[v];
+      const dfloat time = timeDiagonal - terms[v + 19 * 3 * offset];
+      const dfloat rhs = user + regularization + dragImplicit + weakDiffusion[v];
+      terms[v + 8 * 3 * offset] = regularization;
+      terms[v + 9 * 3 * offset] = dragImplicit;
+      terms[v + 10 * 3 * offset] = weakDiffusion[v];
+      terms[v + 11 * 3 * offset] = time;
+      terms[v + 12 * 3 * offset] = rhs;
+      terms[v + 13 * 3 * offset] = freeMask[v] != 0.0 ? time - rhs : 0.0;
+      terms[v + 17 * 3 * offset] = terms[v + 3 * 3 * offset] + dragImplicit;
+      terms[v + 18 * 3 * offset] = timeDiagonal;
+    }
+  }
+}
+
+@kernel void ugPostprocessTerm(const dlong N, const dlong offset,
+    const dfloat g0idt, @ restrict const dfloat *solved,
+    @ restrict const dfloat *ugx, @ restrict const dfloat *ugy,
+    @ restrict const dfloat *ugz, @ restrict dfloat *terms)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    for (int c = 0; c < 3; ++c) {
+      const dlong v = n + c * offset;
+      const dfloat finalValue = c == 0 ? ugx[n] : (c == 1 ? ugy[n] : ugz[n]);
+      terms[v + 15 * 3 * offset] = g0idt * (finalValue - solved[v]);
+    }
+  }
+}
+
+@kernel void ugTermFreeMask(const dlong Nmasked, @ restrict const dlong *ids,
+                            @ restrict dfloat *freeMask)
+{
+  for (dlong n = 0; n < Nmasked; ++n; @tile(p_blockSize, @outer, @inner)) {
+    freeMask[ids[n]] = 0.0;
+  }
+}
+
+@kernel void ugTermNonfinite(const dlong N, const dlong offset,
+    @ restrict const dfloat *field, @ restrict dfloat *flag)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    flag[n] = (!isfinite(field[n]) || !isfinite(field[n + offset])
+               || !isfinite(field[n + 2 * offset])) ? 1.0 : 0.0;
+  }
+}
+

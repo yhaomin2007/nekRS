@@ -1,5 +1,6 @@
 #include "bubbleColumnTerms.hpp"
 #include "bubbleColumnCubature.hpp"
+#include "bubbleColumnUGTerms.hpp"
 #include "bubbleColumnOneThrough.hpp"
 
 #ifdef __okl__
@@ -13,6 +14,7 @@ void UDF_LoadKernels(deviceKernelProperties& kernelInfo)
   kernelInfo.define("p_ALPHA_INLET") = bubbleColumn::p.alphaInlet;
   kernelInfo.define("p_UG_INLET") = bubbleColumn::p.ugInlet;
   bubbleColumn::registerKernels(kernelInfo);
+  bubbleColumn::ugTerms::registerKernels(kernelInfo);
 }
 
 void UDF_Setup0(MPI_Comm, setupAide &)
@@ -128,6 +130,7 @@ void UDF_Setup()
   nrs->scalar->userImplicitLinearTerm = &bubbleColumn::implicitGasDrag;
   nrs->userProperties = &bubbleColumn::updateProperties;
   nrs->userDivergence = &bubbleColumn::updateDivergence;
+  bubbleColumn::ugTerms::configure();
   bubbleColumn::oneThrough::configure();
 }
 
@@ -150,6 +153,7 @@ void UDF_ExecuteStep(double time, int tstep)
     bubbleColumn::printStabilityMonitors(time, tstep);
     bubbleColumn::printPressureGradientComparison(time, tstep);
   }
+  bubbleColumn::ugTerms::writeCheckpoint(time);
   if (nrs->checkpointStep) {
     // Write reconstructed phase velocities as separate vector fields without
     // replacing the transported UG checkpoint variables used for restart.
