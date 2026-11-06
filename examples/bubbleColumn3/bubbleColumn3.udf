@@ -315,7 +315,7 @@ void UDF_Setup()
   clipKernel(m->Nlocal,p.alphaMinimum,p.alphaMaximum,s->o_solution("alpha"));
   // Native scalar elliptic solvers are constructed after UDF_Setup. Boundary
   // application must wait until beginStep, when their masks are available.
-  reconstructMixture(); // normalized pressure multigrid is built after first-step coefficients exist
+  reconstructMixture(); // user pressure prints each solve; hierarchy uses first-step normalized coefficients
   nrs->userSource=&beginStep;nrs->postScalar=&postAlpha;
   nrs->userConvergenceCheck=&singlePass;s->userImplicitLinearTerm=&implicitDrag;
   if(platform->comm.mpiRank()==0)

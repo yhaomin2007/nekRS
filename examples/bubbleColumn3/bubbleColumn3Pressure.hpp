@@ -92,7 +92,27 @@ inline void solvePressureAndCorrect(double time,int step)
   // Homogeneous pressure outlet. Elliptic::solve masks the RHS internally;
   // initialize the full field to prevent stale outlet values on restart.
   platform->linAlg->fill(O,0.0,pressure);
+  const double pressureStart=MPI_Wtime();
   pressureSolver->solve(pressureDiffusion,o_NULL,pressureRhs,pressure.slice(0,m->Nlocal));
+  // The user-owned solver is absent from native fluid-pressure step output.
+  // Print every solve, independently of monitorInterval, before validation so
+  // an unconverged solve also leaves a complete, flushed log record.
+  if(platform->comm.mpiRank()==0) {
+    const dfloat initial=pressureSolver->initialResidual();
+    const dfloat final=pressureSolver->finalResidual();
+    const auto tolerance=pressureSolver->options().getArgs("SOLVER TOLERANCE");
+    const dfloat target=std::stod(tolerance)*std::sqrt(m->volume)
+        *(upperCase(tolerance).find("+RELATIVE")!=std::string::npos?initial:1.0);
+    const dfloat threshold=std::max(target,100*std::numeric_limits<dfloat>::epsilon()*initial);
+    const dfloat relative=initial>0?final/initial
+        :(final==0?0:std::numeric_limits<dfloat>::infinity());
+    const bool converged=std::isfinite(initial)&&std::isfinite(final)&&final<=threshold;
+    printf("method3Pressure step=%d time=%.8e iterations=%d initial=%.8e final=%.8e "
+        "relative=%.8e target=%.8e converged=%s wallTime=%.6es\n",
+        step,time,pressureSolver->Niter(),initial,final,relative,threshold,
+        converged?"yes":"no",MPI_Wtime()-pressureStart);
+    fflush(stdout);
+  }
   validateLinearSolve(pressureSolver.get(),"phase pressure");
   opSEM::strongGrad(m,O,pressure,pressureGrad);
   packVelocities();

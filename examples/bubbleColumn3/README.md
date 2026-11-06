@@ -140,6 +140,13 @@ residual alone does not establish a small continuity residual.
   small dimensional RHS cannot pass trivially. The convergence guard remains
   enabled; the new settings still need verification on the target column mesh.
 
+The custom pressure solver prints a `method3Pressure` summary **every timestep**,
+independently of `monitorInterval`: step/time, iteration count, initial/final
+residuals, final-to-initial ratio, effective convergence target, convergence
+status and solve wall time. It prints and flushes before the failure check, so
+an unsuccessful solve is recorded as well. Residuals refer to the normalized
+elliptic equation; they are not mixture continuity residuals.
+
 ## Validation
 
 ```sh
