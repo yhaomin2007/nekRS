@@ -9,6 +9,41 @@ reconstructed **volume average**
 No mixture momentum equation is solved. All implementation changes are local
 to this directory; `bubbleColumn` and `bubbleColumn2` are unchanged.
 
+## Default pressure path: native NekRS elliptic solver
+
+`pressureSolveMode = native` (CASEDATA, also the compiled default) uses one
+NekRS variable-coefficient Poisson solve per timestep. Its native PGMRES,
+p-multigrid, Chebyshev/ASM and BoomerAMG perform all pressure linear algebra;
+the host GCR and nested native preconditioning solves are bypassed. Previous
+pressure is reused when `pressureWarmStart=1`. No native UM equation is enabled
+and no core files are modified: the example owns an `elliptic` instance because
+its RHS and coefficient come from the two phase predictors.
+
+This mode solves `K p=b` using betaM/tau and the existing weak RHS/boundary
+flux. It is a DIFFERENT discrete pressure equation from composed mode's
+`S p=[(1-epsilon)A+epsilon K]p=b`. The stabilization and inner-preconditioner
+controls are ignored in native mode. Do not describe this switch as merely
+replacing the Krylov algorithm while preserving S. A small native pressure
+residual does not ensure zero divergence after nodal phase correction.
+
+Both phases still use the newly solved pressure, their Dirichlet velocity
+nodes are protected, and UM is reconstructed. Monitor-step output includes
+`weakL2(pre,corrected,BC)`, `boundaryChange`, `nativeEquationResidual`,
+`correctionDefect`, and `residualBalanceError`. In physical weak-RHS units,
+`correctedResidual = nativeEquationResidualVector + correctionDefectVector`;
+the printed quantities are norms, so they are not generally additive.
+No host pressure vectors are transferred for these diagnostics on non-monitor
+steps. Host mask IDs are still checked, but the gradient mask runs on device.
+`method3PressureCost mode=native nativeSolves=1 innerCalls=0` identifies this
+path. Compare continuity and phase velocity behavior against composed mode on
+the same mesh and physical interval before drawing accuracy conclusions.
+
+Set `pressureSolveMode=composed` explicitly to use the optional stabilized
+composition and its warm starts/inexact preconditioning described below.
+The final native-only convergence setting comes from
+`[ELLIPTIC phasePressure] residualTol`; `pressureProjectionTolerance` applies
+only to composed mode.
+
 ## Run
 
 Use the same column `.re2` mesh as `bubbleColumn2`. The supplied `[MESH] file`
@@ -198,7 +233,7 @@ NekRS runtime or column mesh is available. A local CPU build attempt stopped
 in the dependency's Fortran/C interoperability configuration, before a NekRS
 executable could be produced; no full-solver validation is claimed.
 
-## Stabilized composed pressure projection and continuity diagnostics
+## Optional composed pressure projection and continuity diagnostics
 
 The unregularized composed operator introduced in 4830c8c is not a robust
 pressure equation for the complete equal-order 3D pressure space. Masking
@@ -212,7 +247,7 @@ do not prove the cause of a particular user's iteration failure.
 Define `W u = assembled integral grad(q).u`, `G p = assembled mass-inverse
 weighted gradient`, `F` as the homogeneous six-phase Dirichlet mask,
 `A p = W betaM F G p / tau`, and `K` as the native variable-coefficient
-stiffness with coefficient betaM/tau. The final pressure now solves
+stiffness with coefficient betaM/tau. In composed mode the final pressure solves
 
 ```
 S p = b,   S = A + epsilon*(K-A) = (1-epsilon)*A + epsilon*K
@@ -273,6 +308,7 @@ Spatial regressions (NumPy and C++17 required):
 ```sh
 python3 tests/projection.py
 python3 tests/projection3d.py
+python3 tests/native_mode.py
 ```
 
 The first exercises a two-element 1D GLL correction. The second demonstrates
@@ -300,7 +336,7 @@ output, checking explicit coefficient binding and single assembly. It also
 checks the lifetime assumption against the native source. This contract test
 and the native-header syntax check do not replace a CUDA integration run.
 
-### Pressure performance controls
+### Optional composed-mode pressure performance controls
 
 The stabilized operator, epsilon, final projection tolerance and phase equations
 are unchanged. New defaults avoid over-solving the native preconditioner:

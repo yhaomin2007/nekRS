@@ -123,6 +123,93 @@ inline void nativePressureAction(const occa::memory& q,occa::memory& result)
   pressureSolver->Ax(pressureDiffusion,o_NULL,q,result);
   oogs::startFinish(result,1,0,ogsDfloat,ogsAdd,nrs->meshV->oogs);
 }
+// Native-only baseline: one variable-coefficient Poisson solve per timestep.
+// This solves K p=b, not the stabilized composed equation S p=b. Keep the
+// continuity diagnostics explicit: a small K residual is not zero nodal div(U).
+inline void solveNativePhasePressure(double time,int step,bool log,double before,dfloat tau)
+{
+  auto m=nrs->meshV;const auto O=nrs->fieldOffset;
+  auto pressure=nrs->fluid->o_solution("pressure");
+  static bool initialized=false;
+  if(!initialized || !p.pressureWarmStart) platform->linAlg->fill(O,0.0,pressure);
+  initialized=true;
+  if(pressureSolver->Nmasked()) platform->linAlg->mask<dfloat>(
+      pressureSolver->Nmasked(),pressureSolver->o_maskIds(),pressure);
+  const double start=MPI_Wtime();
+  pressureSolver->solve(pressureDiffusion,o_NULL,pressureRhs,pressure.slice(0,m->Nlocal));
+  if(platform->comm.mpiRank()==0) {
+    const double initial=pressureSolver->initialResidual(),final=pressureSolver->finalResidual();
+    const auto tolerance=pressureSolver->options().getArgs("SOLVER TOLERANCE");
+    const double target=std::stod(tolerance)*std::sqrt(m->volume)
+        *(upperCase(tolerance).find("+RELATIVE")!=std::string::npos?initial:1.0);
+    const double threshold=std::max(target,100*std::numeric_limits<dfloat>::epsilon()*initial);
+    const bool converged=std::isfinite(initial)&&std::isfinite(final)&&final<=threshold;
+    printf("method3Pressure step=%d time=%.8e mode=native iterations=%d initial=%.8e "
+        "final=%.8e relative=%.8e target=%.8e converged=%s wallTime=%.6es\n",
+        step,time,pressureSolver->Niter(),initial,final,initial>0?final/initial:final,
+        threshold,converged?"yes":"no",MPI_Wtime()-start);
+    fflush(stdout);
+  }
+  validateLinearSolve(pressureSolver.get(),"native phase pressure");
+  std::vector<double> preWeak,boundary,b,k,degree;
+  std::vector<dlong> outlet;
+  deviceMemory<dfloat> work;
+  if(log) {
+    work.resize(O);work.copyFrom(pressureRhs,m->Nlocal);
+    oogs::startFinish(work,1,0,ogsDfloat,ogsAdd,m->oogs);
+    b=pressureHost(work);preWeak=assembledWeak(nrs->fluid->o_U);
+    boundary.resize(b.size());
+    for(size_t i=0;i<b.size();++i) boundary[i]=preWeak[i]-tau*b[i];
+    nativePressureAction(pressure,work);k=pressureHost(work);
+    outlet=pressureMask(pressureSolver.get());degree=pressureHost(m->ogs->o_invDegree);
+  }
+  const auto phaseMask=phasePressureMask();
+  opSEM::strongGrad(m,O,pressure,pressureGrad);maskPressureGradient(phaseMask);
+  packVelocities();
+  correctKernel(m->Nlocal,O,betaG,pressureGrad,ug);
+  correctKernel(m->Nlocal,O,betaL,pressureGrad,ul);
+  unpackVelocities();reconstructMixture();
+  std::vector<double> corrected;
+  if(log) corrected=assembledWeak(nrs->fluid->o_U);
+  nrs->scalar->applyDirichlet(time);reconstructMixture();
+  if(platform->comm.mpiRank()==0) {
+    printf("method3PressureCost step=%d mode=native nativeSolves=1 innerCalls=0 totalWallTime=%.6es\n",
+        step,MPI_Wtime()-start);
+    fflush(stdout);
+  }
+  if(log) {
+    auto restored=assembledWeak(nrs->fluid->o_U);
+    std::vector<double> r0=b,r1=b,r2=b,change=b,nativeResidual=b,defect=b;
+    for(size_t i=0;i<b.size();++i) {
+      r0[i]=tau*b[i];r1[i]=corrected[i]-boundary[i];r2[i]=restored[i]-boundary[i];
+      change[i]=restored[i]-corrected[i];nativeResidual[i]=tau*(b[i]-k[i]);
+      defect[i]=tau*k[i]-(preWeak[i]-corrected[i]);
+    }
+    const auto norm=[&](std::vector<double> v) {
+      zeroPressureRows(v,outlet);double sum=0;
+      for(size_t i=0;i<v.size();++i) sum+=degree[i]*v[i]*v[i];
+      MPI_Allreduce(MPI_IN_PLACE,&sum,1,MPI_DOUBLE,MPI_SUM,platform->comm.mpiComm());
+      return std::isfinite(sum)&&sum>=0?std::sqrt(sum):std::numeric_limits<double>::infinity();
+    };
+    const auto w0=norm(r0),w1=norm(r1),w2=norm(r2),bc=norm(change);
+    const auto nr=norm(nativeResidual),nd=norm(defect);
+    auto closure=r1;
+    for(size_t i=0;i<b.size();++i) closure[i]-=nativeResidual[i]+defect[i];
+    const auto balance=norm(closure),after=divergenceNorm();
+    const auto cflG=phaseCFL(ug),cflL=phaseCFL(ul);
+    const auto mm=platform->linAlg->minMax(m->Nlocal,{pressure,betaM},platform->comm.mpiComm());
+    if(platform->comm.mpiRank()==0) {
+      printf("method3Continuity step=%d mode=native weakL2(pre,corrected,BC)=(%.8e,%.8e,%.8e) "
+          "boundaryChange=%.8e nativeEquationResidual=%.8e correctionDefect=%.8e residualBalanceError=%.8e\n",
+          step,w0,w1,w2,bc,nr,nd,balance);
+      printf("method3 step=%d mode=native divL2(pre,post)=(%.8e,%.8e) p=(%.8e,%.8e) "
+          "mobility=(%.8e,%.8e) phaseCFL(g,l)=(%.8e,%.8e) dragIterations=%d dragChange=%.8e\n",
+          step,before,after,mm[0].first,mm[0].second,mm[1].first,mm[1].second,
+          cflG,cflL,dragIterations,dragChange);
+      fflush(stdout);
+    }
+  }
+}
 inline void solvePressureAndCorrect(double time,int step)
 {
   auto m=nrs->meshV; auto &s=nrs->scalar; const auto O=nrs->fieldOffset;
@@ -147,6 +234,9 @@ inline void solvePressureAndCorrect(double time,int step)
   platform->linAlg->axpby(m->Nlocal,1/tau,pressureRhs,0.0,pressureRhs);
   const bool nativeInitialGuess=!pressureSolver || !p.pressureWarmStart;
   if(!pressureSolver) setupPressure(); // normalized coefficient is now ready
+  if(p.pressureSolveMode=="native") {
+    solveNativePhasePressure(time,step,log,before,tau);return;
+  }
   auto pressure=nrs->fluid->o_solution("pressure");
   const double pressureStart=MPI_Wtime();
   double innerSeconds=0,operatorSeconds=0;int innerCalls=0,innerIterations=0;

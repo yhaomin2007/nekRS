@@ -117,3 +117,6 @@ pressurePreconditionerTolerance = 1e-2
 
 # Reuse final pressure after first-step native initialization.
 pressureWarmStart = 1
+
+# Native NekRS elliptic pressure solve; use composed only for comparison.
+pressureSolveMode = native

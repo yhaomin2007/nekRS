@@ -14,7 +14,7 @@ while level:
     level+=(text[end]=='{')-(text[end]=='}');end+=1
 function=text[start:end]
 assert 'pressureSolver->op(' not in text
-assert text.count('nativePressureAction(')==3 # definition + both native actions
+assert text.count('nativePressureAction(')==4 # helper, native diagnostics, two composed actions
 # Confirm the adapter's lifetime assumption against this branch's native code.
 repo=root.parents[1]
 native=(repo/'src/core/elliptic/elliptic.cpp').read_text()

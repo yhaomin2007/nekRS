@@ -39,6 +39,11 @@ assert floor<1e-12
 b+=.01*np.linalg.norm(b)*V[rank]
 floor=np.linalg.norm(V[rank:]@b)/np.linalg.norm(b)
 assert floor>.009
+# Native-only mode solves the same K used by the stabilized epsilon=1 limit.
+native_pressure=np.linalg.solve(K,b)
+assert np.linalg.norm(K@native_pressure-b)/np.linalg.norm(b)<1e-12
+native_weak=b-A@native_pressure
+assert np.linalg.norm(native_weak-(K-A)@native_pressure)/np.linalg.norm(b)<1e-12
 P=np.linalg.inv(K);epsilon=.1;S=(1-epsilon)*A+epsilon*K
 assert np.linalg.eigvalsh(S)[0]>0
 pressure=np.linalg.solve(S,b)
