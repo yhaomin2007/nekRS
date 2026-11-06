@@ -23,7 +23,8 @@
   for(dlong i=0;i<N;++i;@tile(p_blockSize,@outer,@inner)) a[i]=fmin(hi,fmax(lo,a[i]));
 }
 // Schiller-Naumann drag, equal and opposite force per unit mixture volume.
-// The diagonal drag is implicit; the partner velocity is lagged in the load.
+// Coefficients are lagged in slip and frozen after alpha transport; both
+// partner loads are iterated to convergence with these implicit diagonals.
 @kernel void drag(const dlong N, const dlong O, const dfloat enabled,
     const dfloat rg, const dfloat rl, const dfloat mu, const dfloat diameter,
     @restrict const dfloat *a, @restrict const dfloat *ug,
@@ -42,11 +43,19 @@
 }
 @kernel void phaseSource(const dlong N, const dlong O, const int component,
     const dfloat gravity, @restrict const dfloat *convection,
-    @restrict const dfloat *lambda, @restrict const dfloat *partner,
     @restrict dfloat *source)
 {
   for(dlong i=0;i<N;++i;@tile(p_blockSize,@outer,@inner))
-    source[i]=-convection[i+(component+1)*O]+gravity+lambda[i]*partner[i+component*O];
+    source[i]=-convection[i+(component+1)*O]+gravity;
+}
+// Add the current frozen-coefficient partner load directly to the BDF RHS.
+// It must not enter EXT history: both sides use the same timestep coefficient.
+@kernel void addDragLoad(const dlong N, const dlong O, const int component,
+    @restrict const dfloat *mass, @restrict const dfloat *lambda,
+    @restrict const dfloat *partner, @restrict dfloat *rhs)
+{
+  for(dlong i=0;i<N;++i;@tile(p_blockSize,@outer,@inner))
+    rhs[i]+=mass[i]*lambda[i]*partner[i+component*O];
 }
 @kernel void mobility(const dlong N, const dfloat tau,
     const dfloat rg, const dfloat rl, @restrict const dfloat *a,
@@ -54,7 +63,11 @@
     @restrict dfloat *bg, @restrict dfloat *bl, @restrict dfloat *bm)
 {
   for(dlong i=0;i<N;++i;@tile(p_blockSize,@outer,@inner)) {
-    bg[i]=tau/(rg*(1+tau*lg[i])); bl[i]=tau/(rl*(1+tau*ll[i]));
+    // Invert the TWO-PHASE local inertia/drag block, not its diagonals.
+    // [[1+tau*lg,-tau*lg],[-tau*ll,1+tau*ll]] * beta = tau*[1/rg,1/rl].
+    const dfloat tg=tau*lg[i],tl=tau*ll[i],det=1+tg+tl;
+    bg[i]=tau*((1+tl)/rg+tg/rl)/det;
+    bl[i]=tau*(tl/rg+(1+tg)/rl)/det;
     bm[i]=a[i]*bg[i]+(1-a[i])*bl[i];
   }
 }

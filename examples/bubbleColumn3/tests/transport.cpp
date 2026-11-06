@@ -6,14 +6,22 @@
 #include <vector>
 using V=std::vector<double>;
 int main(int argc,char**argv) {
-  if(argc!=2)throw std::runtime_error("usage: transport path/to/bubbleColumn3Transport.okl");
+  if(argc!=2 && argc!=3)throw std::runtime_error("usage: transport path/to/bubbleColumn3Transport.okl [path/to/bubbleColumn3Equations.okl]");
   occa::device device;device.setup(std::string("{mode: 'Serial'}"));
   occa::properties props;
+  props["includes"].asArray();props["includes"]+="math.h"; // native platform kernel properties
   props["defines/dfloat"]="double";props["defines/dlong"]="int";
   for(auto kv:std::vector<std::pair<std::string,int>>{{"p_Nq",3},{"p_Np",27},{"p_cubNq",5},{"p_cubNp",125},
        {"p_Nvgeo",11},{"p_RXID",0},{"p_RYID",1},{"p_RZID",2},{"p_SXID",3},{"p_SYID",4},{"p_SZID",5},
        {"p_TXID",6},{"p_TYID",7},{"p_TZID",8},{"p_JWID",9},{"p_IJWID",10},{"p_blockSize",64}})
     props["defines/"+kv.first]=kv.second;
+  if(argc==3) {
+    props["defines/p_Nfaces"]=6;props["defines/p_Nfp"]=9;props["defines/p_Nsgeo"]=4;
+    props["defines/p_NXID"]=0;props["defines/p_NYID"]=1;props["defines/p_NZID"]=2;props["defines/p_WSJID"]=3;
+    for(const std::string name:{"reconstruct","initialize","clipAlpha","drag","phaseSource","addDragLoad","mobility","correct","pressureSurface"})
+      device.buildKernel(argv[2],name,props);
+    std::cout<<"PASS: all production phase/drag/pressure kernels built with real OCCA Serial\n";
+  }
   auto interp=device.buildKernel(argv[1],"gasInterpolate",props);
   auto material=device.buildKernel(argv[1],"gasCubatureProducts",props);
   auto conservative=device.buildKernel(argv[1],"alphaConservativeCubature",props);

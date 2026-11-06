@@ -29,7 +29,7 @@ viscosity = 1e-3
 poisson = true
 solver = pgmres+flexible
 preconditioner = jacobi
-residualTol = 1e-8
+residualTol = 1e-10+relative
 initialGuess = previous
 
 [SCALAR ALPHA]
@@ -93,6 +93,8 @@ gravityX = 0.0
 gravityY = 0.0
 gravityZ = -9.81
 dragEnabled = 1
+dragCouplingMaxIterations = 30
+dragCouplingTolerance = 1e-10
 bubbleDiameter = 3e-3
 muLiquid = 1e-3
 alphaMinimum = 0.0

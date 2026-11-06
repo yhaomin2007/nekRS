@@ -24,3 +24,12 @@ begin=udf.split('inline void beginStep(double time)',1)[1].split('inline void po
 assert 'applyDirichlet(' not in setup
 assert begin.index('s->applyDirichlet(time)') < begin.index('reconstructMixture();convection')
 print('PASS: initial phase boundary application deferred until scalar elliptic masks exist')
+
+assert 'missingCubatureInterpolationHeader(N,C)' in udf
+assert 'setupPressure();' not in setup
+assert 'dragLoadKernel(' not in begin  # partner loads never enter EXT history
+pressure=(root/'bubbleColumn3Pressure.hpp').read_text()
+assert 'if(!pressureSolver) setupPressure();' in pressure
+assert 'validateLinearSolve(pressureSolver.get()' in pressure
+assert 'reconstructMixture();solvePressureAndCorrect' in udf
+print('PASS: unconditional core cubature registration, lazy pressure setup, unextrapolated drag, and linear convergence guards')
