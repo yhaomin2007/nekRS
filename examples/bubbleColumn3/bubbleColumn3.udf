@@ -1,0 +1,244 @@
+#include "nrs.hpp"
+#include "udf.hpp"
+#include <array>
+
+#ifdef __okl__
+#include "bubbleColumn3.oudf"
+#endif
+
+namespace bubbleColumn3 {
+struct Parameters {
+  dfloat rhoLiquid=998.2,rhoGas=1.2,muLiquid=1e-3;
+  dfloat alphaInlet=0.016667,ugInlet=0.3,ulInlet=0;
+  dfloat initialPlumeHeight=0.05,initialPlumeThickness=0.01;
+  dfloat gravity[3]={0,0,-9.81};
+  dfloat dragEnabled=1,bubbleDiameter=3e-3;
+  dfloat alphaMinimum=0,alphaMaximum=0.99;
+  int virtualMassEnabled=0,monitorInterval=10;
+};
+static Parameters p;
+static const std::array<std::string,7> names={"alpha","ugx","ugy","ugz","ulx","uly","ulz"};
+static deviceMemory<dfloat> ug,ul,lambdaG,lambdaL;
+static deviceMemory<dfloat> fields,cube,products,transportG,transportL,zeroAdvection;
+static occa::kernel interpolateKernel,productsKernel,projectKernel,alphaKernel;
+static occa::kernel reconstructKernel,initializeKernel,clipKernel,dragKernel,sourceKernel;
+static int preparedStep=-1,completedStep=-1;
+
+inline void packVelocities()
+{
+  const auto O=nrs->fieldOffset,N=nrs->meshV->Nlocal;
+  for(int c=0;c<3;++c) {
+    ug.copyFrom(nrs->scalar->o_solution(names[1+c]),N,c*O,0);
+    ul.copyFrom(nrs->scalar->o_solution(names[4+c]),N,c*O,0);
+  }
+}
+inline void unpackVelocities()
+{
+  const auto O=nrs->fieldOffset,N=nrs->meshV->Nlocal;
+  for(int c=0;c<3;++c) {
+    nrs->scalar->o_solution(names[1+c]).copyFrom(ug,N,0,c*O);
+    nrs->scalar->o_solution(names[4+c]).copyFrom(ul,N,0,c*O);
+  }
+}
+inline void reconstructMixture()
+{
+  packVelocities();
+  reconstructKernel(nrs->meshV->Nlocal,nrs->fieldOffset,
+      nrs->scalar->o_solution("alpha"),ug,ul,nrs->fluid->o_U);
+}
+// Return four operators: div(alpha*v) and v.grad(v_x,y,z), evaluated with
+// the existing dealiased Method2 GL interpolation/differentiation/projection.
+inline void convection(const deviceMemory<dfloat>& velocity,deviceMemory<dfloat>& result)
+{
+  auto m=nrs->meshV;const auto O=nrs->fieldOffset,C=m->Nelements*m->cubNp;
+  fields.copyFrom(nrs->scalar->o_solution("alpha"),m->Nlocal);
+  for(int c=0;c<3;++c) fields.copyFrom(velocity,m->Nlocal,(c+1)*O,c*O);
+  interpolateKernel(m->Nelements,O,C,m->o_cubInterpT,fields,cube);
+  productsKernel(m->Nelements,C,m->o_cubD,m->o_cubvgeo,cube,products);
+  projectKernel(m->Nelements,O,C,m->o_cubInterpT,m->o_vgeo,products,result);
+  // Conservative-alpha kernel zeroes components 1..3. Preserve the separately
+  // evaluated material convection before projecting alpha into scratch fields.
+  alphaKernel(m->Nelements,C,m->o_cubD,m->o_cubvgeo,cube,products);
+  projectKernel(m->Nelements,O,C,m->o_cubInterpT,m->o_vgeo,products,fields);
+  result.copyFrom(fields,m->Nlocal);
+  platform->linAlg->axmyMany(m->Nlocal,4,O,0,1.0,m->o_LMM,result);
+  oogs::startFinish(result,4,O,ogsDfloat,ogsAdd,m->oogs);
+  platform->linAlg->axmyMany(m->Nlocal,4,O,0,1.0,m->o_invLMM,result);
+}
+inline occa::memory implicitDrag(double,int is)
+{
+  if(is>=1 && is<=3) return lambdaG;
+  if(is>=4 && is<=6) return lambdaL;
+  return o_NULL;
+}
+inline void beginStep(double time)
+{
+  if(nrs->tstep<=0) return; // native adaptive-CFL initialization probe
+  nekrsCheck(preparedStep==nrs->tstep || (preparedStep>0 && completedStep!=preparedStep),
+      platform->comm.mpiComm(),EXIT_FAILURE,"%s","Repeated/missing method3 timestep.\n");
+  preparedStep=nrs->tstep;
+  auto &s=nrs->scalar;auto m=nrs->meshV;const auto O=nrs->fieldOffset;
+  s->compute.assign(7,1);
+  // Scalar elliptic masks exist here, unlike during UDF_Setup. Impose the
+  // source-time inlet/wall values before forming the first phase predictors.
+  s->applyDirichlet(time);
+  reconstructMixture();convection(ug,transportG);convection(ul,transportL);
+  dragKernel(m->Nlocal,O,p.dragEnabled,p.rhoGas,p.rhoLiquid,p.muLiquid,p.bubbleDiameter,
+      s->o_solution("alpha"),ug,ul,lambdaG,lambdaL);
+  auto alphaSource=s->o_explicitTerms("alpha");
+  platform->linAlg->axpby(m->Nlocal,-1.0,transportG,1.0,alphaSource);
+  for(int c=0;c<3;++c) {
+    sourceKernel(m->Nlocal,O,c,p.gravity[c],transportG,lambdaG,ul,s->o_explicitTerms(names[1+c]));
+    sourceKernel(m->Nlocal,O,c,p.gravity[c],transportL,lambdaL,ug,s->o_explicitTerms(names[4+c]));
+  }
+  // Assemble the six RHSs BEFORE the host shifts BDF and explicit histories.
+  // Native scalar::makeForcing below assembles alpha and shifts ALL histories
+  // once, including those of the six deferred components.
+  for(int is=1;is<7;++is) {
+    s->makeExplicit(is,time,nrs->tstep);
+    launchKernel("scalar_t::sumMakef",m->Nlocal,m->o_LMM,1.0/nrs->dt[0],
+        s->o_coeffEXT,s->o_coeffBDF,s->fieldOffsetScan[is],s->fieldOffsetSum,
+        m->fieldOffset,s->o_transportCoeff(),s->o_S,zeroAdvection,s->o_EXT,s->o_JwF);
+    s->compute[is]=0;
+  }
+}
+inline void postAlpha(double time,int)
+{
+  clipKernel(nrs->meshV->Nlocal,p.alphaMinimum,p.alphaMaximum,nrs->scalar->o_solution("alpha"));
+  // Enforce inlet alpha again after clipping; restore six phase boundary values.
+  nrs->scalar->compute.assign(7,1);
+  nrs->scalar->applyDirichlet(time);
+  nrs->scalar->compute.assign(7,0);nrs->scalar->compute[0]=1;
+}
+inline bool singlePass(int stage)
+{
+  nekrsCheck(stage!=1,platform->comm.mpiComm(),EXIT_FAILURE,"%s",
+      "bubbleColumn3 requires a single native outer stage.\n");
+  return true;
+}
+} // namespace bubbleColumn3
+#include "bubbleColumn3Pressure.hpp"
+
+void UDF_Setup0(MPI_Comm,setupAide&)
+{
+  using namespace bubbleColumn3;
+  // STOKES here disables only NATIVE UM-based scalar advection. User sources
+  // still contain full phase convection and conservative alpha transport.
+  nekrsCheck(!platform->options.compareArgs("FLUID VELOCITY SOLVER","NONE")
+      || !platform->options.compareArgs("EQUATION TYPE","STOKES"),
+      platform->comm.mpiComm(),EXIT_FAILURE,"%s",
+      "bubbleColumn3 needs fluid velocity solver=none and equation=stokes (user convection).\n");
+#define READ(key,member) platform->par->extract("casedata",key,p.member)
+  READ("rholiquid",rhoLiquid);READ("rhogas",rhoGas);READ("muliquid",muLiquid);
+  READ("alphainlet",alphaInlet);READ("gasinletvelocity",ugInlet);READ("liquidinletvelocity",ulInlet);
+  READ("initialplumeheight",initialPlumeHeight);READ("initialplumethickness",initialPlumeThickness);
+  READ("gravityx",gravity[0]);READ("gravityy",gravity[1]);READ("gravityz",gravity[2]);
+  READ("dragenabled",dragEnabled);READ("bubblediameter",bubbleDiameter);
+  READ("alphaminimum",alphaMinimum);READ("alphamaximum",alphaMaximum);
+  READ("virtualmassenabled",virtualMassEnabled);READ("monitorinterval",monitorInterval);
+#undef READ
+  nekrsCheck(!(std::isfinite(p.rhoLiquid)&&p.rhoLiquid>0 && std::isfinite(p.rhoGas)&&p.rhoGas>0
+      && std::isfinite(p.muLiquid)&&p.muLiquid>0 && std::isfinite(p.bubbleDiameter)&&p.bubbleDiameter>0
+      && std::isfinite(p.initialPlumeThickness)&&p.initialPlumeThickness>0
+      && std::isfinite(p.ugInlet) && std::isfinite(p.ulInlet)
+      && std::isfinite(p.gravity[0]) && std::isfinite(p.gravity[1]) && std::isfinite(p.gravity[2])
+      && std::isfinite(p.initialPlumeHeight) && p.initialPlumeHeight>=0 && p.alphaMinimum>=0 && p.alphaMaximum<1
+      && p.alphaMinimum<=p.alphaInlet && p.alphaInlet<=p.alphaMaximum
+      && (p.dragEnabled==0 || p.dragEnabled==1) && p.monitorInterval>=0)
+      || p.virtualMassEnabled!=0,
+      platform->comm.mpiComm(),EXIT_FAILURE,"%s",
+      "Invalid method3 parameters; alphaMaximum<1 and virtualMassEnabled=0 required.\n");
+  int N=0,C=0;
+  platform->options.getArgs("POLYNOMIAL DEGREE",N);
+  platform->options.getArgs("CUBATURE POLYNOMIAL DEGREE",C);
+  nekrsCheck(C<2*N,platform->comm.mpiComm(),EXIT_FAILURE,"%s","Need cubaturePolynomialOrder>=2*polynomialOrder.\n");
+}
+
+void UDF_LoadKernels(deviceKernelProperties& info)
+{
+  using namespace bubbleColumn3;
+  info.define("p_ALPHA_INLET")=p.alphaInlet;
+  info.define("p_UG_INLET")=p.ugInlet;
+  info.define("p_UL_INLET")=p.ulInlet;
+  auto ci=info;int C=0;platform->options.getArgs("CUBATURE POLYNOMIAL DEGREE",C);
+  ci.define("p_cubNq")=C+1;ci.define("p_cubNp")=(C+1)*(C+1)*(C+1);
+  if(platform->options.compareArgs("REGISTER ONLY","TRUE")) {
+    platform->kernelRequests.add("bubbleColumn3::transport","bubbleColumn3Transport.okl",ci);
+    platform->kernelRequests.add("bubbleColumn3::equations","bubbleColumn3Equations.okl",info);
+  } else {
+#define LOAD(member,request,name) member=platform->kernelRequests.load(request,name)
+    LOAD(interpolateKernel,"bubbleColumn3::transport","gasInterpolate");
+    LOAD(productsKernel,"bubbleColumn3::transport","gasCubatureProducts");
+    LOAD(projectKernel,"bubbleColumn3::transport","gasProject");
+    LOAD(alphaKernel,"bubbleColumn3::transport","alphaConservativeCubature");
+    LOAD(reconstructKernel,"bubbleColumn3::equations","reconstruct");
+    LOAD(initializeKernel,"bubbleColumn3::equations","initialize");
+    LOAD(clipKernel,"bubbleColumn3::equations","clipAlpha");
+    LOAD(dragKernel,"bubbleColumn3::equations","drag");
+    LOAD(sourceKernel,"bubbleColumn3::equations","phaseSource");
+    LOAD(mobilityKernel,"bubbleColumn3::equations","mobility");
+    LOAD(correctKernel,"bubbleColumn3::equations","correct");
+    LOAD(surfaceKernel,"bubbleColumn3::equations","pressureSurface");
+#undef LOAD
+  }
+}
+
+void UDF_Setup()
+{
+  using namespace bubbleColumn3;
+  nekrsCheck(!nrs->fluid || nrs->Nscalar!=7 || nrs->scalar->anyCvodeSolver
+      || nrs->geom || nrs->neknek || nrs->advectionSubcycingSteps || nrs->meshV->Nbid!=3,
+      platform->comm.mpiComm(),EXIT_FAILURE,"%s",
+      "bubbleColumn3 requires fixed mesh, seven native elliptic scalars, no NekNek/subcycling.\n");
+  auto &s=nrs->scalar; auto m=nrs->meshV;const auto O=nrs->fieldOffset;
+  for(int is=0;is<7;++is) {
+    const auto it=s->nameToIndex.find(names[is]);
+    nekrsCheck(it==s->nameToIndex.end() || it->second!=is || !s->compute[is],
+        platform->comm.mpiComm(),EXIT_FAILURE,"Expected active scalar %s at %d\n",names[is].c_str(),is);
+    const auto range=platform->linAlg->minMax(m->Nlocal,{s->o_transportCoeff(names[is])},platform->comm.mpiComm());
+    nekrsCheck(std::abs(range[0].first-1)>1e-12 || std::abs(range[0].second-1)>1e-12,
+        platform->comm.mpiComm(),EXIT_FAILURE,"%s","All phase/alpha transportCoeff must be 1.\n");
+  }
+  nekrsCheck(!nrs->fluid->ellipticSolver.empty() || nrs->fluid->ellipticSolverP,
+      platform->comm.mpiComm(),EXIT_FAILURE,"%s","Native UM/P solvers must be disabled.\n");
+  // Our deferred assembly uses the same BDF/EXT histories as the native alpha.
+  ug.resize(3*O);ul.resize(3*O);lambdaG.resize(O);lambdaL.resize(O);
+  fields.resize(4*O);cube.resize(4*m->Nelements*m->cubNp);products.resize(cube.size());
+  transportG.resize(4*O);transportL.resize(4*O);
+  zeroAdvection.resize(std::max(s->o_coeffBDF.size(),s->o_coeffEXT.size())*s->fieldOffsetSum);
+  platform->linAlg->fill(zeroAdvection.size(),0.0,zeroAdvection);
+  platform->linAlg->fill(O,0.0,lambdaG);platform->linAlg->fill(O,0.0,lambdaL);
+  if(platform->options.getArgs("RESTART FILE NAME").empty()) {
+    for(const auto &name:names) platform->linAlg->fill(O,0.0,s->o_solution(name));
+    initializeKernel(m->Nlocal,p.alphaInlet,p.ugInlet,p.ulInlet,p.initialPlumeHeight,
+        p.initialPlumeThickness,m->o_z,s->o_solution("alpha"),s->o_solution("ugz"),s->o_solution("ulz"));
+  }
+  clipKernel(m->Nlocal,p.alphaMinimum,p.alphaMaximum,s->o_solution("alpha"));
+  // Native scalar elliptic solvers are constructed after UDF_Setup. Boundary
+  // application must wait until beginStep, when their masks are available.
+  reconstructMixture();setupPressure();
+  nrs->userSource=&beginStep;nrs->postScalar=&postAlpha;
+  nrs->userConvergenceCheck=&singlePass;s->userImplicitLinearTerm=&implicitDrag;
+  if(platform->comm.mpiRank()==0)
+    printf("bubbleColumn3: seven scalars ALPHA UGX UGY UGZ ULX ULY ULZ; native velocity/pressure OFF; "
+        "user phase convection ON; alpha -> UG/UL predictors -> shared P -> both phase corrections -> reconstructed UM; VM OFF\n");
+}
+
+void UDF_ExecuteStep(double time,int step)
+{
+  using namespace bubbleColumn3;
+  if(step<=0) return;
+  nekrsCheck(step!=preparedStep || step==completedStep || !nrs->timeStepConverged,
+      platform->comm.mpiComm(),EXIT_FAILURE,"%s","Method3 deferred solve out of order.\n");
+  auto &s=nrs->scalar;
+  s->compute.assign(7,1);s->compute[0]=0;
+  s->applyDirichlet(time);s->solve(time,1);
+  s->compute.assign(7,1);
+  reconstructMixture();solvePressureAndCorrect(time,step);
+  completedStep=step;
+  if(nrs->checkpointStep) {
+    const auto O=nrs->fieldOffset,N=nrs->meshV->Nlocal;
+    nrs->writeToFile("ug",time,nrs->meshV,{{"velocity",{ug.slice(0,N),ug.slice(O,N),ug.slice(2*O,N)}}});
+    nrs->writeToFile("ul",time,nrs->meshV,{{"velocity",{ul.slice(0,N),ul.slice(O,N),ul.slice(2*O,N)}}});
+  }
+}

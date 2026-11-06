@@ -1,0 +1,7 @@
+void udfDirichlet(bcData *bc)
+{
+  if(isField("scalar alpha")) bc->sScalar=p_ALPHA_INLET;
+  else if(isField("scalar ugz")) bc->sScalar=(bc->id==1)?p_UG_INLET:0;
+  else if(isField("scalar ulz")) bc->sScalar=(bc->id==1)?p_UL_INLET:0;
+  else bc->sScalar=0;
+}

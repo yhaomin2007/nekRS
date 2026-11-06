@@ -1,0 +1,89 @@
+// Volume velocity is a diagnostic/constraint field, never an evolved momentum.
+@kernel void reconstruct(const dlong N, const dlong O,
+    @restrict const dfloat *a, @restrict const dfloat *ug,
+    @restrict const dfloat *ul, @restrict dfloat *um)
+{
+  for(dlong i=0;i<N;++i;@tile(p_blockSize,@outer,@inner)) {
+    for(int c=0;c<3;++c) um[i+c*O]=a[i]*ug[i+c*O]+(1-a[i])*ul[i+c*O];
+  }
+}
+@kernel void initialize(const dlong N, const dfloat ai, const dfloat ui,
+    const dfloat li, const dfloat height, const dfloat width,
+    @restrict const dfloat *z, @restrict dfloat *a,
+    @restrict dfloat *gz, @restrict dfloat *lz)
+{
+  for(dlong i=0;i<N;++i;@tile(p_blockSize,@outer,@inner)) {
+    const dfloat f=0.5*(1-tanh((z[i]-height)/width));
+    a[i]=ai*f; gz[i]=ui*f; lz[i]=li;
+  }
+}
+@kernel void clipAlpha(const dlong N, const dfloat lo, const dfloat hi,
+    @restrict dfloat *a)
+{
+  for(dlong i=0;i<N;++i;@tile(p_blockSize,@outer,@inner)) a[i]=fmin(hi,fmax(lo,a[i]));
+}
+// Schiller-Naumann drag, equal and opposite force per unit mixture volume.
+// The diagonal drag is implicit; the partner velocity is lagged in the load.
+@kernel void drag(const dlong N, const dlong O, const dfloat enabled,
+    const dfloat rg, const dfloat rl, const dfloat mu, const dfloat diameter,
+    @restrict const dfloat *a, @restrict const dfloat *ug,
+    @restrict const dfloat *ul, @restrict dfloat *lg, @restrict dfloat *ll)
+{
+  for(dlong i=0;i<N;++i;@tile(p_blockSize,@outer,@inner)) {
+    dfloat w2=0;
+    for(int c=0;c<3;++c) {const dfloat w=ug[i+c*O]-ul[i+c*O]; w2+=w*w;}
+    const dfloat w=sqrt(w2), re=rl*w*diameter/mu;
+    // Cd*|w| remains finite at zero slip.
+    const dfloat cdw=(re<1000) ? 24*mu/(rl*diameter)*(1+0.15*pow(re,0.687)) : 0.44*w;
+    const dfloat k=enabled*0.75*rl*cdw/diameter;
+    lg[i]=k/rg;
+    ll[i]=a[i]*k/((1-a[i])*rl);
+  }
+}
+@kernel void phaseSource(const dlong N, const dlong O, const int component,
+    const dfloat gravity, @restrict const dfloat *convection,
+    @restrict const dfloat *lambda, @restrict const dfloat *partner,
+    @restrict dfloat *source)
+{
+  for(dlong i=0;i<N;++i;@tile(p_blockSize,@outer,@inner))
+    source[i]=-convection[i+(component+1)*O]+gravity+lambda[i]*partner[i+component*O];
+}
+@kernel void mobility(const dlong N, const dfloat tau,
+    const dfloat rg, const dfloat rl, @restrict const dfloat *a,
+    @restrict const dfloat *lg, @restrict const dfloat *ll,
+    @restrict dfloat *bg, @restrict dfloat *bl, @restrict dfloat *bm)
+{
+  for(dlong i=0;i<N;++i;@tile(p_blockSize,@outer,@inner)) {
+    bg[i]=tau/(rg*(1+tau*lg[i])); bl[i]=tau/(rl*(1+tau*ll[i]));
+    bm[i]=a[i]*bg[i]+(1-a[i])*bl[i];
+  }
+}
+@kernel void correct(const dlong N, const dlong O,
+    @restrict const dfloat *beta, @restrict const dfloat *grad,
+    @restrict dfloat *velocity)
+{
+  for(dlong i=0;i<N;++i;@tile(p_blockSize,@outer,@inner))
+    for(int c=0;c<3;++c) velocity[i+c*O]-=beta[i]*grad[i+c*O];
+}
+// Adapted from fluidSolver_t::divergenceSurfaceHex3D: subtract prescribed
+// volume flux on pressure-Neumann boundaries. ID 2 is p=0 (no surface load).
+@kernel void pressureSurface(const dlong Nelements, const dlong O,
+    @restrict const dfloat *sgeo, @restrict const dlong *vmapM,
+    @restrict const int *EToB, @restrict const dfloat *um,
+    @restrict dfloat *rhs)
+{
+  for(dlong e=0;e<Nelements;++e;@outer(0)) {
+    for(int f=0;f<p_Nfaces;++f) {
+      for(int n=0;n<p_Nfp;++n;@inner(0)) {
+        const int bid=EToB[e*p_Nfaces+f];
+        if(bid==1 || bid==3) {
+          const dlong s=(e*p_Nfaces+f)*p_Nfp+n, i=vmapM[s];
+          const dfloat flux=sgeo[s*p_Nsgeo+p_NXID]*um[i]
+              +sgeo[s*p_Nsgeo+p_NYID]*um[i+O]
+              +sgeo[s*p_Nsgeo+p_NZID]*um[i+2*O];
+          @atomic rhs[i]-=sgeo[s*p_Nsgeo+p_WSJID]*flux;
+        }
+      }
+    }
+  }
+}
