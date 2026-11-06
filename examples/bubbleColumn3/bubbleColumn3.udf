@@ -137,8 +137,8 @@ inline void validateLinearSolve(elliptic *solver,const std::string& field)
   const dfloat floor=100*std::numeric_limits<dfloat>::epsilon()*initial;
   nekrsCheck(!std::isfinite(initial) || !std::isfinite(final)
       || final>std::max(target,floor),platform->comm.mpiComm(),EXIT_FAILURE,
-      "%s linear solve did not converge: initial=%g final=%g target=%g iterations=%d\n",
-      field.c_str(),initial,final,target,solver->Niter());
+      "%s linear solve did not converge: initial=%g final=%g target=%g iterations=%d preconditioner=%s\n",
+      field.c_str(),initial,final,target,solver->Niter(),solver->options().getArgs("PRECONDITIONER").c_str());
 }
 inline void solvePhasePredictors(double time)
 {
@@ -315,7 +315,7 @@ void UDF_Setup()
   clipKernel(m->Nlocal,p.alphaMinimum,p.alphaMaximum,s->o_solution("alpha"));
   // Native scalar elliptic solvers are constructed after UDF_Setup. Boundary
   // application must wait until beginStep, when their masks are available.
-  reconstructMixture(); // pressure solver is built lazily after native initialization
+  reconstructMixture(); // normalized pressure multigrid is built after first-step coefficients exist
   nrs->userSource=&beginStep;nrs->postScalar=&postAlpha;
   nrs->userConvergenceCheck=&singlePass;s->userImplicitLinearTerm=&implicitDrag;
   if(platform->comm.mpiRank()==0)

@@ -8,20 +8,25 @@ namespace bubbleColumn3 {
 // Own this solver here: assigning it to fluid->ellipticSolverP would cause the
 // native fluid->solve() call to solve pressure again.
 static std::unique_ptr<elliptic> pressureSolver;
-static deviceMemory<dfloat> betaG,betaL,betaM,pressureRhs,pressureGrad;
+static deviceMemory<dfloat> betaG,betaL,betaM,pressureDiffusion,pressureRhs,pressureGrad;
 static occa::kernel mobilityKernel,correctKernel,surfaceKernel;
 
+inline void allocatePressureStorage()
+{
+  const auto O=nrs->fieldOffset;
+  betaG.resize(O);betaL.resize(O);betaM.resize(O);pressureDiffusion.resize(O);
+  pressureRhs.resize(O);pressureGrad.resize(3*O);
+}
 inline void setupPressure()
 {
-  auto m=nrs->meshV; const auto O=nrs->fieldOffset;
-  betaG.resize(O);betaL.resize(O);betaM.resize(O);
-  pressureRhs.resize(O);pressureGrad.resize(3*O);
-  platform->linAlg->fill(O,1.0/p.rhoLiquid,betaM);
+  auto m=nrs->meshV;
+  // Construct the multigrid hierarchy with the actual first-step, normalized
+  // coefficient. No dummy coefficient or uninitialized timestep is used.
   auto EToB=m->createEToB([](int id)->int {
     if(id<1) return ellipticBcType::NO_OP;
     return id==2 ? ellipticBcType::DIRICHLET : ellipticBcType::NEUMANN;
   });
-  pressureSolver=std::make_unique<elliptic>("elliptic phasepressure",m,0,EToB,betaM,o_NULL);
+  pressureSolver=std::make_unique<elliptic>("elliptic phasepressure",m,0,EToB,pressureDiffusion,o_NULL);
   nekrsCheck(pressureSolver->nullSpace(),platform->comm.mpiComm(),EXIT_FAILURE,
       "%s","bubbleColumn3 requires a pressure outlet with boundary ID 2.\n");
 }
@@ -63,22 +68,31 @@ inline double divergenceNorm()
 inline void solvePressureAndCorrect(double time,int step)
 {
   auto m=nrs->meshV; auto &s=nrs->scalar; const auto O=nrs->fieldOffset;
-  if(!pressureSolver) setupPressure(); // native initialization and mesh update are complete
+  if(!pressureDiffusion.size()) allocatePressureStorage();
   const bool log=p.monitorInterval>0 && (step==1 || step%p.monitorInterval==0);
   const double before=log?divergenceNorm():0;
   // Use the inverse local coupled inertia/drag block of both phase predictors.
-  mobilityKernel(m->Nlocal,nrs->dt[0]/nrs->g0,p.rhoGas,p.rhoLiquid,
+  const dfloat tau=nrs->dt[0]/nrs->g0;
+  nekrsCheck(!std::isfinite(tau) || tau<=0,platform->comm.mpiComm(),EXIT_FAILURE,
+      "%s","Invalid phase pressure timestep coefficient.\n");
+  mobilityKernel(m->Nlocal,tau,p.rhoGas,p.rhoLiquid,
       s->o_solution("alpha"),lambdaG,lambdaL,betaG,betaL,betaM);
   // Positive stiffness A=-div(betaM grad), rhs=-div(UM*), represented as
   // integral grad(test).UM* - integral_N test*(UM_prescribed.n).
   opSEM::divergence(m,O,nrs->fluid->o_U,pressureRhs);
   surfaceKernel(m->Nelements,O,m->o_sgeo,m->o_vmapM,m->o_EToB,
       nrs->fluid->o_U,pressureRhs);
+  // Divide BOTH sides by tau. This preserves pressure and all velocity
+  // corrections, while removing the small BDF timestep scale from the
+  // elliptic coefficient and RHS. Keep physical betaG/L/M unchanged.
+  platform->linAlg->axpby(m->Nlocal,1/tau,betaM,0.0,pressureDiffusion);
+  platform->linAlg->axpby(m->Nlocal,1/tau,pressureRhs,0.0,pressureRhs);
+  if(!pressureSolver) setupPressure(); // normalized coefficient is now ready
   auto pressure=nrs->fluid->o_solution("pressure");
   // Homogeneous pressure outlet. Elliptic::solve masks the RHS internally;
   // initialize the full field to prevent stale outlet values on restart.
   platform->linAlg->fill(O,0.0,pressure);
-  pressureSolver->solve(betaM,o_NULL,pressureRhs,pressure.slice(0,m->Nlocal));
+  pressureSolver->solve(pressureDiffusion,o_NULL,pressureRhs,pressure.slice(0,m->Nlocal));
   validateLinearSolve(pressureSolver.get(),"phase pressure");
   opSEM::strongGrad(m,O,pressure,pressureGrad);
   packVelocities();

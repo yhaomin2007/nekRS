@@ -27,9 +27,12 @@ viscosity = 1e-3
 # FLUID PRESSURE options when FLUID VELOCITY solver=none.
 [ELLIPTIC phasePressure]
 # Poisson type is set in UDF_Setup0 for v26 builds that reject this PAR key.
-solver = pgmres+flexible
-preconditioner = jacobi
-residualTol = 1e-10+relative
+solver = pgmres+flexible+nvector=15+maxiter=1000
+preconditioner = multigrid
+smootherType = cheby+asm+degree=3
+coarseSolver = boomeramg+cpu
+coarseGridDiscretization = fem
+residualTol = 1e-8+relative
 initialGuess = previous
 
 [SCALAR ALPHA]

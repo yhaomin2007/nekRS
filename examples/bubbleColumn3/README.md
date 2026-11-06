@@ -102,7 +102,8 @@ residual alone does not establish a small continuity residual.
   deliberately **not** assigned
   to `fluid->ellipticSolverP`, which would trigger a second native pressure solve.
   The user pressure solver is built lazily at the first completed predictor,
-  after native mesh/scalar initialization. Initial scalar boundary application
+  after native mesh/scalar initialization and after the actual pressure
+  coefficient is available. Initial scalar boundary application
   is similarly deferred until native scalar elliptic masks exist.
 - `equation=stokes` selects **no native advection only**. Full phase convection
   remains active in user sources. This avoids native `um` advection and fragile
@@ -124,9 +125,20 @@ residual alone does not establish a small continuity residual.
 - The supplied scalar inlet/outlet/wall maps are checked against the pressure
   boundary assumptions. Both phase diffusion coefficients remain independent
   `.par` settings; adjust them when changing the desired kinematic viscosities.
+- The pressure solver uses p-multigrid, a degree-3 Chebyshev/ASM smoother,
+  and a CPU BoomerAMG coarse solve, following the native pressure strategy.
+  A standalone Jacobi preconditioner is insufficient for the demonstrated
+  column run. BoomerAMG requires the normal NekRS HYPRE dependency.
+  The outer Krylov basis stays at 15 vectors to limit memory use.
+- Both pressure-operator coefficient and RHS are divided by `tau=dt/g0` before
+  solving; this is an equivalent equation, not a change to pressure or phase
+  correction. The hierarchy is constructed using the actual first-step
+  normalized coefficient. `beta_g/l/m` retain their physical timestep factors.
 - Every phase linear solve and the pressure linear solve must meet its native
   configured tolerance; a nonfinite or unconverged result aborts. Pressure uses
-  a relative tolerance so a small dimensional RHS cannot pass trivially.
+  a relative tolerance of `1e-8` (with native volume normalization), so a
+  small dimensional RHS cannot pass trivially. The convergence guard remains
+  enabled; the new settings still need verification on the target column mesh.
 
 ## Validation
 
@@ -165,6 +177,9 @@ c++ -std=c++17 -I"$NEKRS_HOME/occa/include" tests/transport.cpp \
   -L"$NEKRS_HOME/occa/lib" -Wl,-rpath,"$NEKRS_HOME/occa/lib" -locca -o /tmp/method3-transport
 /tmp/method3-transport bubbleColumn3Transport.okl bubbleColumn3Equations.okl
 ```
+
+The actual native PAR parser accepts the multigrid/Chebyshev-ASM/CPU-BoomerAMG
+configuration and bounded Krylov settings; that check does not run the solver.
 
 During development, the host UDF passed a C++17 syntax check against this
 branch's headers; both OKL files passed OCCA CUDA translation. All phase,
