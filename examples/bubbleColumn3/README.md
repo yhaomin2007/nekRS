@@ -96,7 +96,10 @@ residual alone does not establish a small continuity residual.
   not override phase Dirichlet values.
 - `solver=none` in `[FLUID VELOCITY]` prevents construction of native velocity
   and pressure elliptic solvers. The user pressure solver has the independent
-  `[ELLIPTIC phasePressure]` configuration and is deliberately **not** assigned
+  `[ELLIPTIC phasePressure]` configuration. The Poisson type is set internally
+  in `UDF_Setup0`, before kernel registration, because some installed v26
+  parsers (including sha `96b3cf9`) reject `poisson` as a PAR key. It is
+  deliberately **not** assigned
   to `fluid->ellipticSolverP`, which would trigger a second native pressure solve.
   The user pressure solver is built lazily at the first completed predictor,
   after native mesh/scalar initialization. Initial scalar boundary application

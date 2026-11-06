@@ -26,7 +26,7 @@ viscosity = 1e-3
 # A separate registered user elliptic field is essential: NekRS removes
 # FLUID PRESSURE options when FLUID VELOCITY solver=none.
 [ELLIPTIC phasePressure]
-poisson = true
+# Poisson type is set in UDF_Setup0 for v26 builds that reject this PAR key.
 solver = pgmres+flexible
 preconditioner = jacobi
 residualTol = 1e-10+relative

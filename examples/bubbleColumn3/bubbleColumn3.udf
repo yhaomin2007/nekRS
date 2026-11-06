@@ -188,6 +188,11 @@ inline bool singlePass(int stage)
 void UDF_Setup0(MPI_Comm,setupAide&)
 {
   using namespace bubbleColumn3;
+  // Some installed v26 parsers reject an elliptic-section poisson PAR key.
+  // Set its internal option before kernel registration instead. The pressure
+  // constructor also receives o_NULL for its Helmholtz mass coefficient.
+  platform->options.setArgs("ELLIPTIC PHASEPRESSURE HELMHOLTZ TYPE","POISSON");
+  platform->options.setArgs("ELLIPTIC PHASEPRESSURE ELLIPTIC COEFF FIELD","TRUE");
   // STOKES here disables only NATIVE UM-based scalar advection. User sources
   // still contain full phase convection and conservative alpha transport.
   nekrsCheck(!platform->options.compareArgs("FLUID VELOCITY SOLVER","NONE")
