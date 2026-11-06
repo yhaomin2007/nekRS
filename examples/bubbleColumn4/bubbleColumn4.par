@@ -1,0 +1,107 @@
+userSections = CASEDATA
+
+[GENERAL]
+polynomialOrder = 5
+cubaturePolynomialOrder = 10
+stopAt = numSteps
+numSteps = 20
+dt = 1e-5
+timeStepper = tombo2
+checkpointInterval = 20
+scalars = ALPHA, UGX, UGY, UGZ, ULX, ULY, ULZ
+
+[PROBLEMTYPE]
+# Disable native UM advection; full phase convection is in userSource.
+equation = stokes
+
+[MESH]
+# Use the existing column mesh: IDs 1=inlet, 2=outlet, 3=wall.
+file = ../bubbleColumn2/bubbleColumn2.re2
+
+[FLUID VELOCITY]
+solver = none
+rho = 998.2
+viscosity = 1e-3
+
+# A separate registered user elliptic field is essential: NekRS removes
+# FLUID PRESSURE options when FLUID VELOCITY solver=none.
+[ELLIPTIC phasePressure]
+# Poisson type is set in UDF_Setup0 for v26 builds that reject this PAR key.
+solver = pgmres+flexible+nvector=15+maxiter=1000
+preconditioner = multigrid
+smootherType = cheby+asm+degree=3
+coarseSolver = boomeramg+cpu
+coarseGridDiscretization = fem
+residualTol = 1e-8+relative
+initialGuess = previous
+
+[SCALAR ALPHA]
+boundaryTypeMap = udfDirichlet, zeroNeumann, zeroNeumann
+residualTol = 1e-11
+transportCoeff = 1.0
+diffusionCoeff = 1e-5
+regularization = hpfrt + nModes=1 + scalingCoeff=10.0
+
+[SCALAR UGX]
+boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
+residualTol = 1e-11
+transportCoeff = 1.0
+diffusionCoeff = 1.5e-5
+regularization = hpfrt + nModes=1 + scalingCoeff=10.0
+
+[SCALAR UGY]
+boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
+residualTol = 1e-11
+transportCoeff = 1.0
+diffusionCoeff = 1.5e-5
+regularization = hpfrt + nModes=1 + scalingCoeff=10.0
+
+[SCALAR UGZ]
+boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
+residualTol = 1e-11
+transportCoeff = 1.0
+diffusionCoeff = 1.5e-5
+regularization = hpfrt + nModes=1 + scalingCoeff=10.0
+
+[SCALAR ULX]
+boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
+residualTol = 1e-11
+transportCoeff = 1.0
+diffusionCoeff = 1.0018032458e-6
+regularization = hpfrt + nModes=1 + scalingCoeff=10.0
+
+[SCALAR ULY]
+boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
+residualTol = 1e-11
+transportCoeff = 1.0
+diffusionCoeff = 1.0018032458e-6
+regularization = hpfrt + nModes=1 + scalingCoeff=10.0
+
+[SCALAR ULZ]
+boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
+residualTol = 1e-11
+transportCoeff = 1.0
+diffusionCoeff = 1.0018032458e-6
+regularization = hpfrt + nModes=1 + scalingCoeff=10.0
+
+[CASEDATA]
+rhoLiquid = 998.2
+rhoGas = 1.2
+alphaInlet = 0.016667
+gasInletVelocity = 0.3
+liquidInletVelocity = 0.0
+initialPlumeHeight = 0.05
+initialPlumeThickness = 0.01
+gravityX = 0.0
+gravityY = 0.0
+gravityZ = -9.81
+dragEnabled = 1
+bubbleDiameter = 3e-3
+muLiquid = 1e-3
+alphaMinimum = 0.0
+alphaMaximum = 0.99
+# Virtual mass is excluded from this pressure-first baseline.
+virtualMassEnabled = 0
+monitorInterval = 10
+stressMaxIterations = 80
+stressTolerance = 1e-9

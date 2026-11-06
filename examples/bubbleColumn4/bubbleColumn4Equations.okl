@@ -1,0 +1,120 @@
+// Volume velocity is a diagnostic/constraint field, never an evolved momentum.
+@kernel void reconstruct(const dlong N, const dlong O,
+    @restrict const dfloat *a, @restrict const dfloat *ug,
+    @restrict const dfloat *ul, @restrict dfloat *um)
+{
+  for(dlong i=0;i<N;++i;@tile(p_blockSize,@outer,@inner)) {
+    for(int c=0;c<3;++c) um[i+c*O]=a[i]*ug[i+c*O]+(1-a[i])*ul[i+c*O];
+  }
+}
+@kernel void initialize(const dlong N, const dfloat ai, const dfloat ui,
+    const dfloat li, const dfloat height, const dfloat width,
+    @restrict const dfloat *z, @restrict dfloat *a,
+    @restrict dfloat *gz, @restrict dfloat *lz)
+{
+  for(dlong i=0;i<N;++i;@tile(p_blockSize,@outer,@inner)) {
+    const dfloat f=0.5*(1-tanh((z[i]-height)/width));
+    a[i]=ai*f; gz[i]=ui*f; lz[i]=li;
+  }
+}
+@kernel void clipAlpha(const dlong N, const dfloat lo, const dfloat hi,
+    @restrict dfloat *a)
+{
+  for(dlong i=0;i<N;++i;@tile(p_blockSize,@outer,@inner)) a[i]=fmin(hi,fmax(lo,a[i]));
+}
+// Schiller-Naumann drag, equal and opposite force per unit mixture volume.
+// Coefficients use extrapolated slip and new alpha. Equal/opposite explicit
+// loads are frozen after alpha, outside the EXT history.
+@kernel void drag(const dlong N, const dlong O, const dfloat enabled,
+    const dfloat rg, const dfloat rl, const dfloat mu, const dfloat diameter,
+    @restrict const dfloat *a, @restrict const dfloat *ug,
+    @restrict const dfloat *ul, @restrict dfloat *lg, @restrict dfloat *ll)
+{
+  for(dlong i=0;i<N;++i;@tile(p_blockSize,@outer,@inner)) {
+    dfloat w2=0;
+    for(int c=0;c<3;++c) {const dfloat w=ug[i+c*O]-ul[i+c*O]; w2+=w*w;}
+    const dfloat w=sqrt(w2), re=rl*w*diameter/mu;
+    // Cd*|w| remains finite at zero slip.
+    const dfloat cdw=(re<1000) ? 24*mu/(rl*diameter)*(1+0.15*pow(re,0.687)) : 0.44*w;
+    const dfloat k=enabled*0.75*rl*cdw/diameter;
+    lg[i]=k/rg;
+    ll[i]=a[i]*k/((1-a[i])*rl);
+  }
+}
+@kernel void phaseSource(const dlong N, const dlong O, const int component,
+    const dfloat gravity, @restrict const dfloat *convection,
+    @restrict dfloat *source)
+{
+  for(dlong i=0;i<N;++i;@tile(p_blockSize,@outer,@inner))
+    source[i]=-convection[i+(component+1)*O]+gravity;
+}
+// Adapted from fluidSolver_t::divergenceSurfaceHex3D: subtract prescribed
+// volume flux on pressure-Neumann boundaries. ID 2 is p=0 (no surface load).
+@kernel void pressureSurface(const dlong Nelements, const dlong O,
+    @restrict const dfloat *sgeo, @restrict const dlong *vmapM,
+    @restrict const int *EToB, @restrict const dfloat *um,
+    @restrict dfloat *rhs)
+{
+  for(dlong e=0;e<Nelements;++e;@outer(0)) {
+    for(int f=0;f<p_Nfaces;++f) {
+      for(int n=0;n<p_Nfp;++n;@inner(0)) {
+        const int bid=EToB[e*p_Nfaces+f];
+        if(bid==1 || bid==3) {
+          const dlong s=(e*p_Nfaces+f)*p_Nfp+n, i=vmapM[s];
+          const dfloat flux=sgeo[s*p_Nsgeo+p_NXID]*um[i]
+              +sgeo[s*p_Nsgeo+p_NYID]*um[i+O]
+              +sgeo[s*p_Nsgeo+p_NZID]*um[i+2*O];
+          // CUDA has atomicAdd(double*,double), but no floating atomicSub.
+          // Retain the negative Neumann flux using atomic addition.
+          @atomic rhs[i]+=(-sgeo[s*p_Nsgeo+p_WSJID]*flux);
+        }
+      }
+    }
+  }
+}
+
+// Raw gradientVolume output is Jw * d_j u_c. Divide by element-local mass,
+// WITHOUT averaging across element interfaces, for the variational stress.
+@kernel void transposeFlux(const dlong N, const dlong O, const int c,
+    const dfloat nu, @restrict const dfloat *mass,
+    @restrict const dfloat *gradient, @restrict dfloat *flux)
+{
+  for(dlong i=0;i<N;++i;@tile(p_blockSize,@outer,@inner))
+    for(int j=0;j<3;++j) flux[i+j*O]=nu*gradient[i+(3*j+c)*O]/mass[i];
+}
+// BDF/convection/gravity base is a LOCAL weak load. Viscous acceleration has
+// already been assembled and divided by the assembled velocity mass.
+// Weight historical phase velocities with NEW alpha, never historical UM.
+@kernel void pressureFlux(const dlong N, const dlong O,
+    const dfloat rg, const dfloat rl, @restrict const dfloat *a,
+    @restrict const dfloat *mass, @restrict const dfloat *baseG,
+    @restrict const dfloat *baseL, @restrict const dfloat *vg,
+    @restrict const dfloat *vl, @restrict const dfloat *ug,
+    @restrict const dfloat *ul, @restrict const dfloat *lg,
+    @restrict const dfloat *ll, @restrict dfloat *beta,
+    @restrict dfloat *flux)
+{
+  for(dlong i=0;i<N;++i;@tile(p_blockSize,@outer,@inner)) {
+    beta[i]=a[i]/rg+(1-a[i])/rl;
+    for(int c=0;c<3;++c) {
+      const dlong k=i+c*O;
+      const dfloat slip=ul[k]-ug[k];
+      flux[k]=a[i]*(baseG[k]/mass[i]+vg[k]+lg[i]*slip)
+          +(1-a[i])*(baseL[k]/mass[i]+vl[k]-ll[i]*slip);
+    }
+  }
+}
+// Fixed explicit drag and the SAME latest pressure in both phase equations.
+@kernel void momentumLoad(const dlong N, const dlong O, const int c,
+    const dfloat invrho, const dfloat sign,
+    @restrict const dfloat *mass, @restrict const dfloat *base,
+    @restrict const dfloat *gradient, @restrict const dfloat *lambda,
+    @restrict const dfloat *ug, @restrict const dfloat *ul,
+    @restrict const dfloat *crossStress, @restrict dfloat *rhs)
+{
+  for(dlong i=0;i<N;++i;@tile(p_blockSize,@outer,@inner)) {
+    const dlong k=i+c*O;
+    rhs[i]=base[i]+mass[i]*(-invrho*gradient[k]+sign*lambda[i]*(ul[k]-ug[k]))
+        -crossStress[i];
+  }
+}

@@ -1,0 +1,26 @@
+name: bubbleColumn4 host tests
+on:
+  workflow_dispatch:
+  push:
+    branches: [bubbleColumn4]
+    paths:
+      - 'src/solver/fluid/**'
+      - 'examples/bubbleColumn4/**'
+      - '.github/workflows/bubblecolumn4.yml'
+  pull_request:
+    paths:
+      - 'src/solver/fluid/**'
+      - 'examples/bubbleColumn4/**'
+jobs:
+  equations-and-lifecycle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Method4 production equations and core dispatch
+        run: python3 examples/bubbleColumn4/tests/run.py
+      - name: Method4 BDF and EXT history lifecycle
+        run: python3 examples/bubbleColumn4/tests/lifecycle.py
+      - name: Method3 regression
+        run: |
+          python3 examples/bubbleColumn3/tests/run.py
+          python3 examples/bubbleColumn3/tests/lifecycle.py

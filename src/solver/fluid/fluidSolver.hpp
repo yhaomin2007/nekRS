@@ -89,11 +89,12 @@ public:
   void makeAdvection(double time, int tstep);
   void makeExplicit(double time, int tstep);
 
-  void solve(double time, int stage) override
-  {
-    solvePressure(time, stage);
-    solveVelocity(time, stage);
-  };
+  // Paired override for pressure-first multiphase formulations. Both callbacks
+  // execute inside runInnerStep, after scalar transport and before convergence.
+  // Ordinary single-phase cases continue through the native P -> U path.
+  std::function<void(double, int)> userPressureSolve = nullptr;
+  std::function<void(double, int)> userVelocitySolve = nullptr;
+  void solve(double time, int stage) override;
 
   void makeForcing();
 

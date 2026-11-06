@@ -122,6 +122,23 @@ fluidSolver_t::fluidSolver_t(const fluidSolverCfg_t &cfg, const std::unique_ptr<
   }
 }
 
+void fluidSolver_t::solve(double time, int stage)
+{
+  if (userPressureSolve || userVelocitySolve) {
+    nekrsCheck(!userPressureSolve || !userVelocitySolve,
+               platform->comm.mpiComm(), EXIT_FAILURE,
+               "%s", "Custom fluid solve requires both pressure and velocity callbacks.\n");
+    nekrsCheck(!ellipticSolver.empty() || ellipticSolverP,
+               platform->comm.mpiComm(), EXIT_FAILURE,
+               "%s", "Custom fluid solve requires native velocity/pressure solvers disabled.\n");
+    userPressureSolve(time, stage);
+    userVelocitySolve(time, stage);
+    return;
+  }
+  solvePressure(time, stage);
+  solveVelocity(time, stage);
+}
+
 void fluidSolver_t::solvePressure(double time, int stage)
 {
   if (!ellipticSolverP) {
