@@ -2,6 +2,7 @@
 #include "udf.hpp"
 #include "bubbleColumn3Cubature.hpp"
 #include <array>
+#include "bubbleColumn3Krylov.hpp"
 
 #ifdef __okl__
 #include "bubbleColumn3.oudf"
@@ -18,6 +19,8 @@ struct Parameters {
   int virtualMassEnabled=0,monitorInterval=10;
   int dragCouplingMaxIterations=30;
   dfloat dragCouplingTolerance=1e-10;
+  int pressureProjectionMaxIterations=200,pressureProjectionRestart=15;
+  dfloat pressureProjectionTolerance=1e-8;
 };
 static Parameters p;
 static const std::array<std::string,7> names={"alpha","ugx","ugy","ugz","ulx","uly","ulz"};
@@ -208,6 +211,9 @@ void UDF_Setup0(MPI_Comm,setupAide&)
   READ("alphaminimum",alphaMinimum);READ("alphamaximum",alphaMaximum);
   READ("virtualmassenabled",virtualMassEnabled);READ("monitorinterval",monitorInterval);
   READ("dragcouplingmaxiterations",dragCouplingMaxIterations);READ("dragcouplingtolerance",dragCouplingTolerance);
+  READ("pressureprojectionmaxiterations",pressureProjectionMaxIterations);
+  READ("pressureprojectionrestart",pressureProjectionRestart);
+  READ("pressureprojectiontolerance",pressureProjectionTolerance);
 #undef READ
   nekrsCheck(!(std::isfinite(p.rhoLiquid)&&p.rhoLiquid>0 && std::isfinite(p.rhoGas)&&p.rhoGas>0
       && std::isfinite(p.muLiquid)&&p.muLiquid>0 && std::isfinite(p.bubbleDiameter)&&p.bubbleDiameter>0
@@ -217,6 +223,8 @@ void UDF_Setup0(MPI_Comm,setupAide&)
       && std::isfinite(p.initialPlumeHeight) && p.initialPlumeHeight>=0 && p.alphaMinimum>=0 && p.alphaMaximum<1
       && p.alphaMinimum<=p.alphaInlet && p.alphaInlet<=p.alphaMaximum
       && (p.dragEnabled==0 || p.dragEnabled==1) && p.monitorInterval>=0
+      && p.pressureProjectionMaxIterations>0 && p.pressureProjectionRestart>0
+      && std::isfinite(p.pressureProjectionTolerance) && p.pressureProjectionTolerance>0 && p.pressureProjectionTolerance<1
       && p.dragCouplingMaxIterations>0 && std::isfinite(p.dragCouplingTolerance) && p.dragCouplingTolerance>0)
       || p.virtualMassEnabled!=0,
       platform->comm.mpiComm(),EXIT_FAILURE,"%s",

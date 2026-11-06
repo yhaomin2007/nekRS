@@ -105,3 +105,6 @@ alphaMaximum = 0.99
 # Explicitly off in this initial two-phase projection baseline.
 virtualMassEnabled = 0
 monitorInterval = 10
+pressureProjectionMaxIterations = 200
+pressureProjectionRestart = 15
+pressureProjectionTolerance = 1e-8

@@ -197,3 +197,63 @@ fields. The full NekRS build/run has not been performed here: no installed
 NekRS runtime or column mesh is available. A local CPU build attempt stopped
 in the dependency's Fortran/C interoperability configuration, before a NekRS
 executable could be produced; no full-solver validation is claimed.
+
+## Composed pressure projection and continuity diagnostics
+
+The final pressure now solves the operator produced by the actual velocity
+correction, rather than assuming that the native stiffness matrix equals it.
+With fixed alpha and drag mobilities, define `W u = assembled integral grad(q).u`,
+`G p = assembled mass-inverse weighted gradient`, and `F` as the homogeneous
+six-phase Dirichlet mask. The final operator is `A p = W betaM F G p / tau`,
+with homogeneous outlet-pressure rows removed. The RHS is the same weak
+predictor continuity residual, including its fixed prescribed boundary flux,
+divided by tau. The native variable-coefficient Poisson solve supplies an initial
+pressure and preconditions a restarted flexible GCR solve of `A`.
+
+This is a case-local correctness implementation. It does not modify NekRS core
+or enable the native UM equation. GCR vectors and reductions are currently on
+the host; each operator/preconditioner application transfers vectors, while SEM
+operations and gather/scatters execute on the device. Expect extra runtime and
+host memory (roughly two restart-length sets of local pressure vectors). A
+performance implementation should follow measured integration results.
+
+`pressureProjectionMaxIterations=200`, `pressureProjectionRestart=15`, and
+`pressureProjectionTolerance=1e-8` are CASEDATA controls. The relative target
+uses the larger of RHS norm and initial residual norm; the true residual is
+recomputed before accepting convergence. Failure aborts rather than silently
+falling back to a pressure that fails continuity. Equal-order null modes and
+boundary compatibility can still cause failure; this change does not establish
+that every mesh admits a well-conditioned composed projection.
+
+New log records:
+
+- `method3Pressure`: initial native stiffness solve (preconditioner baseline).
+- `method3Projection`: final composed solve iterations and true residual.
+- `method3Continuity`: at monitorInterval, `weakL2(pre,corrected,BC)` uses one
+  assembled weak operator and fixed boundary lifting at all three stages.
+  All norms exclude pressure-outlet rows and weight duplicate copies by inverse
+  multiplicity. These are algebraic weak residual norms, not pointwise strong
+  divergence or percentage mass imbalance.
+- `boundaryChange`: norm of the residual change due solely to restoring BCs.
+- `nativeVsComposedRel`: relative difference between native normalized stiffness
+  applied to the final pressure and the actual composed correction operator.
+- `correctionIdentity`: norm of `(W UMpre - W UMcorrected)/tau - A p`; this
+  should be at roundoff relative to the terms, independently of convergence.
+
+The old strong `divL2` remains a separate diagnostic. A weakly constrained CG
+field need not have pointwise-zero strong divergence. The `nativePrecoIters`
+and `nativePrecoResidual` in its log belong to the latest preconditioner solve,
+not to the final composed pressure equation.
+
+Additional spatial regression:
+
+```sh
+python3 tests/projection.py  # requires NumPy and a C++17 compiler
+```
+
+It builds a two-element, order-3 GLL discretization with variable mobility,
+assembled nodal gradients, inlet velocity masking and an outlet pressure. The
+native stiffness initial pressure has a 0.1385 relative composed residual;
+production GCR reduces it below 1e-10. It also checks the correction identity,
+zero BC-restoration change, and rejection of unconverged/singular solves.
+This is a spatial algebra regression, not a full 3D MPI/GPU column run.
