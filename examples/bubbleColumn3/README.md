@@ -282,3 +282,20 @@ the unregularized production GCR, and convergence of the stabilized production
 GCR below 1e-8. It also checks the stabilization-continuity identity and the
 native epsilon=1 limit. This is a spatial algebra regression, not a measured
 failure reproduction on the user's mesh or a full 3D MPI/GPU run.
+
+### Native operator coefficient lifetime
+
+`elliptic::_solve()` clears its internal coefficient pointers before returning.
+Calling `elliptic::op()` afterwards is invalid: the variable-coefficient CUDA
+kernel can dereference a null coefficient pointer, with the asynchronous error
+reported by a later `pressureHost()` copy. Both native-stiffness actions now use
+`Ax(pressureDiffusion, o_NULL, q, result)`, which explicitly binds coefficients
+for the call. Since Ax returns element-local contributions, the helper performs
+one gather-add before callers mask outlet rows. The UDF body changes too, to
+invalidate the host UDF cache when updating this included header.
+
+`python3 tests/native_action.py` compiles the production helper against an
+adapter that models coefficient unbinding after solve and element-local Ax
+output, checking explicit coefficient binding and single assembly. It also
+checks the lifetime assumption against the native source. This contract test
+and the native-header syntax check do not replace a CUDA integration run.

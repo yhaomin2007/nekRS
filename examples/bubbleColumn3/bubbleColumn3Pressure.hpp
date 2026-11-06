@@ -113,6 +113,15 @@ inline void maskPressureGradient(const std::vector<dlong>& ids)
     auto v=pressureHost(component);zeroPressureRows(v,ids);pressureDevice(v,component);
   }
 }
+// elliptic::_solve clears its internal coefficient pointers before returning.
+// op() requires those pointers to be bound and is NOT safe after solve().
+// Ax() binds the supplied coefficients for this call and returns element-local
+// contributions. Assemble those here; callers mask pressure Dirichlet rows.
+inline void nativePressureAction(const occa::memory& q,occa::memory& result)
+{
+  pressureSolver->Ax(pressureDiffusion,o_NULL,q,result);
+  oogs::startFinish(result,1,0,ogsDfloat,ogsAdd,nrs->meshV->oogs);
+}
 inline void solvePressureAndCorrect(double time,int step)
 {
   auto m=nrs->meshV; auto &s=nrs->scalar; const auto O=nrs->fieldOffset;
@@ -203,7 +212,7 @@ inline void solvePressureAndCorrect(double time,int step)
   const auto apply=[&](const std::vector<double>& x,std::vector<double>& y) {
     applyCorrection(x,y);
     auto q=x;zeroPressureRows(q,outlet);pressureDevice(q,trial);
-    pressureSolver->op(trial,assembledRhs);
+    nativePressureAction(trial,assembledRhs);
     auto k=pressureHost(assembledRhs);zeroPressureRows(k,outlet);
     for(size_t i=0;i<y.size();++i)
       y[i]=(1-p.pressureProjectionStabilization)*y[i]+p.pressureProjectionStabilization*k[i];
@@ -234,7 +243,7 @@ inline void solvePressureAndCorrect(double time,int step)
   // Compare the old stiffness to the actual correction on identical free rows.
   std::vector<double> actual,old;
   applyCorrection(solution,actual);
-  pressureSolver->op(pressure,assembledRhs);old=pressureHost(assembledRhs);zeroPressureRows(old,outlet);
+  nativePressureAction(pressure,assembledRhs);old=pressureHost(assembledRhs);zeroPressureRows(old,outlet);
   auto difference=old;for(size_t i=0;i<old.size();++i) difference[i]-=actual[i];
   auto stabilizedAction=actual;
   for(size_t i=0;i<old.size();++i) stabilizedAction[i]+=p.pressureProjectionStabilization*difference[i];

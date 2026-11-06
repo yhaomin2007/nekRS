@@ -326,7 +326,7 @@ void UDF_Setup()
   clipKernel(m->Nlocal,p.alphaMinimum,p.alphaMaximum,s->o_solution("alpha"));
   // Native scalar elliptic solvers are constructed after UDF_Setup. Boundary
   // application must wait until beginStep, when their masks are available.
-  reconstructMixture(); // stabilized composed pressure; native stiffness controls masked pressure null modes
+  reconstructMixture(); // explicit-coefficient native Ax after solve; never use unbound elliptic op
   nrs->userSource=&beginStep;nrs->postScalar=&postAlpha;
   nrs->userConvergenceCheck=&singlePass;s->userImplicitLinearTerm=&implicitDrag;
   if(platform->comm.mpiRank()==0)
