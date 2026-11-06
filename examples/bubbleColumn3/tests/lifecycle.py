@@ -58,7 +58,7 @@ struct LA{
 }la;
 struct Options{std::string getArgs(std::string){return "1e-8";}};
 struct elliptic{Options cfg;double residual=0;double initialResidual(){return 1;}double finalResidual(){return residual;}Options&options(){return cfg;}int Niter(){return 1;}};
-struct Mesh{int Nlocal=2,fieldOffset=4;double volume=2;Mem o_LMM{4};}mesh;
+struct Mesh{int Nelements=1,Nlocal=2,fieldOffset=4;Mem o_vgeo{1},o_D{1};double volume=2;Mem o_LMM{4};}mesh;
 struct Fluid{Mem o_U{12};std::vector<elliptic*>ellipticSolver;elliptic*ellipticSolverP=nullptr;}fluid;
 struct Scalar{
  int fieldOffsetSum=28;std::vector<int>compute=std::vector<int>(7,1);std::vector<int>fieldOffsetScan{0,4,8,12,16,20,24};
@@ -90,6 +90,17 @@ functions='\n'.join(extract(m) for m in [
  'inline void packVelocities()', 'inline void unpackVelocities()', 'inline void reconstructMixture()',
  'inline occa::memory implicitDrag(', 'inline void beginStep(', 'inline void validateLinearSolve(elliptic *solver',
  'inline void postAlpha(', 'inline void solvePhasePredictors('])
+# Compile the production pressure-load and final-phase helpers too.
+pressure_header=(root/'bubbleColumn3Pressure.hpp').read_text()
+for marker in ['inline void addNativePhasePressureLoad(', 'inline void solveNativePressureVelocities(']:
+    saved_udf=udf;udf=pressure_header;functions+='\n'+extract(marker);udf=saved_udf
+prefix+=r"""
+Mem pressureGrad(12);
+void launchKernel(const char* name,int elements,Mem,Mem,int offset,const Mem& pressure,Mem grad){
+ assert(std::string(name)=="core-wGradientVolumeHex3D"&&elements==1&&offset==4);
+ grad.copyFrom(pressure);
+}
+"""
 functions=functions.replace('occa::memory','Mem').replace('return o_NULL;','return Mem();')
 suffix=r'''
 void Scalar::solve(double,int){++solveCalls;for(int is=1;is<7;++is)if(compute[is]){Mem l=implicitDrag(0,is);for(int i=0;i<2;++i)o_S[4*is+i]=o_JwF[4*is+i]/(mesh.o_LMM[i]*(nrs->g0/nrs->dt[0]+l[i]));}}
@@ -110,6 +121,28 @@ int main(){
  assert(scalar.historyShifts==1&&scalar.solutionShifts==1&&scalar.explicitCalls==6);
  assert(dragIterations>1&&dragIterations<=30&&scalar.solveCalls==dragIterations);
  assert(dragChange<=p.dragCouplingTolerance);
+ // Native-style weak pressure enters BOTH RHSs before frozen-coefficient
+ // Helmholtz/drag solves; no histories/explicit sources are regenerated.
+ Mem fixedPressure(12),savedBase(28);savedBase.copyFrom(predictorBase);
+ for(int i=0;i<2;++i)fixedPressure[8+i]=p.rhoLiquid*9.81;
+ const double a=nrs->g0/nrs->dt[0],lg=lambdaG[0],ll=lambdaL[0];
+ const double bg=a*expected+fixedPressure[8]/p.rhoGas;
+ const double bl=a*expected+fixedPressure[8]/p.rhoLiquid;
+ const double determinant=a*(a+lg+ll);
+ const double expectedGas=((a+ll)*bg+lg*bl)/determinant;
+ const double expectedLiquid=(ll*bg+(a+lg)*bl)/determinant;
+ for(int repeat=0;repeat<2;++repeat){
+  solveNativePressureVelocities(1e-5,fixedPressure);
+  for(int i=0;i<2;++i){
+   assert(std::abs(scalar.o_solution("ugz")[i]-expectedGas)<1e-11);
+   assert(std::abs(scalar.o_solution("ulz")[i]-expectedLiquid)<1e-11);
+  }
+  for(int is=1;is<7;++is)for(int i=0;i<2;++i)
+   assert(predictorBase[4*is+i]==savedBase[4*is+i]);
+  assert(scalar.historyShifts==1&&scalar.solutionShifts==1&&scalar.explicitCalls==6);
+  assert(lambdaG[0]==lg&&lambdaL[0]==ll);
+ }
+ puts("PASS: production native weak-pressure RHS, density scaling, coupled phase response, restored base, no duplicate pressure/history");
  // A new timestep is forbidden until the deferred step is marked completed.
  nrs->tstep=2;bool blocked=false;try{beginStep(1e-5);}catch(...){blocked=true;}assert(blocked);
  e.residual=1;blocked=false;try{validateLinearSolve(&e,"test");}catch(...){blocked=true;}assert(blocked);e.residual=0;

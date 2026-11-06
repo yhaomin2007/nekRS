@@ -1,384 +1,173 @@
-# bubbleColumn3: independently transported gas and liquid velocities
+# bubbleColumn3: native pressure and phase Helmholtz velocity solves
 
-This example advances **ALPHA, UGX, UGY, UGZ, ULX, ULY, ULZ** with NekRS's
-native scalar BDF/EXT and elliptic machinery. `fluid->o_U` stores only the
-reconstructed **volume average**
+This example advances ALPHA, UGX, UGY, UGZ, ULX, ULY, ULZ with native scalar
+BDF/EXT/elliptic machinery. Native velocity storage contains only the reconstructed
+volume velocity `UM=alpha*UG+(1-alpha)*UL`. Native UM momentum and its default
+pressure solver stay disabled. No NekRS core files are changed.
 
-    um = alpha*ug + (1-alpha)*ul.
+## Native pressure/velocity audit
 
-No mixture momentum equation is solved. All implementation changes are local
-to this directory; `bubbleColumn` and `bubbleColumn2` are unchanged.
+| Operation | Native fluid solver | Method3 |
+|---|---|---|
+| Pressure linear solver | `elliptic::solve` | Same class and solve method, separate `phasePressure` instance |
+| Pressure linear algebra | native PGMRES/pMG/ASM/BoomerAMG | Native configuration from `[ELLIPTIC phasePressure]` |
+| Pressure RHS/coefficient | native single-fluid force/stress construction, inverse density | Two-phase predictor weak divergence/boundary flux, coupled local mobility betaM/tau |
+| Pressure gradient for velocity | `core-wGradientVolumeHex3D` | Identical registered kernel, no nodal averaging/mass inversion |
+| Pressure force placement | Weak load added to momentum RHS before Helmholtz | Same placement, divided by each constant phase density since scalar transportCoeff=1 |
+| Final velocity solve | component native elliptic Helmholtz (or vector stress option) | Six component native scalar elliptic Helmholtz solves with coupled drag |
+| Boundary lifting | native velocity elliptic Dirichlet masks; natural traction | Native scalar elliptic masks; supplied p=0 outlet has zero pressure traction |
 
-## Default pressure path: native NekRS elliptic solver
+The previous `u_k=u_k*-beta_k*strongGrad(p)` correction did NOT use the same
+pressure response as native `solveVelocity`. It has been removed from the
+runtime path. Custom host GCR, stabilized composed pressure, and their knobs are
+also removed from the runtime. `pressureSolveMode=native` is required;
+`pressureSolveMode=composed` is rejected. Historical pointwise/cubature tests
+and the standalone Krylov header remain for regression/history only; the UDF
+neither includes nor executes that Krylov solver.
 
-`pressureSolveMode = native` (CASEDATA, also the compiled default) uses one
-NekRS variable-coefficient Poisson solve per timestep. Its native PGMRES,
-p-multigrid, Chebyshev/ASM and BoomerAMG perform all pressure linear algebra;
-the host GCR and nested native preconditioning solves are bypassed. Previous
-pressure is reused when `pressureWarmStart=1`. No native UM equation is enabled
-and no core files are modified: the example owns an `elliptic` instance because
-its RHS and coefficient come from the two phase predictors.
+For each phase k, the final normalized equation is
 
-This mode solves `K p=b` using betaM/tau and the existing weak RHS/boundary
-flux. It is a DIFFERENT discrete pressure equation from composed mode's
-`S p=[(1-epsilon)A+epsilon K]p=b`. The stabilization and inner-preconditioner
-controls are ignored in native mode. Do not describe this switch as merely
-replacing the Krylov algorithm while preserving S. A small native pressure
-residual does not ensure zero divergence after nodal phase correction.
+```
+(g0/dt + lambda_k - nu_k*Laplacian) u_k
+ = BDF_EXT_base_k + lambda_k*u_partner + weakPressureLoad(p)/rho_k
+```
 
-Both phases still use the newly solved pressure, their Dirichlet velocity
-nodes are protected, and UM is reconstructed. Monitor-step output includes
-`weakL2(pre,corrected,BC)`, `boundaryChange`, `nativeEquationResidual`,
-`correctionDefect`, and `residualBalanceError`. In physical weak-RHS units,
-`correctedResidual = nativeEquationResidualVector + correctionDefectVector`;
-the printed quantities are norms, so they are not generally additive.
-No host pressure vectors are transferred for these diagnostics on non-monitor
-steps. Host mask IDs are still checked, but the gradient mask runs on device.
-`method3PressureCost mode=native nativeSolves=1 innerCalls=0` identifies this
-path. Compare continuity and phase velocity behavior against composed mode on
-the same mesh and physical interval before drawing accuracy conclusions.
+Here weakPressureLoad denotes the element-local native integral `grad(test)*p`,
+including its native sign convention. It already contains quadrature/geometric
+weights: do NOT multiply it by mass or divide by mass again. The native
+elliptic solve assembles it and applies boundary lifting. The pressure is the
+latest solved absolute pressure, fixed during the final coupled drag iterations.
+The pressure-free base is saved/restored; no pressure term enters EXT history
+and no BDF/EXT history is advanced twice.
 
-Set `pressureSolveMode=composed` explicitly to use the optional stabilized
-composition and its warm starts/inexact preconditioning described below.
-The final native-only convergence setting comes from
-`[ELLIPTIC phasePressure] residualTol`; `pressureProjectionTolerance` applies
-only to composed mode.
+This matches the native PRESSURE-TO-VELOCITY mechanism for the supported
+constant-density component-Laplacian formulation and supplied boundaries. It
+is not the entire native single-fluid Navier-Stokes algorithm: the pressure
+RHS/mobility and interphase drag are two-phase constructions. Phase-specific
+stress-divergence/variable-viscosity terms, density splitting, nonzero outlet
+pressure traction, slip and vector stress solves are not implemented here.
+Native fluid's `grad(mu*divTarget)/3` is zero for its constant-viscosity,
+zero-divergence target baseline; this example does not claim individual phase
+velocities are divergence-free. It uses the stated scalar Laplacian phase model.
 
-## Run
+## Timestep
 
-Use the same column `.re2` mesh as `bubbleColumn2`. The supplied `[MESH] file`
-points to `../bubbleColumn2/bubbleColumn2.re2`; change that path if your existing
-column mesh has another filename. The mesh is not committed in this repository.
-Boundary IDs must be **1 inlet, 2 outlet, 3 no-slip wall**.
+1. Evaluate conservative alpha transport and material phase convection with
+   GL cubature; prepare six BDF/EXT base RHSs before one native history shift.
+2. Advance/clip alpha, restore its inlet, freeze paired drag coefficients using
+   current alpha and lagged slip.
+3. Solve pressure-free gas/liquid Helmholtz predictors with fixed RHSs and
+   coupled partner loads; reconstruct UM predictor.
+4. Solve one native variable-coefficient pressure Poisson equation, normalized
+   on BOTH sides by tau=dt/g0. betaG/L come from the coupled local inertia/drag
+   inverse; betaM=alpha*betaG+(1-alpha)*betaL. betaM/tau is the pressure diffusion
+   coefficient. No custom outer pressure iteration is called.
+5. Evaluate the latest pressure with the native WEAK gradient kernel, add its
+   load/rho_k to each phase base RHS, and solve both final phase Helmholtz
+   equations with the SAME frozen coefficients and histories. Reconstruct UM.
+6. Restore scalar boundary values and report diagnostics/output.
 
-From this directory, using the installed v26 NekRS executable:
+There are TWO sets of phase solves (predictors and pressure-loaded final solves),
+with one pressure solve. This costs more than the earlier algebraic correction,
+but includes the full phase Helmholtz response to pressure. Pressure construction
+still uses a local mobility approximation, not the inverse spatial Helmholtz
+operator. Small pressure residual does NOT establish zero final UM divergence.
 
-```sh
+## Supported boundaries and model
+
+IDs: 1 inlet, 2 pressure outlet, 3 no-slip wall. Alpha has prescribed inlet and
+zero normal gradient elsewhere. All six phase components have prescribed inlet,
+zero normal gradient outlet and no-slip walls. Pressure has homogeneous outlet
+Dirichlet and predictor normal-flux conditions at inlet/walls. Since outlet
+pressure is zero, the native natural pressure traction `-p_out*n` vanishes,
+matching the scalar zero-Neumann outlet. Other boundary maps are rejected.
+
+Densities are constant, drag is Schiller-Naumann, and virtual mass is disabled.
+The seven scalar transport coefficients must all be 1. Alpha diffusion/clipping
+and phase diffusion/HPFRT are controlled by the supplied PAR file. Native UM
+advection is disabled with equation=stokes; phase convection remains in the
+user explicit sources. No mesh adaptation/moving-mesh equivalence is claimed.
+
+## Run and controls
+
+Use the existing column mesh; default path is
+`../bubbleColumn2/bubbleColumn2.re2`. The mesh is not committed here.
+
+```
 nekrs --setup bubbleColumn3 --build-only
 nekrs --setup bubbleColumn3
 ```
 
-Use the usual MPI/GPU launcher for production runs. Start fresh for the first
-comparison. A Method2 checkpoint has only four scalars and is **not** a valid
-Method3 restart; only seven-scalar Method3 checkpoints have the correct layout.
-The default output/checkpoint contains `um`, the shared pressure, and all seven
-scalars. Separate `ug`/`ul` vector files are also written at checkpoints.
-
-## Timestep and equations
-
-1. At source time, evaluate conservative `div(alpha*ug)` and material
-   `ug.grad(ug)` / `ul.grad(ul)` on the existing GL cubature grid. Retain native
-   EXT histories for convection/regularization, and form all six base phase
-   RHSs before native history lagging. Drag partner loads are excluded from EXT.
-2. The host advances alpha once and clips it to the configured range. Inlet
-   alpha is then restored. Native history arrays shift exactly once. Freeze
-   drag coefficients using this updated alpha and the lagged phase slip.
-3. In `UDF_ExecuteStep`, solve the six pressure-free scalar Helmholtz predictors
-   with native BDF, implicit scalar Laplacian diffusion, HPFRT if configured,
-   gravity, and coupled implicit drag. Iterate the two phase partner loads to
-   `dragCouplingTolerance` with unchanged BDF/EXT histories and coefficients;
-   abort if `dragCouplingMaxIterations` is reached. Reconstruct `um*`. These are
-   drag iterations only: pressure is still solved once per timestep.
-4. Solve the user-owned variable-coefficient pressure Poisson equation.
-5. Correct **both phases with this newly solved pressure**, restore their
-   scalar Dirichlet boundaries, and reconstruct final `um`.
-
-Writing `tau=dt/g0`, `lambda_k` for each normalized diagonal drag coefficient,
-and `nu_k` for each scalar's diffusion coefficient, the phase predictor is
-
-    (g0/dt + lambda_k - nu_k Laplacian) uk*
-        = BDF_history/dt + EXT[-uk.grad(uk) + gravity] + lambda_k*u_other*.
-
-Both phase equations use transportCoeff=1. Drag coefficients are lagged in
-slip but use current alpha. The partner load uses the latest predictor iterate
-and the same coefficient as its implicit diagonal; it is never extrapolated
-independently. The converged predictor solves the coupled frozen-coefficient
-drag/Helmholtz equations. The pressure response uses the inverse local 2x2
-inertia/drag block:
-
-    tg = tau*lambda_g; tl = tau*lambda_l; det = 1+tg+tl
-    beta_g = tau*((1+tl)/rho_g + tg/rho_l)/det
-    beta_l = tau*(tl/rho_g + (1+tg)/rho_l)/det
-    beta_m = alpha_new*beta_g + (1-alpha_new)*beta_l
-    -div(beta_m grad(p_new)) = -div(um*)
-    ug_new = ug* - beta_g grad(p_new)
-    ul_new = ul* - beta_l grad(p_new).
-
-`bubbleColumn3Pressure.hpp` adapts the weak-divergence assembly, pressure-Neumann
-surface flux, and elliptic solve from `fluidSolver_t::solvePressure`. The six
-scalar predictors replace the native mixture BDF/forcing/stress construction.
-The pressure is an **absolute projection pressure**: predictors contain no
-old-pressure load, so the correction uses `p_new`, not `p_new-p_old`.
-
-This is a pressure/viscosity projection split. The local correction uses
-the full two-phase inertia/drag block rather than the full inverse spatial
-Helmholtz operator. The continuous Poisson identity does not imply zero discrete strong divergence:
-native CG stiffness, assembled nodal gradients, and boundary reimposition can
-leave a splitting/discretization residual. The log reports actual pre/post
-strong-divergence L2 norms along with pressure range, mobility range, iterations,
-pressure residual, drag iterations/change, and separate gas/liquid CFL values.
-Check those on the target mesh before judging stability. A small elliptic
-residual alone does not establish a small continuity residual.
-
-## Boundaries and controls
-
-- Both phase velocities: prescribed inlet, zero-gradient outlet, no-slip wall.
-  Liquid inlet velocity defaults to zero; gas inlet velocity defaults to 0.3 m/s.
-  Shared wall/inlet nodes use native scalar boundary precedence.
-- Alpha: prescribed inlet, zero-gradient outlet and wall.
-- Pressure: zero gauge at outlet; inlet/wall pressure fluxes come from the
-  prescribed reconstructed mixture normal velocity. Pressure correction does
-  not override phase Dirichlet values.
-- `solver=none` in `[FLUID VELOCITY]` prevents construction of native velocity
-  and pressure elliptic solvers. The user pressure solver has the independent
-  `[ELLIPTIC phasePressure]` configuration. The Poisson type is set internally
-  in `UDF_Setup0`, before kernel registration, because some installed v26
-  parsers (including sha `96b3cf9`) reject `poisson` as a PAR key. It is
-  deliberately **not** assigned
-  to `fluid->ellipticSolverP`, which would trigger a second native pressure solve.
-  The user pressure solver is built lazily at the first completed predictor,
-  after native mesh/scalar initialization and after the actual pressure
-  coefficient is available. Initial scalar boundary application
-  is similarly deferred until native scalar elliptic masks exist.
-- `equation=stokes` selects **no native advection only**. Full phase convection
-  remains active in user sources. This avoids native `um` advection and fragile
-  cancellation of a second convection operator. Core advection kernels are
-  nevertheless registered unconditionally by v26; `bubbleColumn3Cubature.hpp`
-  supplies missing `c_I` constants for requested polynomial/cubature pairs.
-- The first baseline includes Schiller–Naumann drag and scalar Laplacian phase
-  viscosity. Virtual mass is explicitly disabled and nonzero settings abort.
-  Method2 drift-stress/mixture forces are not appropriate when both phase
-  momenta are advanced directly. Lift, turbulent dispersion, wall lubrication,
-  full phase-fraction-weighted symmetric stresses, and phase change are not
-  implemented in this initial example.
-- `alphaMaximum<1` is required because the normalized liquid drag contains
-  `alpha/(1-alpha)`. Alpha diffusion, clipping, and regularization are configurable
-  numerical stabilizations; clipping may change integrated gas volume.
-- Fixed mesh, fixed dt, seven native elliptic scalars on the same mesh, a single
-  native stage, and no subcycling/NekNek/CVODE are required and checked. Native
-  adaptive dt uses UM-based CFL and could miss phase slip, so it is rejected.
-- The supplied scalar inlet/outlet/wall maps are checked against the pressure
-  boundary assumptions. Both phase diffusion coefficients remain independent
-  `.par` settings; adjust them when changing the desired kinematic viscosities.
-- The pressure solver uses p-multigrid, a degree-3 Chebyshev/ASM smoother,
-  and a CPU BoomerAMG coarse solve, following the native pressure strategy.
-  A standalone Jacobi preconditioner is insufficient for the demonstrated
-  column run. BoomerAMG requires the normal NekRS HYPRE dependency.
-  The outer Krylov basis stays at 15 vectors to limit memory use.
-- Both pressure-operator coefficient and RHS are divided by `tau=dt/g0` before
-  solving; this is an equivalent equation, not a change to pressure or phase
-  correction. The hierarchy is constructed using the actual first-step
-  normalized coefficient. `beta_g/l/m` retain their physical timestep factors.
-- Every phase linear solve and the pressure linear solve must meet its native
-  configured tolerance; a nonfinite or unconverged result aborts. Pressure uses
-  a relative tolerance of `1e-8` (with native volume normalization), so a
-  small dimensional RHS cannot pass trivially. The convergence guard remains
-  enabled; the new settings still need verification on the target column mesh.
-
-The custom pressure solver prints a `method3Pressure` summary **every timestep**,
-independently of `monitorInterval`: step/time, iteration count, initial/final
-residuals, final-to-initial ratio, effective convergence target, convergence
-status and solve wall time. It prints and flushes before the failure check, so
-an unsuccessful solve is recorded as well. Residuals refer to the normalized
-elliptic equation; they are not mixture continuity residuals.
-
-## Validation
-
-```sh
-python3 tests/run.py
-python3 tests/lifecycle.py
-```
-
-This compiles and executes the production pointwise OKL equations as serial
-C++ and checks reconstruction, equal/opposite drag force coefficients, finite
-zero-slip behavior, pressure mobility/correction consistency, the single-liquid
-hydrostatic limit, retained convection, and pressure boundary-flux sign.
-It also checks the coupled drag block against common-gravity and drag-only
-momentum-conservation regressions. `lifecycle.py` compiles the production host
-callbacks against a uniform-mode native-style adapter, exercising BDF2 with EXT2 and EXT3,
-one-time history lagging, alpha-first/deferred-phase scheduling, coupled drag
-convergence, and the missing-completion guard. This adapter does not emulate
-distributed spatial solves. These tests do not replace a coupled NekRS run on
-the column mesh.
-
-To check the actual CUDA lowering (without needing nvcc):
-
-```sh
-OCCA_BIN="$NEKRS_HOME/occa/bin/occa" python3 tests/cuda_translation.py
-```
-
-The surface flux uses atomic addition of a negative value: CUDA has FP64
-`atomicAdd` on the target architecture but no floating-point `atomicSub`.
-The regression checks the generated CUDA, while the numerical boundary-flux
-test checks the unchanged sign. CUDA translation is not an nvcc/GPU build.
-
-For the optional real OCCA cubature test (using your installed OCCA paths):
-
-```sh
-c++ -std=c++17 -I"$NEKRS_HOME/occa/include" tests/transport.cpp \
-  -L"$NEKRS_HOME/occa/lib" -Wl,-rpath,"$NEKRS_HOME/occa/lib" -locca -o /tmp/method3-transport
-/tmp/method3-transport bubbleColumn3Transport.okl bubbleColumn3Equations.okl
-```
-
-The actual native PAR parser accepts the multigrid/Chebyshev-ASM/CPU-BoomerAMG
-configuration and bounded Krylov settings; that check does not run the solver.
-
-During development, the host UDF passed a C++17 syntax check against this
-branch's headers; both OKL files passed OCCA CUDA translation. All phase,
-drag and pressure kernels built with real OCCA Serial. The real OCCA cubature
-test reproduced `div(alpha*u)` and all three material convection
-components with maximum absolute error `1.60e-14` on its manufactured polynomial
-fields. The full NekRS build/run has not been performed here: no installed
-NekRS runtime or column mesh is available. A local CPU build attempt stopped
-in the dependency's Fortran/C interoperability configuration, before a NekRS
-executable could be produced; no full-solver validation is claimed.
-
-## Optional composed pressure projection and continuity diagnostics
-
-The unregularized composed operator introduced in 4830c8c is not a robust
-pressure equation for the complete equal-order 3D pressure space. Masking
-inlet/wall phase velocities creates pressure modes with zero allowed nodal
-velocity response. A single order-3 hex has 48 free pressure unknowns but only
-rank 28 in the masked gradient (20 null modes); at order 5 the counts are 180,
-144, and 36. The earlier 1D regression did not reveal this structural issue.
-A compatible RHS can still converge with a singular operator; null modes alone
-do not prove the cause of a particular user's iteration failure.
-
-Define `W u = assembled integral grad(q).u`, `G p = assembled mass-inverse
-weighted gradient`, `F` as the homogeneous six-phase Dirichlet mask,
-`A p = W betaM F G p / tau`, and `K` as the native variable-coefficient
-stiffness with coefficient betaM/tau. In composed mode the final pressure solves
-
-```
-S p = b,   S = A + epsilon*(K-A) = (1-epsilon)*A + epsilon*K
-```
-
-The RHS `b` is the same predictor weak continuity residual with fixed prescribed
-boundary flux, divided by tau. `pressureProjectionStabilization=0.1` (CASEDATA)
-is explicit numerical pressure stabilization, required to be in `(0,1]`.
-`epsilon=1` recovers the native stiffness equation. Smaller positive values
-approach the nodal composed operator but weaken control of its near-null modes.
-This is NOT exact zero weak divergence: after nodal phase correction,
-
-```
-weakResidualCorrected = tau * [ (b-S*p) + epsilon*(K-A)*p ]
-```
-
-Report both contributions; never interpret convergence of S alone as vanishing
-continuity error. Stability and velocity-band behavior still require validation
-on the target column mesh. The default epsilon is a correctness/development
-choice, not a mesh-converged physical parameter.
-
-The native Poisson solve supplies the initial pressure and preconditions
-restarted flexible GCR for S. All changes remain in the example; native UM and
-its default pressure solver remain disabled. GCR vectors/reductions are on the
-host, while SEM derivatives and gather/scatters run on the device. This costs
-host/device transfers, extra native solves, and roughly two restart-length sets
-of host pressure vectors. Performance optimization must follow integration
-validation.
-
-CASEDATA also controls `pressureProjectionMaxIterations=200`,
-`pressureProjectionRestart=15`, `pressureProjectionTolerance=1e-8`. The target
-is tolerance times the larger of RHS norm and initial residual norm. The true
-residual is recomputed before accepting convergence; a failed solve still
-aborts, with diagnostics printed/flushed first.
-
-Log records:
-
-- `method3Pressure`: initial native stiffness solve.
-- `method3Projection`: final stabilized solve, iterations, initial/true residual,
-  RHS norm, target, relative residual, epsilon, stopping reason, convergence.
-- `method3Continuity`: `weakL2(pre,corrected,BC)` uses one assembled weak
-  operator and fixed boundary lifting. Pressure-outlet rows are excluded and
-  duplicate copies weighted by inverse multiplicity. These are algebraic weak
-  norms, not strong divergence or percentage mass imbalance.
-- `boundaryChange`: residual change from restoring phase boundary values.
-- `nativeVsComposedRel`: norm of `(K-A)p` relative to `A p`.
-- `correctionIdentity`: norm of `(W UMpre-W UMcorrected)/tau-A p`.
-- `stabilizationContinuity`: `tau*epsilon*norm((K-A)p)`; the continuity error
-  explicitly permitted by pressure stabilization.
-- `residualBalanceError`: discrepancy from the residual identity above; it
-  should be roundoff relative to its terms.
-
-The old strong `divL2` is separate. The `nativePrecoIters` and
-`nativePrecoResidual` belong to the latest preconditioning solve, not S.
-
-Spatial regressions (NumPy and C++17 required):
-
-```sh
-python3 tests/projection.py
-python3 tests/projection3d.py
-python3 tests/native_mode.py
-```
-
-The first exercises a two-element 1D GLL correction. The second demonstrates
-3D masked-pressure null modes. Its ideal inflow RHS is compatible; it then adds
-an explicitly manufactured 1% null-space RHS component, verifies rejection by
-the unregularized production GCR, and convergence of the stabilized production
-GCR below 1e-8. It also checks the stabilization-continuity identity and the
-native epsilon=1 limit. This is a spatial algebra regression, not a measured
-failure reproduction on the user's mesh or a full 3D MPI/GPU run.
-
-### Native operator coefficient lifetime
-
-`elliptic::_solve()` clears its internal coefficient pointers before returning.
-Calling `elliptic::op()` afterwards is invalid: the variable-coefficient CUDA
-kernel can dereference a null coefficient pointer, with the asynchronous error
-reported by a later `pressureHost()` copy. Both native-stiffness actions now use
-`Ax(pressureDiffusion, o_NULL, q, result)`, which explicitly binds coefficients
-for the call. Since Ax returns element-local contributions, the helper performs
-one gather-add before callers mask outlet rows. The UDF body changes too, to
-invalidate the host UDF cache when updating this included header.
-
-`python3 tests/native_action.py` compiles the production helper against an
-adapter that models coefficient unbinding after solve and element-local Ax
-output, checking explicit coefficient binding and single assembly. It also
-checks the lifetime assumption against the native source. This contract test
-and the native-header syntax check do not replace a CUDA integration run.
-
-### Optional composed-mode pressure performance controls
-
-The stabilized operator, epsilon, final projection tolerance and phase equations
-are unchanged. New defaults avoid over-solving the native preconditioner:
+Use your MPI/GPU launcher. Method2 checkpoints lack the required seven-scalar
+layout. The UDF writes separate gas/liquid vectors at checkpoint steps; default
+output contains UM, pressure and seven scalar fields.
 
 ```
 [CASEDATA]
-pressurePreconditionerTolerance = 1e-2
+pressureSolveMode = native
 pressureWarmStart = 1
 ```
 
-The first step still builds the native hierarchy and obtains a native stiffness
-initial pressure. Subsequent steps reuse the previous **final** stabilized
-pressure, skipping the repeated native initial-guess solve. Setting
-`pressureWarmStart=0` restores native initialization on every step. The outlet
-pressure mask remains enforced. Restarting with a newly constructed hierarchy
-still uses native initialization on its first call.
+Pressure tolerance/PGMRES/multigrid settings come from `[ELLIPTIC phasePressure]`.
+Native UM remains `solver=none`; the UDF never installs its own pressure instance
+as `fluid->ellipticSolverP`. Old pressureProjection* and
+pressurePreconditionerTolerance CASEDATA controls are obsolete and ignored.
+The v26 parser rejects an elliptic `poisson` PAR key, so Setup0 sets the internal
+Poisson/coefficient-field options before native kernel registration.
 
-Inner preconditioning solves now target an actual relative native residual of
-1e-2 (the code compensates for native sqrt(volume) tolerance normalization).
-They validate this inner target and restore the original solver tolerance
-after each call. Flexible GCR accommodates these inexact/variable solves;
-acceptance still uses the true final S residual at the unchanged 1e-8 target.
-The standalone first-step native solve retains its original PAR tolerance.
-A tighter `pressurePreconditionerTolerance` can be used if outer iterations
-increase; it is not the final pressure tolerance.
+## Logs and continuity
 
-Gradient Dirichlet masking now uses native linAlg device kernels, removing
-three gradient downloads and uploads per composed operator evaluation. Extra
-operator comparisons and weak-residual diagnostics run only at monitorInterval.
-Host GCR vectors, host/device operator transfers, and MPI scalar reductions
-remain; this is not a fully device-resident Krylov solver.
+`method3Pressure mode=native` reports the actual native solve each step,
+including initial/final residual, target, convergence and time.
+`method3PressureCost velocityPressure=weakRhsHelmholtz nativeSolves=1 innerCalls=0`
+identifies the new path. The cost includes final phase solves, not only Poisson.
+`dragIterations`/`dragChange` on the final summary refer to pressure-loaded solves.
 
-`method3PressureCost` prints per-step inner call count, SUM of inner Krylov
-iterations, inner requested relative tolerance, inner solve time, composed
-operator time, and total elapsed pressure time through phase correction (before
-the remaining monitor output). Timings are rank-zero local wall times, not
-whole-timestep or MPI maximum timings. Compare warmed-up steps with the same
-mesh, timestep, epsilon, monitorInterval and GPU count; no measured column
-speedup is claimed without a target-machine comparison.
+At monitorInterval, `weakL2(pre,corrected,BC)` uses one assembled weak operator
+with fixed prescribed boundary flux and pressure-outlet rows excluded.
+`nativeEquationResidual` measures the native pressure equation residual in
+physical weak-RHS units. `correctionDefect` measures the difference between
+native stiffness action and the ACTUAL velocity change from the final phase
+Helmholtz solves. `residualBalanceError` verifies the vector identity
 
-`tests/projection3d.py` additionally exercises production flexible GCR with
-changing approximate native inverses whose residual is below 1%, checks the
-unchanged final true residual, and verifies that a converged final-pressure
-warm start needs zero preconditioning calls for an unchanged RHS/operator.
-This does not predict iteration counts for the transient column.
+```
+finalWeakResidual = nativePressureResidual + actualVelocityResponseDefect
+```
+
+Printed quantities are norms and are not generally additive. These algebraic
+weak norms are not strong pointwise divergence or percentage mass imbalance.
+`boundaryChange` isolates boundary restoration; old strong `divL2` remains a
+separate diagnostic. The coefficient-explicit native `Ax()` API is used for
+monitor actions, followed by one gather-add: `op()` is invalid after solve()
+unbinds its internal coefficient pointers.
+
+## Validation and limits
+
+```
+python3 tests/run.py
+python3 tests/lifecycle.py
+python3 tests/native_mode.py
+python3 tests/native_action.py
+```
+
+Lifecycle tests compile production callbacks and pressure helpers with BDF2/
+EXT2 and EXT3, checking pressure sign/density scaling, coupled phase response,
+base restoration, no duplicate pressure load, frozen drag and one history shift.
+They model uniform modes, not distributed SEM solves. The complete UDF passes
+native-header C++17 syntax checking.
+
+Real OCCA Serial weak-pressure-kernel test (adjust installed paths):
+
+```
+c++ -std=c++17 -I"$NEKRS_HOME/occa/include" tests/weak_pressure.cpp \
+ -L"$NEKRS_HOME/occa/lib" -Wl,-rpath,"$NEKRS_HOME/occa/lib" -locca -o /tmp/weak-pressure
+/tmp/weak-pressure /path/to/nekRS/src/core/kernels/wGradientVolumeHex3D.okl
+```
+
+This executes the actual native weak gradient, verifies all nodal loads and its
+interior negative-gradient sign; maximum absolute error was 1.78e-15. OCCA CUDA
+translation is also checked with `OCCA_BIN=... python3 tests/cuda_translation.py`.
+Historical projection.py/projection3d.py test old projection algebra and do not
+validate the new final-phase Helmholtz spatial response. The full target column
+GPU/MPI run, long-time stability, velocity-band behavior and physical accuracy
+remain unverified. No exact UM divergence-free claim is made.

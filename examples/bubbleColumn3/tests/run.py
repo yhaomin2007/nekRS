@@ -46,7 +46,7 @@ assert 'setArgs("ELLIPTIC PHASEPRESSURE ELLIPTIC COEFF FIELD","TRUE")' in setup0
 print('PASS: v26 pressure PAR compatibility and pre-registration Poisson option')
 
 # Pressure must use a global Poisson preconditioner and normalize BOTH sides
-# by the same BDF tau, while phase corrections retain physical mobilities.
+# by the same BDF tau, while the final phase solve uses native weak pressure loads.
 pressure_par=par['ELLIPTIC phasePressure']
 assert pressure_par['preconditioner']=='multigrid'
 assert pressure_par['coarsesolver']=='boomeramg+cpu'
@@ -55,6 +55,6 @@ assert 'axpby(m->Nlocal,1/tau,betaM,0.0,pressureDiffusion)' in pressure
 assert 'axpby(m->Nlocal,1/tau,pressureRhs,0.0,pressureRhs)' in pressure
 assert pressure.index('1/tau,betaM') < pressure.index('if(!pressureSolver) setupPressure();')
 assert 'pressureSolver->solve(pressureDiffusion,o_NULL,pressureRhs' in pressure
-assert 'correctKernel(m->Nlocal,O,betaG,pressureGrad,ug)' in pressure
-assert 'correctKernel(m->Nlocal,O,betaL,pressureGrad,ul)' in pressure
+assert '1/p.rhoGas,gp,1.0,gas' in pressure
+assert '1/p.rhoLiquid,gp,1.0,liquid' in pressure
 print('PASS: pressure multigrid configuration, paired equation scaling, actual-coefficient hierarchy setup, and physical phase correction')

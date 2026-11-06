@@ -105,18 +105,7 @@ alphaMaximum = 0.99
 # Explicitly off in this initial two-phase projection baseline.
 virtualMassEnabled = 0
 monitorInterval = 10
-pressureProjectionMaxIterations = 200
-pressureProjectionRestart = 15
-pressureProjectionTolerance = 1e-8
-
-# S = (1-epsilon)*actualCorrection + epsilon*nativeStiffness; 0 < epsilon <= 1.
-pressureProjectionStabilization = 0.1
-
-# Actual relative residual target for INNER Poisson preconditioning only.
-pressurePreconditionerTolerance = 1e-2
-
-# Reuse final pressure after first-step native initialization.
 pressureWarmStart = 1
 
-# Native NekRS elliptic pressure solve; use composed only for comparison.
+# Native-only elliptic pressure and weak-load phase Helmholtz solves.
 pressureSolveMode = native

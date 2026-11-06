@@ -2,9 +2,6 @@
 #include "udf.hpp"
 #include "bubbleColumn3Cubature.hpp"
 #include <array>
-#include <sstream>
-#include <iomanip>
-#include "bubbleColumn3Krylov.hpp"
 
 #ifdef __okl__
 #include "bubbleColumn3.oudf"
@@ -21,10 +18,6 @@ struct Parameters {
   int virtualMassEnabled=0,monitorInterval=10;
   int dragCouplingMaxIterations=30;
   dfloat dragCouplingTolerance=1e-10;
-  int pressureProjectionMaxIterations=200,pressureProjectionRestart=15;
-  dfloat pressureProjectionTolerance=1e-8;
-  dfloat pressureProjectionStabilization=0.1;
-  dfloat pressurePreconditionerTolerance=1e-2;
   int pressureWarmStart=1;
   std::string pressureSolveMode="native";
 };
@@ -217,11 +210,6 @@ void UDF_Setup0(MPI_Comm,setupAide&)
   READ("alphaminimum",alphaMinimum);READ("alphamaximum",alphaMaximum);
   READ("virtualmassenabled",virtualMassEnabled);READ("monitorinterval",monitorInterval);
   READ("dragcouplingmaxiterations",dragCouplingMaxIterations);READ("dragcouplingtolerance",dragCouplingTolerance);
-  READ("pressureprojectionmaxiterations",pressureProjectionMaxIterations);
-  READ("pressureprojectionrestart",pressureProjectionRestart);
-  READ("pressureprojectiontolerance",pressureProjectionTolerance);
-  READ("pressureprojectionstabilization",pressureProjectionStabilization);
-  READ("pressurepreconditionertolerance",pressurePreconditionerTolerance);
   READ("pressurewarmstart",pressureWarmStart);
   READ("pressuresolvemode",pressureSolveMode);
   p.pressureSolveMode=lowerCase(p.pressureSolveMode);
@@ -234,16 +222,12 @@ void UDF_Setup0(MPI_Comm,setupAide&)
       && std::isfinite(p.initialPlumeHeight) && p.initialPlumeHeight>=0 && p.alphaMinimum>=0 && p.alphaMaximum<1
       && p.alphaMinimum<=p.alphaInlet && p.alphaInlet<=p.alphaMaximum
       && (p.dragEnabled==0 || p.dragEnabled==1) && p.monitorInterval>=0
-      && (p.pressureSolveMode=="native" || p.pressureSolveMode=="composed")
+      && p.pressureSolveMode=="native"
       && (p.pressureWarmStart==0 || p.pressureWarmStart==1)
-      && std::isfinite(p.pressurePreconditionerTolerance) && p.pressurePreconditionerTolerance>0
-      && p.pressurePreconditionerTolerance<1 && std::isfinite(p.pressureProjectionStabilization) && p.pressureProjectionStabilization>0
-      && p.pressureProjectionStabilization<=1 && p.pressureProjectionMaxIterations>0 && p.pressureProjectionRestart>0
-      && std::isfinite(p.pressureProjectionTolerance) && p.pressureProjectionTolerance>0 && p.pressureProjectionTolerance<1
       && p.dragCouplingMaxIterations>0 && std::isfinite(p.dragCouplingTolerance) && p.dragCouplingTolerance>0)
       || p.virtualMassEnabled!=0,
       platform->comm.mpiComm(),EXIT_FAILURE,"%s",
-      "Invalid method3 parameters; alphaMaximum<1 and virtualMassEnabled=0 required.\n");
+      "Invalid method3 parameters; pressureSolveMode=native, alphaMaximum<1 and virtualMassEnabled=0 required.\n");
   int N=0,C=0;
   platform->options.getArgs("POLYNOMIAL DEGREE",N);
   platform->options.getArgs("CUBATURE POLYNOMIAL DEGREE",C);
@@ -281,7 +265,6 @@ void UDF_LoadKernels(deviceKernelProperties& info)
     LOAD(sourceKernel,"bubbleColumn3::equations","phaseSource");
     LOAD(dragLoadKernel,"bubbleColumn3::equations","addDragLoad");
     LOAD(mobilityKernel,"bubbleColumn3::equations","mobility");
-    LOAD(correctKernel,"bubbleColumn3::equations","correct");
     // Negative boundary flux is accumulated with CUDA-compatible atomicAdd.
     LOAD(surfaceKernel,"bubbleColumn3::equations","pressureSurface");
 #undef LOAD
@@ -338,10 +321,10 @@ void UDF_Setup()
   clipKernel(m->Nlocal,p.alphaMinimum,p.alphaMaximum,s->o_solution("alpha"));
   // Native scalar elliptic solvers are constructed after UDF_Setup. Boundary
   // application must wait until beginStep, when their masks are available.
-  reconstructMixture(); // native-only pressure default; composed projection is an explicit opt-in
+  reconstructMixture(); // native pressure + native weak pressure RHS in final phase Helmholtz solves
   if(platform->comm.mpiRank()==0)
-    printf("method3 pressureSolveMode=%s: native solves Kp=b once; composed solves stabilized Sp=b; "
-        "pressureProjectionStabilization applies only to composed mode.\n",p.pressureSolveMode.c_str());
+    printf("method3 pressureSolveMode=%s: native elliptic Poisson, native weak pressure RHS + "
+        "six Helmholtz solves; custom GCR and pointwise phase corrections disabled.\n",p.pressureSolveMode.c_str());
   nrs->userSource=&beginStep;nrs->postScalar=&postAlpha;
   nrs->userConvergenceCheck=&singlePass;s->userImplicitLinearTerm=&implicitDrag;
   if(platform->comm.mpiRank()==0)
