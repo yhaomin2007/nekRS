@@ -52,11 +52,21 @@ source=r'''
 #include <cassert>
 #include <cstdio>
 using V=std::vector<double>;
-int main(){const int n=SIZE;const V S=SMATRIX,A=AMATRIX,P=PMATRIX,b=BVECTOR;
+int main(){const int n=SIZE;const V S=SMATRIX,A=AMATRIX,K=KMATRIX,P=PMATRIX,b=BVECTOR;
  auto mult=[&](const V& M,const V& x,V& y){y.assign(n,0);for(int i=0;i<n;++i)for(int j=0;j<n;++j)y[i]+=M[n*i+j]*x[j];};
  auto op=[&](const V& x,V& y){mult(S,x,y);};
- auto pre=[&](const V& x,V& y){mult(P,x,y);};
+ bool inexact=false;int calls=0;
  auto dot=[&](const V& x,const V& y){double s=0;for(int i=0;i<n;++i)s+=x[i]*y[i];return s;};
+ auto pre=[&](const V& x,V& y){
+   mult(P,x,y);
+   if(inexact){
+     ++calls;V noise(n),kn;for(int i=0;i<n;++i)noise[i]=std::sin(double(i+calls));
+     mult(K,noise,kn);const double c=.005*std::sqrt(dot(x,x)/dot(kn,kn));
+     for(int i=0;i<n;++i)y[i]+=c*noise[i];
+     V residual;mult(K,y,residual);for(int i=0;i<n;++i)residual[i]-=x[i];
+     assert(dot(residual,residual)<=.0001*dot(x,x));
+   }
+ };
  V bad;pre(b,bad);
  auto singularOp=[&](const V& x,V& y){mult(A,x,y);};
  auto failed=method3Projection::solve(b,bad,singularOp,pre,dot,200,15,1e-8);
@@ -64,10 +74,20 @@ int main(){const int n=SIZE;const V S=SMATRIX,A=AMATRIX,P=PMATRIX,b=BVECTOR;
  V p;pre(b,p);auto result=method3Projection::solve(b,p,op,pre,dot,200,15,1e-8);
  assert(result.converged);V r;op(p,r);for(int i=0;i<n;++i)r[i]-=b[i];
  const double relative=std::sqrt(dot(r,r)/dot(b,b));assert(relative<1e-8);
+ // Flexible GCR must tolerate changing, deliberately inexact native solves.
+ V approximate;mult(P,b,approximate);inexact=true;
+ auto flexible=method3Projection::solve(b,approximate,op,pre,dot,200,15,1e-8);
+ assert(flexible.converged);op(approximate,r);for(int i=0;i<n;++i)r[i]-=b[i];
+ assert(std::sqrt(dot(r,r)/dot(b,b))<1e-8);
+ // Warm starting with the converged final pressure should need no inner solve.
+ const int previousCalls=calls;
+ auto warm=method3Projection::solve(b,approximate,op,pre,dot,200,15,1e-8);
+ assert(warm.converged&&warm.iterations==0&&calls==previousCalls);
+ printf("PASS: inexact variable preconditioning and zero-iteration final-pressure warm start\n");
  printf("PASS: 3D stabilized production GCR iterations=%d true relative residual=%.3e\n",result.iterations,relative);
 }
 '''
-for key,val in [('SIZE',str(n)),('AMATRIX',literal(A)),('SMATRIX',literal(S)),('PMATRIX',literal(P)),('BVECTOR',literal(b))]:source=source.replace(key,val)
+for key,val in [('SIZE',str(n)),('KMATRIX',literal(K)),('AMATRIX',literal(A)),('SMATRIX',literal(S)),('PMATRIX',literal(P)),('BVECTOR',literal(b))]:source=source.replace(key,val)
 with tempfile.TemporaryDirectory() as tmp:
     f=Path(tmp)/'projection.cpp';f.write_text(source);exe=Path(tmp)/'projection'
     subprocess.run(['c++','-std=c++17','-Wall','-Wextra','-Werror','-I'+str(root),str(f),'-o',str(exe)],check=True)

@@ -110,7 +110,8 @@ inline void maskPressureGradient(const std::vector<dlong>& ids)
   const auto O=nrs->fieldOffset;
   for(int c=0;c<3;++c) {
     auto component=pressureGrad.slice(c*O,nrs->meshV->Nlocal);
-    auto v=pressureHost(component);zeroPressureRows(v,ids);pressureDevice(v,component);
+    if(!ids.empty()) platform->linAlg->mask<dfloat>(ids.size(),
+        nrs->scalar->ellipticSolver[1]->o_maskIds(),component);
   }
 }
 // elliptic::_solve clears its internal coefficient pointers before returning.
@@ -144,33 +145,42 @@ inline void solvePressureAndCorrect(double time,int step)
   // elliptic coefficient and RHS. Keep physical betaG/L/M unchanged.
   platform->linAlg->axpby(m->Nlocal,1/tau,betaM,0.0,pressureDiffusion);
   platform->linAlg->axpby(m->Nlocal,1/tau,pressureRhs,0.0,pressureRhs);
+  const bool nativeInitialGuess=!pressureSolver || !p.pressureWarmStart;
   if(!pressureSolver) setupPressure(); // normalized coefficient is now ready
   auto pressure=nrs->fluid->o_solution("pressure");
-  // Homogeneous pressure outlet. Elliptic::solve masks the RHS internally;
-  // initialize the full field to prevent stale outlet values on restart.
-  platform->linAlg->fill(O,0.0,pressure);
   const double pressureStart=MPI_Wtime();
-  pressureSolver->solve(pressureDiffusion,o_NULL,pressureRhs,pressure.slice(0,m->Nlocal));
-  // The user-owned solver is absent from native fluid-pressure step output.
-  // Print every solve, independently of monitorInterval, before validation so
-  // an unconverged solve also leaves a complete, flushed log record.
-  if(platform->comm.mpiRank()==0) {
-    const dfloat initial=pressureSolver->initialResidual();
-    const dfloat final=pressureSolver->finalResidual();
-    const auto tolerance=pressureSolver->options().getArgs("SOLVER TOLERANCE");
-    const dfloat target=std::stod(tolerance)*std::sqrt(m->volume)
-        *(upperCase(tolerance).find("+RELATIVE")!=std::string::npos?initial:1.0);
-    const dfloat threshold=std::max(target,100*std::numeric_limits<dfloat>::epsilon()*initial);
-    const dfloat relative=initial>0?final/initial
-        :(final==0?0:std::numeric_limits<dfloat>::infinity());
-    const bool converged=std::isfinite(initial)&&std::isfinite(final)&&final<=threshold;
-    printf("method3Pressure step=%d time=%.8e iterations=%d initial=%.8e final=%.8e "
-        "relative=%.8e target=%.8e converged=%s wallTime=%.6es\n",
-        step,time,pressureSolver->Niter(),initial,final,relative,threshold,
-        converged?"yes":"no",MPI_Wtime()-pressureStart);
-    fflush(stdout);
+  double innerSeconds=0,operatorSeconds=0;int innerCalls=0,innerIterations=0;
+  if(nativeInitialGuess) {
+    // First use (or explicitly disabled warm start): native stiffness initial guess.
+    platform->linAlg->fill(O,0.0,pressure);
+    pressureSolver->solve(pressureDiffusion,o_NULL,pressureRhs,pressure.slice(0,m->Nlocal));
+    // The user-owned solver is absent from native fluid-pressure step output.
+    // Print every solve, independently of monitorInterval, before validation so
+    // an unconverged solve also leaves a complete, flushed log record.
+    if(platform->comm.mpiRank()==0) {
+      const dfloat initial=pressureSolver->initialResidual();
+      const dfloat final=pressureSolver->finalResidual();
+      const auto tolerance=pressureSolver->options().getArgs("SOLVER TOLERANCE");
+      const dfloat target=std::stod(tolerance)*std::sqrt(m->volume)
+          *(upperCase(tolerance).find("+RELATIVE")!=std::string::npos?initial:1.0);
+      const dfloat threshold=std::max(target,100*std::numeric_limits<dfloat>::epsilon()*initial);
+      const dfloat relative=initial>0?final/initial
+          :(final==0?0:std::numeric_limits<dfloat>::infinity());
+      const bool converged=std::isfinite(initial)&&std::isfinite(final)&&final<=threshold;
+      printf("method3Pressure step=%d time=%.8e iterations=%d initial=%.8e final=%.8e "
+          "relative=%.8e target=%.8e converged=%s wallTime=%.6es\n",
+          step,time,pressureSolver->Niter(),initial,final,relative,threshold,
+          converged?"yes":"no",MPI_Wtime()-pressureStart);
+      fflush(stdout);
+    }
+    validateLinearSolve(pressureSolver.get(),"phase pressure");
+  } else {
+    // Previous FINAL stabilized pressure is a better guess than solving K anew.
+    if(pressureSolver->Nmasked()) platform->linAlg->mask<dfloat>(
+        pressureSolver->Nmasked(),pressureSolver->o_maskIds(),pressure);
+    if(platform->comm.mpiRank()==0)
+      printf("method3Pressure step=%d time=%.8e initialGuess=previousFinal nativeSolve=skipped\n",step,time);
   }
-  validateLinearSolve(pressureSolver.get(),"phase pressure");
   // The native stiffness solve above is an initial guess / preconditioner.
   // Solve its stabilized composition S=(1-epsilon)*A+epsilon*K; A is
   // W [betaM Mv^-1 assembled(grad)] / tau and K the native stiffness.
@@ -193,10 +203,13 @@ inline void solvePressureAndCorrect(double time,int step)
   assembledRhs.copyFrom(pressureRhs,m->Nlocal);
   oogs::startFinish(assembledRhs,1,0,ogsDfloat,ogsAdd,m->oogs);
   auto b=pressureHost(assembledRhs);zeroPressureRows(b,outlet);
-  auto preWeak=assembledWeak(nrs->fluid->o_U);
+  std::vector<double> preWeak,boundary;
+  if(log) preWeak=assembledWeak(nrs->fluid->o_U);
   // Boundary lifting stays fixed for all three reported residuals.
-  std::vector<double> boundary(preWeak.size());
-  for(size_t i=0;i<b.size();++i) boundary[i]=preWeak[i]-tau*b[i];
+  if(log) {
+    boundary.resize(b.size());
+    for(size_t i=0;i<b.size();++i) boundary[i]=preWeak[i]-tau*b[i];
+  }
   const auto applyCorrection=[&](const std::vector<double>& x,std::vector<double>& y) {
     auto q=x;zeroPressureRows(q,outlet);pressureDevice(q,trial);
     opSEM::strongGrad(m,O,trial,pressureGrad);maskPressureGradient(phaseMask);
@@ -210,20 +223,32 @@ inline void solvePressureAndCorrect(double time,int step)
   // masked phase velocities. Restore control of its null modes using K-A.
   // This is an explicit pressure stabilization, not exact weak continuity.
   const auto apply=[&](const std::vector<double>& x,std::vector<double>& y) {
+    const double start=MPI_Wtime();
     applyCorrection(x,y);
     auto q=x;zeroPressureRows(q,outlet);pressureDevice(q,trial);
     nativePressureAction(trial,assembledRhs);
     auto k=pressureHost(assembledRhs);zeroPressureRows(k,outlet);
     for(size_t i=0;i<y.size();++i)
       y[i]=(1-p.pressureProjectionStabilization)*y[i]+p.pressureProjectionStabilization*k[i];
+    operatorSeconds+=MPI_Wtime()-start;
   };
+  // Native tolerance includes sqrt(volume). Undo that factor so this CASEDATA
+  // value means an ACTUAL inner relative target, independent of domain volume.
+  std::ostringstream innerTolerance;
+  innerTolerance<<std::scientific<<std::setprecision(17)
+      <<p.pressurePreconditionerTolerance/std::sqrt(m->volume)<<"+relative";
   const auto precondition=[&](const std::vector<double>& r,std::vector<double>& z) {
     // Native solve assembles its RHS internally: partition an assembled vector
     // by inverse multiplicity before passing it to that interface.
     auto local=r;for(size_t i=0;i<local.size();++i) local[i]*=multiplicity[i];
     pressureDevice(local,assembledRhs);platform->linAlg->fill(O,0.0,trial);
+    const auto savedTolerance=pressureSolver->options().getArgs("SOLVER TOLERANCE");
+    pressureSolver->options().setArgs("SOLVER TOLERANCE",innerTolerance.str());
+    const double start=MPI_Wtime();
     pressureSolver->solve(pressureDiffusion,o_NULL,assembledRhs,trial.slice(0,m->Nlocal));
     validateLinearSolve(pressureSolver.get(),"projection preconditioner");
+    innerSeconds+=MPI_Wtime()-start;++innerCalls;innerIterations+=pressureSolver->Niter();
+    pressureSolver->options().setArgs("SOLVER TOLERANCE",savedTolerance);
     z=pressureHost(trial);zeroPressureRows(z,outlet);
   };
   auto solution=pressureHost(pressure);
@@ -240,16 +265,20 @@ inline void solvePressureAndCorrect(double time,int step)
   }
   nekrsCheck(!projected.converged,platform->comm.mpiComm(),EXIT_FAILURE,"%s",
       "Stabilized phase-pressure solve failed; see method3Projection target/residual/reason (epsilon=1 recovers native stiffness).\n");
-  // Compare the old stiffness to the actual correction on identical free rows.
-  std::vector<double> actual,old;
-  applyCorrection(solution,actual);
-  nativePressureAction(pressure,assembledRhs);old=pressureHost(assembledRhs);zeroPressureRows(old,outlet);
-  auto difference=old;for(size_t i=0;i<old.size();++i) difference[i]-=actual[i];
-  auto stabilizedAction=actual;
-  for(size_t i=0;i<old.size();++i) stabilizedAction[i]+=p.pressureProjectionStabilization*difference[i];
-  auto stabilizedResidual=b;
-  for(size_t i=0;i<b.size();++i) stabilizedResidual[i]-=stabilizedAction[i];
-  const double mismatch=norm(difference)/std::max(norm(actual),std::numeric_limits<double>::min());
+  std::vector<double> actual,old,difference,stabilizedResidual;
+  double mismatch=0;
+  if(log) {
+    // Compare the old stiffness to the actual correction on identical free rows.
+
+    applyCorrection(solution,actual);
+    nativePressureAction(pressure,assembledRhs);old=pressureHost(assembledRhs);zeroPressureRows(old,outlet);
+    difference=old;for(size_t i=0;i<old.size();++i) difference[i]-=actual[i];
+    auto stabilizedAction=actual;
+    for(size_t i=0;i<old.size();++i) stabilizedAction[i]+=p.pressureProjectionStabilization*difference[i];
+    stabilizedResidual=b;
+    for(size_t i=0;i<b.size();++i) stabilizedResidual[i]-=stabilizedAction[i];
+    mismatch=norm(difference)/std::max(norm(actual),std::numeric_limits<double>::min());
+  }
   opSEM::strongGrad(m,O,pressure,pressureGrad);maskPressureGradient(phaseMask);
 
   packVelocities();
@@ -257,10 +286,18 @@ inline void solvePressureAndCorrect(double time,int step)
   correctKernel(m->Nlocal,O,betaL,pressureGrad,ul);
   unpackVelocities();
   reconstructMixture();
-  auto correctedWeak=assembledWeak(nrs->fluid->o_U);
+  std::vector<double> correctedWeak;
+  if(log) correctedWeak=assembledWeak(nrs->fluid->o_U);
   // Restore phase Dirichlet values, including shared wall/inlet corners.
   s->applyDirichlet(time);
   reconstructMixture();
+  if(platform->comm.mpiRank()==0) {
+    printf("method3PressureCost step=%d innerCalls=%d innerIterations=%d innerRelativeTol=%.3e "
+        "innerWallTime=%.6es operatorWallTime=%.6es totalWallTime=%.6es\n",
+        step,innerCalls,innerIterations,p.pressurePreconditionerTolerance,
+        innerSeconds,operatorSeconds,MPI_Wtime()-pressureStart);
+    fflush(stdout);
+  }
   if(log) {
     auto restoredWeak=assembledWeak(nrs->fluid->o_U);
     auto bcChange=restoredWeak;

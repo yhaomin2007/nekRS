@@ -111,3 +111,9 @@ pressureProjectionTolerance = 1e-8
 
 # S = (1-epsilon)*actualCorrection + epsilon*nativeStiffness; 0 < epsilon <= 1.
 pressureProjectionStabilization = 0.1
+
+# Actual relative residual target for INNER Poisson preconditioning only.
+pressurePreconditionerTolerance = 1e-2
+
+# Reuse final pressure after first-step native initialization.
+pressureWarmStart = 1

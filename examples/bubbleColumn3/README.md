@@ -299,3 +299,50 @@ adapter that models coefficient unbinding after solve and element-local Ax
 output, checking explicit coefficient binding and single assembly. It also
 checks the lifetime assumption against the native source. This contract test
 and the native-header syntax check do not replace a CUDA integration run.
+
+### Pressure performance controls
+
+The stabilized operator, epsilon, final projection tolerance and phase equations
+are unchanged. New defaults avoid over-solving the native preconditioner:
+
+```
+[CASEDATA]
+pressurePreconditionerTolerance = 1e-2
+pressureWarmStart = 1
+```
+
+The first step still builds the native hierarchy and obtains a native stiffness
+initial pressure. Subsequent steps reuse the previous **final** stabilized
+pressure, skipping the repeated native initial-guess solve. Setting
+`pressureWarmStart=0` restores native initialization on every step. The outlet
+pressure mask remains enforced. Restarting with a newly constructed hierarchy
+still uses native initialization on its first call.
+
+Inner preconditioning solves now target an actual relative native residual of
+1e-2 (the code compensates for native sqrt(volume) tolerance normalization).
+They validate this inner target and restore the original solver tolerance
+after each call. Flexible GCR accommodates these inexact/variable solves;
+acceptance still uses the true final S residual at the unchanged 1e-8 target.
+The standalone first-step native solve retains its original PAR tolerance.
+A tighter `pressurePreconditionerTolerance` can be used if outer iterations
+increase; it is not the final pressure tolerance.
+
+Gradient Dirichlet masking now uses native linAlg device kernels, removing
+three gradient downloads and uploads per composed operator evaluation. Extra
+operator comparisons and weak-residual diagnostics run only at monitorInterval.
+Host GCR vectors, host/device operator transfers, and MPI scalar reductions
+remain; this is not a fully device-resident Krylov solver.
+
+`method3PressureCost` prints per-step inner call count, SUM of inner Krylov
+iterations, inner requested relative tolerance, inner solve time, composed
+operator time, and total elapsed pressure time through phase correction (before
+the remaining monitor output). Timings are rank-zero local wall times, not
+whole-timestep or MPI maximum timings. Compare warmed-up steps with the same
+mesh, timestep, epsilon, monitorInterval and GPU count; no measured column
+speedup is claimed without a target-machine comparison.
+
+`tests/projection3d.py` additionally exercises production flexible GCR with
+changing approximate native inverses whose residual is below 1%, checks the
+unchanged final true residual, and verifies that a converged final-pressure
+warm start needs zero preconditioning calls for an unchanged RHS/operator.
+This does not predict iteration counts for the transient column.
