@@ -108,3 +108,6 @@ monitorInterval = 10
 pressureProjectionMaxIterations = 200
 pressureProjectionRestart = 15
 pressureProjectionTolerance = 1e-8
+
+# S = (1-epsilon)*actualCorrection + epsilon*nativeStiffness; 0 < epsilon <= 1.
+pressureProjectionStabilization = 0.1

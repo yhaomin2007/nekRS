@@ -21,6 +21,7 @@ struct Parameters {
   dfloat dragCouplingTolerance=1e-10;
   int pressureProjectionMaxIterations=200,pressureProjectionRestart=15;
   dfloat pressureProjectionTolerance=1e-8;
+  dfloat pressureProjectionStabilization=0.1;
 };
 static Parameters p;
 static const std::array<std::string,7> names={"alpha","ugx","ugy","ugz","ulx","uly","ulz"};
@@ -214,6 +215,7 @@ void UDF_Setup0(MPI_Comm,setupAide&)
   READ("pressureprojectionmaxiterations",pressureProjectionMaxIterations);
   READ("pressureprojectionrestart",pressureProjectionRestart);
   READ("pressureprojectiontolerance",pressureProjectionTolerance);
+  READ("pressureprojectionstabilization",pressureProjectionStabilization);
 #undef READ
   nekrsCheck(!(std::isfinite(p.rhoLiquid)&&p.rhoLiquid>0 && std::isfinite(p.rhoGas)&&p.rhoGas>0
       && std::isfinite(p.muLiquid)&&p.muLiquid>0 && std::isfinite(p.bubbleDiameter)&&p.bubbleDiameter>0
@@ -223,7 +225,8 @@ void UDF_Setup0(MPI_Comm,setupAide&)
       && std::isfinite(p.initialPlumeHeight) && p.initialPlumeHeight>=0 && p.alphaMinimum>=0 && p.alphaMaximum<1
       && p.alphaMinimum<=p.alphaInlet && p.alphaInlet<=p.alphaMaximum
       && (p.dragEnabled==0 || p.dragEnabled==1) && p.monitorInterval>=0
-      && p.pressureProjectionMaxIterations>0 && p.pressureProjectionRestart>0
+      && std::isfinite(p.pressureProjectionStabilization) && p.pressureProjectionStabilization>0
+      && p.pressureProjectionStabilization<=1 && p.pressureProjectionMaxIterations>0 && p.pressureProjectionRestart>0
       && std::isfinite(p.pressureProjectionTolerance) && p.pressureProjectionTolerance>0 && p.pressureProjectionTolerance<1
       && p.dragCouplingMaxIterations>0 && std::isfinite(p.dragCouplingTolerance) && p.dragCouplingTolerance>0)
       || p.virtualMassEnabled!=0,
@@ -323,7 +326,7 @@ void UDF_Setup()
   clipKernel(m->Nlocal,p.alphaMinimum,p.alphaMaximum,s->o_solution("alpha"));
   // Native scalar elliptic solvers are constructed after UDF_Setup. Boundary
   // application must wait until beginStep, when their masks are available.
-  reconstructMixture(); // user pressure prints each solve; hierarchy uses first-step normalized coefficients
+  reconstructMixture(); // stabilized composed pressure; native stiffness controls masked pressure null modes
   nrs->userSource=&beginStep;nrs->postScalar=&postAlpha;
   nrs->userConvergenceCheck=&singlePass;s->userImplicitLinearTerm=&implicitDrag;
   if(platform->comm.mpiRank()==0)

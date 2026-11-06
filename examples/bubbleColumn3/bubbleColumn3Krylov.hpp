@@ -5,7 +5,8 @@
 #include <limits>
 
 namespace method3Projection {
-struct Result { int iterations=0; double initial=0, residual=0; bool converged=false; };
+struct Result { int iterations=0; double initial=0, residual=0, rhsNorm=0, target=0; bool converged=false;
+  const char* reason="maximumIterations"; };
 // Restarted flexible GCR. Dot supplies a global, duplicate-aware inner product.
 // Recompute the true residual at every restart and before accepting convergence.
 template<class Apply,class Precondition,class Dot>
@@ -23,11 +24,12 @@ Result solve(const std::vector<double>& b,std::vector<double>& x,
   for(size_t i=0;i<b.size();++i) r[i]-=ax[i];
   out.initial=norm(r);out.residual=out.initial;
   const double rhsNorm=norm(b);
-  if(!std::isfinite(out.initial)||!std::isfinite(rhsNorm)) return out;
-  const double target=tolerance*std::max(out.initial,rhsNorm);
+  out.rhsNorm=rhsNorm;
+  if(!std::isfinite(out.initial)||!std::isfinite(rhsNorm)) {out.reason="nonfiniteResidual";return out;}
+  const double target=tolerance*std::max(out.initial,rhsNorm);out.target=target;
   while(out.iterations<maximum) {
     if(std::isfinite(out.residual)&&out.residual<=target) {out.converged=true;break;}
-    if(!std::isfinite(out.residual)) break;
+    if(!std::isfinite(out.residual)) {out.reason="nonfiniteResidual";break;}
     std::vector<std::vector<double>> z,q;
     for(int k=0;k<restart && out.iterations<maximum;++k) {
       std::vector<double> v(b.size()),w(b.size());
@@ -38,7 +40,7 @@ Result solve(const std::vector<double>& b,std::vector<double>& x,
         for(size_t i=0;i<b.size();++i) {w[i]-=c*q[j][i];v[i]-=c*z[j][i];}
       }
       const double wn=norm(w);
-      if(!(wn>std::numeric_limits<double>::min()) || !std::isfinite(wn)) break;
+      if(!(wn>std::numeric_limits<double>::min()) || !std::isfinite(wn)) {out.reason="directionBreakdown";break;}
       for(size_t i=0;i<b.size();++i) {w[i]/=wn;v[i]/=wn;}
       const double c=dot(r,w);
       for(size_t i=0;i<b.size();++i) {x[i]+=c*v[i];r[i]-=c*w[i];}
@@ -51,6 +53,7 @@ Result solve(const std::vector<double>& b,std::vector<double>& x,
     if(z.empty()) break;
   }
   out.converged=std::isfinite(out.residual)&&out.residual<=target;
+  if(out.converged) out.reason="converged";
   return out;
 }
 }
