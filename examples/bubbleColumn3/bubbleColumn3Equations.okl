@@ -94,7 +94,9 @@
           const dfloat flux=sgeo[s*p_Nsgeo+p_NXID]*um[i]
               +sgeo[s*p_Nsgeo+p_NYID]*um[i+O]
               +sgeo[s*p_Nsgeo+p_NZID]*um[i+2*O];
-          @atomic rhs[i]-=sgeo[s*p_Nsgeo+p_WSJID]*flux;
+          // CUDA has atomicAdd(double*,double), but no floating atomicSub.
+          // Retain the negative Neumann flux using atomic addition.
+          @atomic rhs[i]+=(-sgeo[s*p_Nsgeo+p_WSJID]*flux);
         }
       }
     }

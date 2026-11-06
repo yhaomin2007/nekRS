@@ -259,6 +259,7 @@ void UDF_LoadKernels(deviceKernelProperties& info)
     LOAD(dragLoadKernel,"bubbleColumn3::equations","addDragLoad");
     LOAD(mobilityKernel,"bubbleColumn3::equations","mobility");
     LOAD(correctKernel,"bubbleColumn3::equations","correct");
+    // Negative boundary flux is accumulated with CUDA-compatible atomicAdd.
     LOAD(surfaceKernel,"bubbleColumn3::equations","pressureSurface");
 #undef LOAD
   }

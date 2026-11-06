@@ -147,6 +147,17 @@ convergence, and the missing-completion guard. This adapter does not emulate
 distributed spatial solves. These tests do not replace a coupled NekRS run on
 the column mesh.
 
+To check the actual CUDA lowering (without needing nvcc):
+
+```sh
+OCCA_BIN="$NEKRS_HOME/occa/bin/occa" python3 tests/cuda_translation.py
+```
+
+The surface flux uses atomic addition of a negative value: CUDA has FP64
+`atomicAdd` on the target architecture but no floating-point `atomicSub`.
+The regression checks the generated CUDA, while the numerical boundary-flux
+test checks the unchanged sign. CUDA translation is not an nvcc/GPU build.
+
 For the optional real OCCA cubature test (using your installed OCCA paths):
 
 ```sh
