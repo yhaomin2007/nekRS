@@ -86,6 +86,7 @@ static deviceMemory<dfloat> o_alphaMixtureRhs;
 // Only user alpha transport and optional explicit diffusion compensation.
 // Kept separately from native forcing so HPF/BC/postprocessing cannot enter.
 static ExplicitHistory convectionHistory, pressureHistory, divergenceTransportHistory;
+static ExplicitHistory liquidAccelerationHistory;
 static bool assemblingExplicitSources = false;
 static deviceMemory<dfloat> o_convectionSample, o_convectionEXT;
 static deviceMemory<dfloat> o_divergenceTransportEXT, o_alphaExplicitDiffusion;
@@ -97,7 +98,7 @@ static deviceMemory<dfloat> o_ug;
 static deviceMemory<dfloat> o_ul;
 static deviceMemory<dfloat> o_ulPrevious;
 static deviceMemory<dfloat> o_gradUl;
-static deviceMemory<dfloat> o_liquidAcceleration;
+static deviceMemory<dfloat> o_liquidAcceleration, o_liquidAccelerationEXT;
 static deviceMemory<dfloat> o_gradAlpha;
 static deviceMemory<dfloat> o_qg;
 static deviceMemory<dfloat> o_divQg;
@@ -414,6 +415,7 @@ inline void allocate()
   o_ulPrevious.resize(3 * offset);
   o_gradUl.resize(9 * offset);
   o_liquidAcceleration.resize(3 * offset);
+  o_liquidAccelerationEXT.resize(3 * offset);
   o_gradAlpha.resize(3 * offset);
   o_qg.resize(3 * offset);
   o_divQg.resize(offset);
@@ -703,7 +705,7 @@ inline void evaluatePointwiseTerms()
                            o_gradAlpha,
                            o_divQg,
                            o_gradUg,
-                           o_liquidAcceleration,
+                           assemblingExplicitSources ? o_liquidAccelerationEXT : o_liquidAcceleration,
                            o_gradP,
                            o_rhoM,
                            o_muM,
@@ -857,6 +859,7 @@ inline void initializeHistory()
   const dlong offset = nrs->fieldOffset;
   o_ulPrevious.copyFrom(o_ul, 3 * offset);
   platform->linAlg->fill(3 * offset, 0.0, o_liquidAcceleration);
+  platform->linAlg->fill(3 * offset, 0.0, o_liquidAccelerationEXT);
 }
 
 inline void postProcessGasFlux()
@@ -1143,12 +1146,24 @@ inline void extrapolateGasConvection()
 }
 
 
+// Extrapolate completed liquid material accelerations with the native fluid EXT.
+// updateVirtualMassHistory commits the raw sample only after an accepted step.
+inline void prepareVirtualMassAcceleration()
+{
+  if (p.virtualMassEnabled != 0.0) {
+    liquidAccelerationHistory.apply(o_liquidAcceleration, o_liquidAccelerationEXT, 3, true);
+  } else {
+    platform->linAlg->fill(3 * nrs->fieldOffset, 0.0, o_liquidAccelerationEXT);
+  }
+}
+
 inline void addExplicitSources(double)
 {
   // nrs_t::computeUrst() has just used fluid->o_U (not o_Ue). Preserve the
   // actual Cartesian advector before lagging/BC updates/the fluid solve.
   o_mixtureAdvectorUsed.copyFrom(nrs->fluid->o_U, 3 * nrs->fieldOffset);
   prepareGasAdvection();
+  prepareVirtualMassAcceleration();
   assemblingExplicitSources = true;
   evaluatePointwiseTerms();
   assemblingExplicitSources = false;
@@ -1381,15 +1396,6 @@ inline void printDivergenceComparison(double time, int tstep)
     output << ',' << maxAbsDifference << ',' << relativeRms << '\n';
     output.flush();
   }
-}
-
-inline occa::memory implicitGasDrag(double, int scalarIndex)
-{
-  // Only gas drag is an implicit reaction; alpha transport is conservative/explicit.
-  if (p.dragEnabled != 0.0 && scalarIndex >= 1 && scalarIndex <= 3) {
-    return o_dragLambda;
-  }
-  return o_NULL;
 }
 
 inline void updateDivergence(double)
@@ -1862,4 +1868,3 @@ inline void printStabilityMonitors(double time, int tstep)
   }
 }
 } // namespace bubbleColumn
-

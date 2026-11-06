@@ -79,6 +79,7 @@ Mem o_alphaSource{4},o_alphaRelativeRhs{4},o_divergenceTransportEXT{4};
 Mem o_convectionSample{16},o_convectionEXT{16},o_alphaExplicitDiffusion{4};
 Mem o_gasTransport{16},o_ugSource{12},o_mixtureForce{12},o_mixtureAdvectorUsed{12};
 std::vector<std::string> events;
+void prepareVirtualMassAcceleration(){}
 void prepareGasAdvection(){events.push_back("prepare");}
 void evaluatePointwiseTerms();
 void prepareRelativeDivergenceRhs(){for(int i=0;i<2;++i)o_alphaRelativeRhs[i]=relativeFlux+i;}
@@ -186,4 +187,3 @@ assert 'coefficients[0] = 1.0' in terms
 assert 'gasPressureGradientFilter' not in terms
 assert 'gasPressureInletMask' not in terms
 print('Native all-scalar schedule and EXT1 carrier/no legacy pressure processing source checks passed.')
-

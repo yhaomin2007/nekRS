@@ -29,10 +29,9 @@ int main(){
  double rhs[4]={sa[0]+.2-.6,0}, diff[4]={.03,0}, div[4]={};
  buildDivergenceFromAlphaRhs(n,rl,rg,alpha,rhs,diff,div);
  assert(std::abs(div[0]-(rl-rg)/((1-.05)*rl+.05*rg)*(rhs[0]+.03))<1e-12);
- // Exact drag-only backward Euler transient with VM: stable and converges
- // to unchanged equilibrium for dt much larger than the gas-only timescale.
+ // Explicit drag transient at a timestep within its stability restriction.
  double K=100.,eff=rg+.5*rl, v=0., dt=.1;
- for(int i=0;i<2000;++i) v=(v+dt*K/eff*.3)/(1+dt*K/eff);
+ for(int i=0;i<2000;++i) v=v+dt*K/eff*(.3-v);
  assert(std::abs(v-.3)<1e-12);
  // Liquid history stores only liquid material acceleration.
  double prev[12]={},gL[36]={},acc[12]={}; ul[0]=ul[1]=.2;gL[0]=gL[1]=3;
@@ -52,4 +51,4 @@ with tempfile.TemporaryDirectory() as t:
  p=Path(t);(p/'check.cpp').write_text(cpp)
  subprocess.run(['g++','-std=c++17','-Wall','-Wextra',str(p/'check.cpp'),'-o',str(p/'check')],check=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
  subprocess.run([str(p/'check')],check=True)
-print('Actual serial kernels: VM force scaling, zero-VM limit, gravity, initialization, liquid history, safe stress and implicit drag equilibrium passed.')
+print('Actual serial kernels: VM force scaling, zero-VM limit, gravity, initialization, liquid history, safe stress and explicit drag equilibrium passed.')

@@ -19,7 +19,7 @@ cpp=r'''
 using std::isfinite;using dfloat=double;using dlong=long;
 '''+serial(kernels)+serial(extract(physics,'@kernel void buildEquationTerms('))+serial(extract(physics,'@kernel void addGasStress('))+r'''
 int main(){
- const long N=3,o=5,stride=3*o;const int count=20;
+ const long N=3,o=5,stride=3*o;const int count=21;
  double alpha[o]={0,.001,.2},ug[15]={},um[15]={},ul[15]={},gradA[o]={},divQ[o]={};
  double gradU[45]={},acc[15]={},gp[15]={},rho[o]={},mu[o]={},drift[45]={},stress[45]={};
  double alphaSource[o]={},source[15]={},lambda[o]={},divStress[15]={},diffComp[15]={},cv[20]={},raw[20]={};
@@ -40,7 +40,7 @@ int main(){
   for(int c=0;c<3;++c){addGasStress(N,floor,eff,alpha,divStress+c*o,source+c*o);
    for(int i=0;i<N;++i)source[c*o+i]+=(c==0?0:(c==1?.5:1.)*diffComp[c*o+i])-cv[(c+1)*o+i];}
   ugCaptureTerms(N,o,1.2,eff,vm*.5*998.2,pressure,floor,.2,-.4,-9.81,0,.5,1,
-      alpha,gp,lambda,ul,acc,divStress,diffComp,cv,raw,source,terms);
+      alpha,gp,lambda,ul,ug,acc,divStress,diffComp,cv,raw,source,terms);
   for(int c=0;c<3;++c)for(int i=0;i<N;++i){int v=c*o+i;
    assert(std::abs(terms[v+14*stride])<1e-10);
    assert(std::abs(terms[v]+pressure*gp[v]/eff)<1e-12);
@@ -52,18 +52,18 @@ int main(){
    solved[v]=.1+.01*c+.02*i;native[v]=source[v]-.007*(c+1);
    // Construct an exactly balanced weak free-node equation independently.
    terms[v+19*stride]=9.5+.1*i;
-   weak[v]=15.*solved[v]-terms[v+19*stride]-native[v]+lambda[i]*solved[v];
+   weak[v]=15.*solved[v]-terms[v+19*stride]-native[v];
   }
   long masked[1]={0};ugTermFreeMask(1,masked,mask);weak[0]+=20; // Only x/node0 masked.
   ugFinishTerms(N,o,15.,solved,lambda,native,weak,mask,terms);
   for(int c=0;c<3;++c)for(int i=0;i<N;++i){int v=c*o+i;
    assert(std::abs(terms[v+8*stride]+.007*(c+1))<1e-12);
-   assert(terms[v+9*stride]==-lambda[i]*solved[v]);
+   assert(terms[v+9*stride]==0.);
    assert(terms[v+10*stride]==weak[v]);
    assert(std::abs(terms[v+11*stride]-(15.*solved[v]-terms[v+19*stride]))<1e-12);
    assert(std::abs(terms[v+13*stride])<1e-10);
    assert(terms[v+18*stride]==15.*solved[v]);
-   assert(std::abs(terms[v+17*stride]-(lambda[i]*ul[v]-lambda[i]*solved[v]))<1e-12);
+   assert(std::abs(terms[v+17*stride]-(lambda[i]*(ul[v]-ug[v])))<1e-12);
   }
   double x[o],y[o],z[o];for(int i=0;i<N;++i){x[i]=solved[i];y[i]=solved[o+i];z[i]=solved[2*o+i]-.1;}
   ugPostprocessTerm(N,o,15.,solved,x,y,z,terms);
@@ -111,7 +111,7 @@ parent=r'''
 namespace bubbleColumn {
 struct P{double rhoGas=1.2,rhoLiquid=998.2,virtualMassEnabled=1,virtualMassCoefficient=.5;
  double gasPressureEnabled=1,alphaFloor=1e-6,gravity[3]={0,0,-9.81},subtractUgDiffusion[3]={0,0,0};}p;
-Mem o_dragLambda{4},o_gradP{12},o_ul{12},o_liquidAcceleration{12},o_divGasStress{12};
+Mem o_dragLambda{4},o_gradP{12},o_ul{12},o_ug{12},o_liquidAccelerationEXT{12},o_divGasStress{12};
 Mem o_ugDiffusionDivergence{12},o_convectionEXT{16},o_convectionSample{16},o_scalarFieldOffsetScan{1};
 }
 #include "bubbleColumnUGTerms.hpp"
@@ -145,16 +145,16 @@ int main(){
  capturePostprocessed(.1);
  for(int i=0;i<48;++i)assert(scalar.o_S[i]==physical[i]);
  auto pressure=field(Pressure);pressure[0]=-7;pressure[1]=2;
- writeCheckpoint(.1);assert(nrs->exports.size()==22);
+ writeCheckpoint(.1);assert(nrs->exports.size()==23);
  for(int t=0;t<Count;++t)assert(nrs->exports[t]==prefixes[t]);
- assert(nrs->exports[20]=="gmk"&&nrs->exports[21]=="gcf");
+ assert(nrs->exports[Count]=="gmk"&&nrs->exports[Count+1]=="gcf");
  csv.close();
  std::ifstream report("bubbleColumn_ug_terms.csv");std::string line;int rows=0;bool pressureRow=false;
  while(std::getline(report,line)){++rows;if(line.find("checkpoint,pressure,x,-7.")!=std::string::npos)pressureRow=true;}
- assert(rows==1+3*(Count+Count)&&pressureRow); // 20 source/solved rows + 20 checkpoint rows, xyz.
+ assert(rows==1+3*(Count+Count)&&pressureRow); // All source/solved rows and checkpoint rows, xyz.
  enabled=0;nrs->exports.clear();captureSource(.1);captureSolved(.2);capturePostprocessed(.2);writeCheckpoint(.2);
  assert(nrs->exports.empty());scalar.ellipticSolver.clear();initializeFreeMask();assert(Elliptic::maskReads==3);
- puts("Whole production C++ diagnostics header: allocation before elliptic setup, null/empty-table guards, lazy one-time masks, pre-lag BDF snapshot, read-only source/solved callbacks, global range/CSV rows, all 20 checkpoint vectors + mask/source coefficients, and disabled path passed.");
+ puts("Whole production C++ diagnostics header: allocation before elliptic setup, null/empty-table guards, lazy one-time masks, pre-lag BDF snapshot, read-only source/solved callbacks, global range/CSV rows, all 21 checkpoint vectors + mask/source coefficients, and disabled path passed.");
 }
 '''
 with tempfile.TemporaryDirectory() as d:
@@ -211,4 +211,3 @@ int main(int argc,char**argv){
   with (p/'terms.cu').open('w') as output:
    subprocess.run([str(occa/'bin/occa'),'translate','-m','CUDA','-D','p_blockSize=256','-D','dfloat=double','-D','dlong=long',str(case/'bubbleColumnUGTerms.okl')],stdout=output,check=True)
  print('All five diagnostic kernels built with OCCA Serial; real nonfinite/mask execution and CUDA translation passed.')
-

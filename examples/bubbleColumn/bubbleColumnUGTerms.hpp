@@ -9,18 +9,18 @@ enum Term {
   DiffusionComp=6, UserRhs=7, NativeRegularization=8, DragImplicit=9,
   DiffusionImplicit=10, TimeDerivative=11, RhsSum=12, Balance=13,
   SourceDefect=14, PostprocessRate=15, ConvectionRaw=16, DragNet=17,
-  TimeDiagonal=18, TimeHistory=19, Count=20
+  TimeDiagonal=18, TimeHistory=19, DragGasExplicit=20, Count=21
 };
 static const char *names[Count] = {
   "pressure", "convection_EXT", "gravity", "drag_liquid", "VM_liquid",
   "gas_stress", "diffusion_compensation", "user_rhs", "native_regularization",
   "drag_implicit", "diffusion_implicit_weak", "BDF_time", "rhs_sum",
   "balance_free", "source_defect", "postprocess_rate", "convection_raw",
-  "drag_net", "BDF_diagonal", "BDF_history"
+  "drag_net", "BDF_diagonal", "BDF_history", "drag_gas_explicit"
 };
 static const char *prefixes[Count] = {
   "gpr","gcv","ggr","gdl","gvm","gvs","gdc","gus","ghp","gdi",
-  "gnd","gdt","grs","grb","gse","gpc","gcr","gdn","gbd","gbh"
+  "gnd","gdt","grs","grb","gse","gpc","gcr","gdn","gbd","gbh","gde"
 };
 static int enabled=1, interval=10, sourceStep=-1, solvedStep=-1;
 static bool freeMaskReady=false;
@@ -158,8 +158,8 @@ inline void captureSource(double time)
   captureKernel(N,offset,p.rhoGas,p.rhoGas+virtualInertia,virtualInertia,
       p.gasPressureEnabled,p.alphaFloor,p.gravity[0],p.gravity[1],p.gravity[2],
       p.subtractUgDiffusion[0],p.subtractUgDiffusion[1],p.subtractUgDiffusion[2],
-      nrs->scalar->o_solution("alpha"),o_gradP,lambdaSource,o_ul,
-      o_liquidAcceleration,o_divGasStress,o_ugDiffusionDivergence,
+      nrs->scalar->o_solution("alpha"),o_gradP,lambdaSource,o_ul,o_ug,
+      o_liquidAccelerationEXT,o_divGasStress,o_ugDiffusionDivergence,
       o_convectionEXT,o_convectionSample,nativeExplicit,terms);
   // Cache BDF history BEFORE native lagSolution. Computing it afterwards from
   // o_S would lose the oldest slot at the configured BDF order.
@@ -177,7 +177,7 @@ inline void captureSource(double time)
     }
   }
   for(int term:{Pressure,Convection,Gravity,DragLiquid,VmLiquid,GasStress,
-      DiffusionComp,UserRhs,SourceDefect,ConvectionRaw,TimeHistory})
+      DiffusionComp,UserRhs,SourceDefect,ConvectionRaw,TimeHistory,DragGasExplicit})
   {
     auto vector=field(term);
     assembleVector(vector);
@@ -248,4 +248,3 @@ inline void writeCheckpoint(double time)
       {{"scalar00",alpha},{"scalar01",lambda},{"scalar02",inertia}});
 }
 } } // namespace bubbleColumn::ugTerms
-

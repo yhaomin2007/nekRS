@@ -3,7 +3,7 @@ from pathlib import Path
 import subprocess,tempfile,csv,math
 r=Path(__file__).resolve().parents[1]
 s=(r/'bubbleColumnTerms.hpp').read_text()
-body=s.split('inline void printDivergenceComparison(double time, int tstep)')[1].split('inline occa::memory implicitGasDrag')[0]
+body=s.split('inline void printDivergenceComparison(double time, int tstep)')[1].split('inline void updateDivergence')[0]
 pre='''#include <cmath>
 #include <cstdio>
 #include <fstream>

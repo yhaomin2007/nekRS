@@ -127,7 +127,6 @@ void UDF_Setup()
   bubbleColumn::initializeHistory();
   nrs->userSource = &bubbleColumn::oneThrough::beginStep;
   nrs->postScalar = &bubbleColumn::postProcessAlpha;
-  nrs->scalar->userImplicitLinearTerm = &bubbleColumn::implicitGasDrag;
   nrs->userProperties = &bubbleColumn::updateProperties;
   nrs->userDivergence = &bubbleColumn::updateDivergence;
   // Allocate diagnostics now; read elliptic masks lazily after the first UG solve.
@@ -218,4 +217,3 @@ void UDF_ExecuteStep(double time, int tstep)
     bubbleColumn::writeValidationChecks(time, tstep);
   }
 }
-

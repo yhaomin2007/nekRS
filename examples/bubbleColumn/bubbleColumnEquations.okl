@@ -349,7 +349,7 @@
       ugSource[n + i * offset] = gasActive * (
           -gasPressureEnabled * gradP[n + i * offset] / rhoEff
           + rhoGas / rhoEff * gravityComponent
-          + dragEnabled * Ki / rhoEff * ul[n + i * offset]
+          + dragEnabled * Ki / rhoEff * (ul[n + i * offset] - ug[n + i * offset])
           + c / rhoEff * liquidAcceleration[n + i * offset]);
     }
   }

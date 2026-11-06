@@ -1,6 +1,6 @@
 # Density-averaged method1: conservative UG transport of alpha
 
-Alpha and UG have no native mixture convection or matching RHS cancellation: their device-only advection compute flags are disabled before the first timestep. All four Helmholtz solves, diffusion, HPFRT and boundary conditions remain enabled. The native scalar loop solves alpha then UG before the native pressure/UM solve; host solve masks are never changed. Native alpha/UG advection histories are zero-initialized and remain zero. The alpha RHS directly supplies conservative div(alpha*UG): alphaTransportForm=1 forms the product at GLL nodes then applies assembled opSEM::strongDivergence; alphaTransportForm=2 retains conservative cubature differentiation (default). Both use the same frozen UG and time treatment. The former aliases the nodal product; neither form guarantees boundedness. UGX/UGY/UGZ receive only the user cubature -UG.grad(UG) convection in their explicit RHS. UG remains transported velocity, not QG. Gas drag and effective virtual-mass inertia remain semi-implicit; pressure uses the latest completed pressure or independently selected gradient EXT; liquid acceleration and other nonconvection sources retain their previous latest-sample treatment.
+Alpha and UG have no native mixture convection or matching RHS cancellation: their device-only advection compute flags are disabled before the first timestep. All four Helmholtz solves, diffusion, HPFRT and boundary conditions remain enabled. The native scalar loop solves alpha then UG before the native pressure/UM solve; host solve masks are never changed. Native alpha/UG advection histories are zero-initialized and remain zero. The alpha RHS directly supplies conservative div(alpha*UG): alphaTransportForm=1 forms the product at GLL nodes then applies assembled opSEM::strongDivergence; alphaTransportForm=2 retains conservative cubature differentiation (default). Both use the same frozen UG and time treatment. The former aliases the nodal product; neither form guarantees boundedness. UGX/UGY/UGZ receive only the user cubature -UG.grad(UG) convection in their explicit RHS. UG remains transported velocity, not QG. Gas drag is fully explicit, K*(UL-UG)/rhoEff at source time. Effective virtual-mass inertia remains semi-implicit; its liquid material acceleration uses native fluid time extrapolation. Pressure uses the latest completed pressure or independently selected gradient EXT; other nonconvection sources retain latest-sample treatment.
 
 For alphaTransportForm=2, set cubaturePolynomialOrder >= 2*N because the conservative cubature kernel differentiates the sampled product. With alphaTransportForm=1 this extra requirement is lifted; native/UG cubature still requires sufficient quadrature for its own operator. The example N=7 uses order 14 (15 Gauss points). The complete alpha and UG convection products use native fluid EXT coefficients. Scalar EXT1 carries already-selected sources, avoiding double extrapolation; native fluid/BDF integration is unchanged.
 
@@ -55,7 +55,7 @@ Obsolete alpha native/cancellation comparison columns were removed from conserva
 
 ## Source-sign checks
 
-The source_signs.py regression exercises actual case kernels with physical limiting cases: hydrostatic liquid pressure must accelerate gas upward; implicit drag must reduce slip energy; common phase acceleration must be unchanged by VM; gas viscous stress must damp a sinusoidal velocity mode; positive drift-stress divergence must enter mixture momentum negatively; an upward moving decreasing-alpha front must generate positive mixture expansion. It also checks the native pressure target and velocity-RHS sign convention against an analytic expansion correction. These local tests do not establish stability or correctness of the complete GPU/MPI pressure solve and lagged two-phase coupling.
+The source_signs.py regression exercises actual case kernels with physical limiting cases: hydrostatic liquid pressure must accelerate gas upward; explicit drag must reduce slip energy within its timestep restriction; common phase acceleration must be unchanged by VM; gas viscous stress must damp a sinusoidal velocity mode; positive drift-stress divergence must enter mixture momentum negatively; an upward moving decreasing-alpha front must generate positive mixture expansion. It also checks the native pressure target and velocity-RHS sign convention against an analytic expansion correction. These local tests do not establish stability or correctness of the complete GPU/MPI pressure solve and lagged two-phase coupling.
 
 ## Continuity coupling lag diagnostic
 
@@ -120,11 +120,13 @@ and the solved implicit diffusion are added separately. HPF, filtering and
 clipping remain excluded from this reduced divergence target.
 
 The native scalar EXT array remains an independent EXT1 carrier. Thus each
-pre-extrapolated convection/pressure source enters the native BDF forcing once;
+pre-extrapolated convection/pressure/VM-acceleration source enters the native BDF forcing once;
 other explicit sources and native scalar HPF retain latest-sample treatment.
-Implicit diffusion, implicit gas drag and native UM convection are unchanged.
+Implicit diffusion and native UM convection are unchanged. No gas drag reaction is registered with the scalar solver; both +lambda*UL and -lambda*UG enter the explicit source.
 Pressure history is independent of convection history, so the pressure option
 does not switch convection EXT off or apply EXT a second time.
+
+The completed liquid material acceleration is `(UL_new-UL_previous)/dt + UL_new dot grad(UL_new)`; its derivative definition and accepted-step update timing are unchanged. A separate history extrapolates this complete vector with native fluid EXT weights before UG source assembly. The initial acceleration is zero. Gas-side VM acceleration remains in `rhoEff = rhoGas + C_VM*rhoLiquid`. Explicit drag uses the latest source-time slip and coefficient, without an additional EXT.
 
 Histories advance only during source assembly. Setup/property/diagnostic
 evaluations cannot advance them or replace the selected gradient. No user
@@ -157,8 +159,8 @@ The interval selects rank-0 log/CSV statistics: step 1, each Nth step, and every
 checkpoint. Use 1 for every step; 0 means step 1/checkpoints only. Setting enabled
 to 0 disables runtime snapshots, reductions and exports. Enabled diagnostics
 retain source/solved snapshots every step so checkpoint timing cannot miss them;
-they use additional device memory and weak-operator evaluations (about 76
-padded scalar fields, or 608 bytes per padded node in FP64).
+they use additional device memory and weak-operator evaluations (about 79
+padded scalar fields, or 632 bytes per padded node in FP64).
 
 All equation terms below are **accelerations** (m/s^2 for dimensional inputs),
 with their signed contribution to the RHS, except the positive LHS BDF fields.
@@ -166,9 +168,9 @@ With c_VM=C_VM*rhoLiquid*virtualMassEnabled and rhoEff=rhoGas+c_VM, the
 implemented normalized equation is:
 
 ```text
-BDF(UG) = pressure + convection_EXT + gravity + drag_liquid + VM_liquid
+BDF(UG) = pressure + convection_EXT + gravity + drag_liquid + drag_gas_explicit + VM_liquid
         + gas_stress + diffusion_compensation + native_regularization
-        + drag_implicit + diffusion_implicit_weak
+        + diffusion_implicit_weak
 BDF(UG) = BDF_diagonal - BDF_history
 ```
 
@@ -187,20 +189,21 @@ term, not a velocity solution.
 | gcv.nek5000 | convection_EXT | -EXT_fluid[UG dot grad(UG)], actually used |
 | ggr.nek5000 | gravity | rhoGas/rhoEff * gravity |
 | gdl.nek5000 | drag_liquid | lambda_source * UL_source |
-| gvm.nek5000 | VM_liquid | c_VM/rhoEff * liquidAcceleration_source |
+| gvm.nek5000 | VM_liquid | c_VM/rhoEff * EXT_fluid[liquidAcceleration] |
 | gvs.nek5000 | gas_stress | div(alpha*tauGas)/(max(alpha,alphaFloor)*rhoEff) |
 | gdc.nek5000 | diffusion_compensation | Configured positive weak-stiffness compensation at source time |
 | gus.nek5000 | user_rhs | Actual UG user source copied before native regularization |
 | ghp.nek5000 | native_regularization | Actual native explicit source minus cached user source; HPFRT in the current par |
-| gdi.nek5000 | drag_implicit | -lambda_source * UG_solved |
+| gdi.nek5000 | drag_implicit | Zero; retained for comparison with older runs |
+| gde.nek5000 | drag_gas_explicit | -lambda_source * UG_source |
 | gnd.nek5000 | diffusion_implicit_weak | -M_assembled^-1 K_D UG_solved |
 | gdt.nek5000 | BDF_time | Actual BDF derivative before gas postprocessing |
-| grs.nek5000 | rhs_sum | user_rhs + native_regularization + drag_implicit + diffusion_implicit_weak |
+| grs.nek5000 | rhs_sum | user_rhs + native_regularization + diffusion_implicit_weak |
 | grb.nek5000 | balance_free | BDF_time - rhs_sum on free equation rows; zero on Dirichlet rows |
-| gse.nek5000 | source_defect | user_rhs minus the sum of the seven explicit physical/transport terms |
+| gse.nek5000 | source_defect | user_rhs minus the sum of the eight explicit physical/transport terms |
 | gpc.nek5000 | postprocess_rate | (g0/dt)*(UG_after_postprocessing - UG_solved); diagnostic only |
 | gcr.nek5000 | convection_raw | -UG dot grad(UG) at the source time before EXT; comparison only |
-| gdn.nek5000 | drag_net | drag_liquid + drag_implicit; comparison only |
+| gdn.nek5000 | drag_net | drag_liquid + drag_gas_explicit; comparison only |
 | gbd.nek5000 | BDF_diagonal | (g0/dt)*UG_solved; comparison only |
 | gbh.nek5000 | BDF_history | Sum of old-state BDF loads, cached before native history lagging |
 | gmk.nek5000 | mask only | Per-component vector: 1=free equation row, 0=Dirichlet row; dimensionless |
@@ -209,7 +212,7 @@ term, not a velocity solution.
 Source fields are captured **immediately after addExplicitSources**, including
 the selected pressure gradient and already extrapolated convection. Later
 properties, pressure/UM or VM-history evaluations cannot overwrite them.
-Implicit diffusion, drag and BDF terms use the actual solved UG **before**
+Implicit diffusion and BDF terms use the actual solved UG **before**
 alpha/UG postprocessing. The native regularization is obtained from the actual
 native explicit buffer after makeExplicit, not from a second filter application.
 Sources are mass-weighted and assembled at shared nodes to match the weak

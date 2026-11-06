@@ -31,9 +31,10 @@ int main(){
  for(double sign:{-1.,1.}){
  ug[2]=sign*.3;ul[2]=sign*.1;
  buildEquationTerms(n,o,rl,rg,.001,.000018,1e-6,0.,1.,.003,1.,.5,0.,0.,0.,alpha,um,ug,ul,ga,dq,gu,al,gp,rho,mu,drift,stress,sa,su,lambda);
- double accel=su[2]-lambda[0]*ug[2];
+ double accel=su[2];
+ assert(std::abs(accel-lambda[0]*(ul[2]-ug[2]))<1e-12);
  assert(lambda[0]>0.&&accel*(ug[2]-ul[2])<0.);
- double next=(ug[2]+100.*su[2])/(1.+100.*lambda[0]);
+ double next=ug[2]+(.25/lambda[0])*su[2];
  assert(std::abs(next-ul[2])<std::abs(ug[2]-ul[2]));
  }
  // Common acceleration A: VM must not change acceleration when both phases
@@ -70,4 +71,4 @@ with tempfile.TemporaryDirectory() as directory:
     path=Path(directory);(path/'check.cpp').write_text(cpp)
     subprocess.run(['g++','-std=c++17',str(path/'check.cpp'),'-o',str(path/'check')],check=True)
     subprocess.run([str(path/'check')],check=True)
-print('Physical sign checks passed: hydrostatic buoyancy, dissipative implicit drag, common-acceleration VM, viscous damping, drift force, front expansion and native projection target convention.')
+print('Physical sign checks passed: hydrostatic buoyancy, dissipative explicit drag, common-acceleration VM, viscous damping, drift force, front expansion and native projection target convention.')

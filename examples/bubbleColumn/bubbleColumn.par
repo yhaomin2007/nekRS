@@ -112,7 +112,7 @@ virtualMassCoefficient = 0.5
 # Native alpha/UG scalar convection is disabled; user gas transport is supplied directly.
 # Alpha uses selected conservative div(alpha*UG); UG uses cubature UG.grad(UG).
 # Full alpha/UG convection products use native UM EXT coefficients.
-# Scalar EXT1 only carries already-selected sources; diffusion/drag stay implicit.
+# Scalar EXT1 only carries already-selected sources; diffusion stays implicit; full gas drag is explicit.
 gasTransportMethod = 1
 # 1: form alpha*UG at GLL nodes, then assembled SEM strong divergence.
 # 2: conservative cubature flux differentiation (existing default).

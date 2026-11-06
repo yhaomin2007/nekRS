@@ -27,6 +27,7 @@ bool assemblingExplicitSources=false;
 double conv[20],alphaDiff[5];Mem o_convectionEXT{conv},o_alphaExplicitDiffusion{alphaDiff};
 Mem o_ugSource{ugSource},o_gasTransport{transport},o_alphaSource{alphaSource},o_mixtureForce{mixtureForce},o_mixtureAdvectorUsed{snapshot};
 void prepareGasAdvection(){}
+void prepareVirtualMassAcceleration(){}
 void evaluatePointwiseTerms(){
  for(int c=0;c<3;++c)for(int n=0;n<3;++n){ugSource[c*5+n]=10*(c+1)+n;mixtureForce[c*5+n]=.5*c+n;}
  for(int n=0;n<3;++n)alphaSource[n]=-.1*(n+1);
@@ -59,4 +60,3 @@ with tempfile.TemporaryDirectory() as d:
  subprocess.run(['g++','-std=c++17',str(p/'check.cpp'),'-o',str(p/'check')],check=True)
  subprocess.run([str(p/'check')],check=True)
 print('Actual source callback: all three UG RHS components are physical source minus gas convection; no UM cancellation, correct sign/padding, alpha and fluid forcing preserved.')
-

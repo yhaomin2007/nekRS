@@ -9,6 +9,7 @@
     const dfloat dx, const dfloat dy, const dfloat dz,
     @ restrict const dfloat *alpha, @ restrict const dfloat *gradP,
     @ restrict const dfloat *lambda, @ restrict const dfloat *ul,
+    @ restrict const dfloat *ugSource,
     @ restrict const dfloat *liquidAcceleration,
     @ restrict const dfloat *divStress, @ restrict const dfloat *diffusionComp,
     @ restrict const dfloat *convection, @ restrict const dfloat *convectionRaw,
@@ -24,6 +25,8 @@
       const dfloat fc = -convection[n + (c + 1) * offset];
       const dfloat fg = rhoGas / rhoEff * gravity;
       const dfloat fd = lambda[n] * ul[v];
+      const dfloat fdg = -lambda[n] * ugSource[v];
+      terms[v + 20 * 3 * offset] = fdg;
       const dfloat fv = virtualInertia / rhoEff * liquidAcceleration[v];
       const dfloat fs = divStress[v] / (aSafe * rhoEff);
       // A disabled subtraction must not read stale/uninitialized scratch.
@@ -36,7 +39,7 @@
       terms[v + 5 * 3 * offset] = fs;
       terms[v + 6 * 3 * offset] = fn;
       terms[v + 7 * 3 * offset] = userRhs[v];
-      terms[v + 14 * 3 * offset] = userRhs[v] - (fp + fc + fg + fd + fv + fs + fn);
+      terms[v + 14 * 3 * offset] = userRhs[v] - (fp + fc + fg + fd + fdg + fv + fs + fn);
       terms[v + 16 * 3 * offset] = -convectionRaw[n + (c + 1) * offset];
     }
   }
@@ -53,7 +56,7 @@
       const dlong v = n + c * offset;
       const dfloat user = terms[v + 7 * 3 * offset];
       const dfloat regularization = nativeExplicit[v] - user;
-      const dfloat dragImplicit = -lambda[n] * ugSolved[v];
+      const dfloat dragImplicit = 0.0; // Full drag is already in the explicit source.
       const dfloat timeDiagonal = g0idt * ugSolved[v];
       const dfloat time = timeDiagonal - terms[v + 19 * 3 * offset];
       const dfloat rhs = user + regularization + dragImplicit + weakDiffusion[v];
@@ -63,7 +66,7 @@
       terms[v + 11 * 3 * offset] = time;
       terms[v + 12 * 3 * offset] = rhs;
       terms[v + 13 * 3 * offset] = freeMask[v] != 0.0 ? time - rhs : 0.0;
-      terms[v + 17 * 3 * offset] = terms[v + 3 * 3 * offset] + dragImplicit;
+      terms[v + 17 * 3 * offset] = terms[v + 3 * 3 * offset] + terms[v + 20 * 3 * offset];
       terms[v + 18 * 3 * offset] = timeDiagonal;
     }
   }
@@ -99,4 +102,3 @@
                || !isfinite(field[n + 2 * offset])) ? 1.0 : 0.0;
   }
 }
-

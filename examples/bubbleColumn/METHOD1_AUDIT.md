@@ -1,3 +1,5 @@
+> Historical audit: the current implementation is described in README.md. In particular, UG drag is now fully explicit, liquid material acceleration is time-extrapolated, and convection uses user histories. The older descriptions below are retained as the audit record.
+
 # Method1 equation and implementation audit
 
 Audited physics snapshot: remote `bubbleColumn` commit `22d958cb36405749cbbb55474ff61e704b108658`, 2026-10-13. This review concerns `examples/bubbleColumn`, not method2. Repository par defaults are described below; the user's actual runtime par, log and nodal fields for the latest failed run were not supplied. No solver equations were changed during this audit.
