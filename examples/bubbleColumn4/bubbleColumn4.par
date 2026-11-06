@@ -39,50 +39,43 @@ initialGuess = previous
 boundaryTypeMap = udfDirichlet, zeroNeumann, zeroNeumann
 residualTol = 1e-11
 transportCoeff = 1.0
-diffusionCoeff = 1e-5
-regularization = hpfrt + nModes=1 + scalingCoeff=10.0
+diffusionCoeff = 0.0
 
 [SCALAR UGX]
 boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
 residualTol = 1e-11
 transportCoeff = 1.0
 diffusionCoeff = 1.5e-5
-regularization = hpfrt + nModes=1 + scalingCoeff=10.0
 
 [SCALAR UGY]
 boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
 residualTol = 1e-11
 transportCoeff = 1.0
 diffusionCoeff = 1.5e-5
-regularization = hpfrt + nModes=1 + scalingCoeff=10.0
 
 [SCALAR UGZ]
 boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
 residualTol = 1e-11
 transportCoeff = 1.0
 diffusionCoeff = 1.5e-5
-regularization = hpfrt + nModes=1 + scalingCoeff=10.0
 
 [SCALAR ULX]
 boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
 residualTol = 1e-11
 transportCoeff = 1.0
 diffusionCoeff = 1.0018032458e-6
-regularization = hpfrt + nModes=1 + scalingCoeff=10.0
 
 [SCALAR ULY]
 boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
 residualTol = 1e-11
 transportCoeff = 1.0
 diffusionCoeff = 1.0018032458e-6
-regularization = hpfrt + nModes=1 + scalingCoeff=10.0
 
 [SCALAR ULZ]
 boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
 residualTol = 1e-11
 transportCoeff = 1.0
 diffusionCoeff = 1.0018032458e-6
-regularization = hpfrt + nModes=1 + scalingCoeff=10.0
 
 [CASEDATA]
 rhoLiquid = 998.2
@@ -98,6 +91,7 @@ gravityZ = -9.81
 dragEnabled = 1
 bubbleDiameter = 3e-3
 muLiquid = 1e-3
+alphaClippingEnabled = 0
 alphaMinimum = 0.0
 alphaMaximum = 0.99
 # Virtual mass is excluded from this pressure-first baseline.

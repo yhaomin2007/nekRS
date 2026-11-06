@@ -18,7 +18,7 @@ int main(int argc,char**argv) {
   if(argc==3) {
     props["defines/p_Nfaces"]=6;props["defines/p_Nfp"]=9;props["defines/p_Nsgeo"]=4;
     props["defines/p_NXID"]=0;props["defines/p_NYID"]=1;props["defines/p_NZID"]=2;props["defines/p_WSJID"]=3;
-    for(const std::string name:{"reconstruct","initialize","clipAlpha","drag","phaseSource","transposeFlux","pressureFlux","momentumLoad","pressureSurface"})
+    for(const std::string name:{"reconstruct","initialize","clipAlpha","drag","phaseSource","historyBDF","transposeFlux","pressureFlux","momentumLoad","pressureSurface"})
       device.buildKernel(argv[2],name,props);
     std::cout<<"PASS: all production phase/drag/pressure kernels built with real OCCA Serial\n";
   }

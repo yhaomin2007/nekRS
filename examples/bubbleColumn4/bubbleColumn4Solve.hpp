@@ -101,8 +101,10 @@ inline void pressureStep(double time,int stage)
   auto bg=momentumBase.slice(s->fieldOffsetScan[1],3*O);
   auto bl=momentumBase.slice(s->fieldOffsetScan[4],3*O);
   pressureFluxKernel(m->Nlocal,O,p.rhoGas,p.rhoLiquid,s->o_solution("alpha"),
-      m->o_LMM,bg,bl,viscG,viscL,extrapG,extrapL,lambdaG,lambdaL,beta,flux);
-  // F contains phase history weighted by NEW alpha. beta has no BDF/drag scale.
+      m->o_LMM,bg,bl,bdfG,bdfL,bdfMixture,viscG,viscL,
+      extrapG,extrapL,lambdaG,lambdaL,beta,flux);
+  // Formula (99): historical ubar supplies the BDF term; alpha^{n+1}
+  // weights convection, stress and interphase accelerations. beta has no dt.
   opSEM::divergence(m,O,flux,pressureRhs);
   reconstructMixture();
   platform->linAlg->axpby(3*O,c,nrs->fluid->o_U,0.0,boundaryFlux);

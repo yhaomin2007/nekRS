@@ -48,6 +48,31 @@
   for(dlong i=0;i<N;++i;@tile(p_blockSize,@outer,@inner))
     source[i]=-convection[i+(component+1)*O]+gravity;
 }
+// BDF histories required by (95) and (99).  The mixture history must use
+// alpha^{n-q}, not alpha^{n+1}; otherwise the discrete pressure equation is
+// not the one written in the document when alpha changes between time levels.
+@kernel void historyBDF(const dlong N, const dlong O, const int nBDF,
+    const dlong fieldSum, const dlong alphaOffset, const dlong gasOffset,
+    const dlong liquidOffset, const dfloat idt,
+    @restrict const dfloat *coeff, @restrict const dfloat *S,
+    @restrict dfloat *bg, @restrict dfloat *bl, @restrict dfloat *bm)
+{
+  for(dlong i=0;i<N;++i;@tile(p_blockSize,@outer,@inner)) {
+    for(int c=0;c<3;++c) {
+      dfloat hg=0,hl=0,hm=0;
+      for(int q=0;q<nBDF;++q) {
+        const dlong history=q*fieldSum;
+        const dfloat a=S[i+alphaOffset+history];
+        const dfloat ug=S[i+gasOffset+c*O+history];
+        const dfloat ul=S[i+liquidOffset+c*O+history];
+        const dfloat w=idt*coeff[q];
+        hg+=w*ug; hl+=w*ul; hm+=w*(a*ug+(1-a)*ul);
+      }
+      const dlong k=i+c*O;
+      bg[k]=hg; bl[k]=hl; bm[k]=hm;
+    }
+  }
+}
 // Adapted from fluidSolver_t::divergenceSurfaceHex3D: subtract prescribed
 // volume flux on pressure-Neumann boundaries. ID 2 is p=0 (no surface load).
 @kernel void pressureSurface(const dlong Nelements, const dlong O,
@@ -82,14 +107,15 @@
   for(dlong i=0;i<N;++i;@tile(p_blockSize,@outer,@inner))
     for(int j=0;j<3;++j) flux[i+j*O]=nu*gradient[i+(3*j+c)*O]/mass[i];
 }
-// BDF/convection/gravity base is a LOCAL weak load. Viscous acceleration has
-// already been assembled and divided by the assembled velocity mass.
-// Weight historical phase velocities with NEW alpha, never historical UM.
+// The phase bases are LOCAL weak loads containing phasic BDF plus explicit
+// terms. Replace their BDF parts by the historical mixture BDF from (99),
+// while alpha^{n+1} weights the remaining explicit phasic contributions.
 @kernel void pressureFlux(const dlong N, const dlong O,
     const dfloat rg, const dfloat rl, @restrict const dfloat *a,
     @restrict const dfloat *mass, @restrict const dfloat *baseG,
-    @restrict const dfloat *baseL, @restrict const dfloat *vg,
-    @restrict const dfloat *vl, @restrict const dfloat *ug,
+    @restrict const dfloat *baseL, @restrict const dfloat *bdfG,
+    @restrict const dfloat *bdfL, @restrict const dfloat *bdfMixture,
+    @restrict const dfloat *vg, @restrict const dfloat *vl, @restrict const dfloat *ug,
     @restrict const dfloat *ul, @restrict const dfloat *lg,
     @restrict const dfloat *ll, @restrict dfloat *beta,
     @restrict dfloat *flux)
@@ -99,8 +125,9 @@
     for(int c=0;c<3;++c) {
       const dlong k=i+c*O;
       const dfloat slip=ul[k]-ug[k];
-      flux[k]=a[i]*(baseG[k]/mass[i]+vg[k]+lg[i]*slip)
-          +(1-a[i])*(baseL[k]/mass[i]+vl[k]-ll[i]*slip);
+      flux[k]=bdfMixture[k]
+          +a[i]*(baseG[k]/mass[i]-bdfG[k]+vg[k]+lg[i]*slip)
+          +(1-a[i])*(baseL[k]/mass[i]-bdfL[k]+vl[k]-ll[i]*slip);
     }
   }
 }

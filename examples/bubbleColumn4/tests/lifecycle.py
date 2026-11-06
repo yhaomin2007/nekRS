@@ -76,11 +76,11 @@ struct Nrs{Scalar*scalar=::std::addressof(::scalar);Fluid*fluid=::std::addressof
 auto nrs=&nrsObject;
 struct Platform{Comm comm;LA*linAlg=&la;}platformObject;
 auto platform=&platformObject;
-struct Parameters{double rhoGas=1.2,rhoLiquid=998.2,muLiquid=1e-3,bubbleDiameter=3e-3,dragEnabled=1,alphaMinimum=0,alphaMaximum=.99,gravity[3]={0,0,-9.81},dragCouplingTolerance=1e-12;int dragCouplingMaxIterations=30;}p;
+struct Parameters{double rhoGas=1.2,rhoLiquid=998.2,muLiquid=1e-3,bubbleDiameter=3e-3,dragEnabled=1,alphaMinimum=0,alphaMaximum=.99,gravity[3]={0,0,-9.81},dragCouplingTolerance=1e-12;int alphaClippingEnabled=0,dragCouplingMaxIterations=30;}p;
 std::array<std::string,7>names={"alpha","ugx","ugy","ugz","ulx","uly","ulz"};
-Mem ug(12),ul(12),lambdaG(4),lambdaL(4),transportG(16),transportL(16),zeroAdvection(56),momentumBase(28),extrapG(12),extrapL(12),phasePrevious(24),phaseDelta(24);
+Mem ug(12),ul(12),lambdaG(4),lambdaL(4),transportG(16),transportL(16),zeroAdvection(56),momentumBase(28),extrapG(12),extrapL(12),bdfG(12),bdfL(12),bdfMixture(12),phasePrevious(24),phaseDelta(24);
 int preparedStep=-1,completedStep=-1,alphaStepDone=-1,dragIterations=0;double dragChange=0,alphaClipMass=0;
-auto reconstructKernel=reconstruct;auto dragKernel=drag;auto sourceKernel=phaseSource;auto clipKernel=clipAlpha;
+auto reconstructKernel=reconstruct;auto dragKernel=drag;auto sourceKernel=phaseSource;auto clipKernel=clipAlpha;auto historyKernel=historyBDF;
 void convection(Mem,Mem result){for(int i=0;i<result.size();++i)result[i]=0;}
 void launchKernel(const char*,int n,Mem mass,double idt,Mem ext,Mem bdf,int scan,int sum,int,Mem rho,Mem u,Mem,Mem source,Mem rhs){
  for(int i=0;i<n;++i){double f=0,h=0;for(int k=0;k<ext.size();++k)f+=ext[k]*source[i+scan+k*sum];for(int k=0;k<bdf.size();++k)h+=bdf[k]*u[i+scan+k*sum];rhs[i+scan]=mass[i]*(f+rho[i+scan]*idt*h);}
@@ -104,13 +104,21 @@ int main(){
   double expected=(2*.1*is-.5*.7*.1*is)/nrs->dt[0]+((is==3||is==6)?-9.81:0);
   assert(std::abs(momentumBase[4*is+i]-expected)<1e-8);
  }
+ for(int c=0;c<3;++c)for(int i=0;i<2;++i){
+  const double ag=.05,agOld=.035;
+  const double ug=.1*(1+c),ul=.1*(4+c),ugOld=.7*ug,ulOld=.7*ul;
+  assert(std::abs(bdfG[4*c+i]-(2*ug-.5*ugOld)/nrs->dt[0])<1e-8);
+  assert(std::abs(bdfL[4*c+i]-(2*ul-.5*ulOld)/nrs->dt[0])<1e-8);
+  const double expected=(2*(ag*ug+(1-ag)*ul)-.5*(agOld*ugOld+(1-agOld)*ulOld))/nrs->dt[0];
+  assert(std::abs(bdfMixture[4*c+i]-expected)<1e-8);
+ }
  // Emulate native makeForcing's one EXT shift and runInnerStep's one BDF lag.
  for(int k=2;k>0;--k)for(int i=0;i<28;++i)scalar.o_EXT[28*k+i]=scalar.o_EXT[28*(k-1)+i];++scalar.historyShifts;
  for(int i=0;i<28;++i)scalar.o_S[28+i]=scalar.o_S[i];++scalar.solutionShifts;
  // Native alpha solve has completed. New alpha differs from the old .05.
- scalar.o_solution("alpha")[0]=.2;scalar.o_solution("alpha")[1]=1.2;
+ scalar.o_solution("alpha")[0]=.2;scalar.o_solution("alpha")[1]=.8;
  postAlpha(1e-5,1);assert(alphaStepDone==1);
- assert(std::abs(alphaClipMass+.21)<1e-12);
+ assert(alphaClipMass==0);
  assert(scalar.compute[0]==1);for(int is=1;is<7;++is)assert(scalar.compute[is]==0);
  for(int i=0;i<2;++i){double a=scalar.o_solution("alpha")[i];
   assert(std::abs(lambdaL[i]/lambdaG[i]-a*p.rhoGas/((1-a)*p.rhoLiquid))<1e-12);
@@ -119,7 +127,7 @@ int main(){
  assert(scalar.historyShifts==1&&scalar.solutionShifts==1&&scalar.explicitCalls==6);
  nrs->tstep=2;bool blocked=false;try{beginStep(1e-5);}catch(...){blocked=true;}assert(blocked);
  e.residual=1;blocked=false;try{validateLinearSolve(&e,"test");}catch(...){blocked=true;}assert(blocked);
- puts("PASS: actual BDF/EXT source callbacks, one history shift, alpha-first scheduling, new-alpha explicit drag freezing, clipping mass accounting and lifecycle guards");
+ puts("PASS: actual BDF/EXT callbacks, historical-mixture BDF, one history shift, alpha-first scheduling, new-alpha explicit drag freezing, strict no-clipping baseline and lifecycle guards");
 }
 '''
 functions='\n'.join(extract(m) for m in [

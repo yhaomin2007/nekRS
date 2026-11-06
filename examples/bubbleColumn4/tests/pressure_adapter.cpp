@@ -92,7 +92,7 @@ void Scalar::solve(double,int){
 }
 
 std::unique_ptr<elliptic> pressureSolver;
-Mem beta(2),pressureRhs(2),boundaryFlux(6),crossG(6),crossL(6),viscG(6),viscL(6),lambdaG(2),lambdaL(2);
+Mem beta(2),pressureRhs(2),boundaryFlux(6),crossG(6),crossL(6),viscG(6),viscL(6),lambdaG(2),lambdaL(2),bdfG(6),bdfL(6),bdfMixture(6);
 int preparedStep=1,completedStep=-1,alphaStepDone=1,pressureStepDone=-1;
 auto pressureFluxKernel=pressureFlux;
 void allocateFluidStorage(){}
@@ -106,11 +106,12 @@ int main(){
  for(int is=1;is<7;++is)for(int i=0;i<2;++i){
   scalar.solution[2*is+i]=.1*is;momentumBase[2*is+i]=.5*(is+i*.2);
  }
- for(int i=0;i<6;++i){extrapG[i]=.3;extrapL[i]=.1;}
+ for(int i=0;i<6;++i){extrapG[i]=.3;extrapL[i]=.1;bdfG[i]=.1*(i+1);bdfL[i]=.2*(i+1);bdfMixture[i]=.7+.05*i;}
  lambdaG[0]=lambdaG[1]=.4;lambdaL[0]=lambdaL[1]=.02;
  const double c=nrs->g0/nrs->dt[0];
  const double umLeft=.2*.1+.8*.4;
- auto F=[&](int i){const double a=scalar.solution[i];return a*(1+.2*i-.4*.2)+(1-a)*(4+.2*i+.02*.2);};
+ auto F=[&](int i){const double a=scalar.solution[i];return bdfMixture[i]
+     +a*(1+.2*i-bdfG[i]-.4*.2)+(1-a)*(4+.2*i-bdfL[i]+.02*.2);};
  const double b0=.2/1.2+.8/998.2,b1=.6/1.2+.4/998.2;
  const double expected=(-.5*(F(0)+F(1))+c*umLeft)/(.5*(b0+b1));
  pressureStep(.3,1);
@@ -120,5 +121,5 @@ int main(){
  bool blocked=false;try{pressureStep(.3,1);}catch(...){blocked=true;}assert(blocked);
  pressureStepDone=-1;alphaStepDone=-1;blocked=false;
  try{pressureStep(.3,1);}catch(...){blocked=true;}assert(blocked);
- puts("PASS: actual pressure host assembly/solve matches variable-beta Galerkin equation, future prescribed flux, latest gradient, repeated/missing-alpha guards");
+ puts("PASS: actual pressure host assembly/solve matches (99)/(104): historical-mixture BDF, new-alpha explicit terms, variable beta, future prescribed flux and latest gradient");
 }

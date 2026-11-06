@@ -15,7 +15,8 @@ The native timestep does the following, before its convergence decision:
 
 1. Prepare phase BDF/EXT loads; lag histories exactly once in the native host.
 2. Solve alpha only in the native scalar stage.
-3. `postScalar`: bound alpha, reapply prescribed boundaries, freeze drag.
+3. `postScalar`: reapply prescribed boundaries and freeze drag. Optional alpha
+   clipping is disabled in the strict baseline.
 4. `fluid->solve`: solve the new shared pressure.
 5. At that fixed pressure, solve the three gas components to full-stress convergence.
 6. At the same pressure, solve the three liquid components to full-stress convergence.
@@ -47,12 +48,14 @@ The default PAR runs 20 steps at dt=1e-5, N=5, cubature order=10.
 Write `c=g0/dt`, `a=alpha_g^(n+1)`, and
 
 ```
-Hk = sum_j BDF_j uk_history_j / dt - EXT(uk.grad uk) + gravity + EXT(filter)
+Bk = sum_j BDF_j uk_history_j / dt
+Hk = Bk - EXT(uk.grad uk) + gravity + EXT(filter)
+Bbar = sum_j BDF_j [alpha_g ug + alpha_l ul]_history_j / dt
 Vke = -(assembled mass)^-1 assembled((Klap + Kcross) EXT(uk))
 f_g = lambda_g (EXT(ul) - EXT(ug))
 f_l = -lambda_l (EXT(ul) - EXT(ug))
 beta = a/rho_g + (1-a)/rho_l
-F = a (Hg + Vge + fg) + (1-a) (Hl + Vle + fl)
+F = Bbar + a (Hg-Bg + Vge + fg) + (1-a) (Hl-Bl + Vle + fl)
 ```
 
 Pressure is the variable-coefficient Poisson problem
@@ -64,8 +67,10 @@ Pressure is the variable-coefficient Poisson problem
 with p=0 on outlet ID 2. The normal momentum condition on inlet/wall provides
 the boundary lifting. Zero phase change implies Q=div(UM)=0.
 The harmonic coefficient has no dt factor and is NOT the mass-average density.
-Historical phase velocities are weighted with NEW alpha; historical mixture
-velocity is not substituted for that sum.
+The BDF term is the history of volume velocity exactly as written in (99):
+each historical phase velocity is weighted by alpha at the same historical
+time level. New alpha weights the extrapolated convection, stress and force
+terms. These two operations are intentionally distinct.
 
 The two phase equations are
 
@@ -82,13 +87,17 @@ The actual assembled free-row full-stress residual is checked every iteration.
 Scalar stiffness actions pass a valid ZERO mass field to `Ax`, since these
 scalar kernels are Helmholtz kernels; a null mass pointer is unsafe there.
 
-The pressure RHS uses extrapolated full viscous stress, while momentum uses
-converged implicit full stress. This is a temporal split, and the SEM pressure
-stiffness is not the exact discrete Schur complement of the phase Helmholtz
-operators. Consequently, pressure convergence alone does NOT guarantee zero
-final mixture divergence. The code reports final weak and strong continuity;
-no later projection conceals those errors. Time-refinement and mesh tests on
-the real column remain required before judging this algorithm.
+The pressure RHS uses extrapolated full viscous stress and extrapolated slip in
+the interphase force, while momentum uses converged implicit full stress at the
+same newly solved pressure. This is the explicit time-level closure required by
+a single `alpha -> P -> UG -> UL` pass. Evaluating either pressure-side term at
+`n+1` would require a pressure/phase-velocity coupling iteration and would no
+longer be the requested one-pass algorithm. The SEM pressure stiffness is also
+not the exact discrete Schur complement of the phase Helmholtz operators.
+Consequently, pressure convergence alone does NOT guarantee zero final mixture
+divergence. The code reports final weak and strong continuity; no later
+projection conceals those errors. Time-refinement and mesh tests on the real
+column remain required before judging this algorithm.
 
 ## Forces, boundaries, and output
 
@@ -102,9 +111,12 @@ the real column remain required before judging this algorithm.
   The outlet uses homogeneous natural viscous traction in the converged weak
   full-stress system, with p=0. Alpha is prescribed at inlet and has zero
   diffusive normal flux at wall/outlet. No slip-wall variant is included.
-- Alpha retains conservative cubature transport plus configurable numerical
-  diffusion and HPF regularization. Clipping changes its integral; the signed
-  `alphaClipMass` diagnostic explicitly reports that contribution.
+- The strict AT baseline solves (90) with conservative cubature transport and
+  zero alpha diffusion. All scalar HPF/AVM/GJP regularization is disabled and
+  rejected at setup because those terms are absent from (90) and (97).
+  Alpha clipping is also disabled by default because it is absent from (90).
+  `alphaClippingEnabled=1` is an explicitly nonconservative robustness option;
+  its signed integral change is reported as `alphaClipMass`.
 - Virtual mass, lift, wall lubrication, turbulent dispersion and phase change
   are excluded. Fixed dt, no moving mesh, no NekNek, no subcycling, one outer stage.
 - Scalars: alpha, ugx, ugy, ugz, ulx, uly, ulz. Native velocity is reconstructed
@@ -130,7 +142,7 @@ solver and pressure assembly against small numerical adapters. It checks full
 stress against direct Galerkin block solves, variable-beta pressure and boundary
 lifting, common latest pressure, phase isolation, and failure guards.
 `lifecycle.py` executes the actual source/post-alpha callbacks for BDF2 with
-EXT1/2/3, history ownership, new-alpha drag freezing and clipping mass accounting.
+EXT1/2/3, history ownership, new-alpha drag freezing and the strict no-clipping baseline.
 These are host/operator tests, not a native distributed column run.
 
 Optional real OCCA Serial build/execution (set include/library paths for your install):

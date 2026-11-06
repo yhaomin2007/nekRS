@@ -17,19 +17,29 @@ int main(){
  constexpr int N=4,O=N;
  double a[N]={0,.03,.7,.99}, mass[N]={.2,.5,2,3};
  double ug[3*N],ul[3*N],bg[3*N],bl[3*N],vg[3*N],vl[3*N],flux[3*N],beta[N],lg[N],ll[N];
+ double bdfg[3*N],bdfl[3*N],bdfm[3*N],S[56]={};const double coeff[2]={2,-.5};
+ for(int q=0;q<2;++q)for(int i=0;i<N;++i) {
+  const int h=q*28;S[i+h]=(q==0)?.1+.02*i:.4-.03*i;
+  for(int c=0;c<3;++c) {
+   S[i+4+c*O+h]=(q==0)?.2*(c+1)+.01*i:-.1*(c+1)+.02*i;
+   S[i+16+c*O+h]=(q==0)?-.05*(c+1)+.03*i:.15*(c+1)-.01*i;
+  }
+ }
+ historyBDF(N,O,2,28,0,4,16,10,coeff,S,bdfg,bdfl,bdfm);
  for(int c=0;c<3;++c)for(int i=0;i<N;++i){int k=i+c*O;
   ug[k]=.05*(k+1);ul[k]=-.03*k;
-  // BDF history example: historical mixture uses deliberately different alpha.
-  bg[k]=mass[i]*(2*ug[k]-.5*ul[k]);bl[k]=mass[i]*(2*ul[k]-.5*ug[k]);
+  // Phase bases contain their own BDF term plus a known explicit remainder.
+  bg[k]=mass[i]*(bdfg[k]+.4+.02*k);bl[k]=mass[i]*(bdfl[k]-.3-.01*k);
   vg[k]=.02*k;vl[k]=-.01*k;
  }
  drag(N,O,1,1.2,998.2,1e-3,3e-3,a,ug,ul,lg,ll);
- pressureFlux(N,O,1.2,998.2,a,mass,bg,bl,vg,vl,ug,ul,lg,ll,beta,flux);
+ pressureFlux(N,O,1.2,998.2,a,mass,bg,bl,bdfg,bdfl,bdfm,vg,vl,ug,ul,lg,ll,beta,flux);
  for(int i=0;i<N;++i){
   assert(near(beta[i],a[i]/1.2+(1-a[i])/998.2));
   for(int c=0;c<3;++c){int k=i+c*O;double slip=ul[k]-ug[k];
    assert(near(a[i]*1.2*lg[i]*slip,(1-a[i])*998.2*ll[i]*slip));
-   double expected=a[i]*(bg[k]/mass[i]+vg[k]+lg[i]*slip)+(1-a[i])*(bl[k]/mass[i]+vl[k]-ll[i]*slip);
+   double expected=bdfm[k]+a[i]*(.4+.02*k+vg[k]+lg[i]*slip)
+       +(1-a[i])*(-.3-.01*k+vl[k]-ll[i]*slip);
    assert(near(flux[k],expected));
   }
  }
@@ -55,5 +65,5 @@ int main(){
  for(int i=0;i<N;++i)u[i]=2*(i+1);
  pressureSurface(1,O,sgeo,map,bids,u,r);
  for(int i=0;i<N;++i)assert(near(r[i],-u[i]));
- puts("PASS: production kernels: new-alpha BDF weighting, harmonic pressure coefficient, paired drag, latest pressure loads, full transpose stress, hydrostatic balance, boundary flux");
+ puts("PASS: production kernels: historical-mixture BDF, new-alpha explicit weighting, harmonic pressure coefficient, paired drag, latest pressure loads, full transpose stress, hydrostatic balance, boundary flux");
 }

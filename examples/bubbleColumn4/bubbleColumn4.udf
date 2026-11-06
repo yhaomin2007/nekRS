@@ -15,7 +15,7 @@ struct Parameters {
   dfloat gravity[3]={0,0,-9.81};
   dfloat dragEnabled=1,bubbleDiameter=3e-3;
   dfloat alphaMinimum=0,alphaMaximum=0.99;
-  int virtualMassEnabled=0,monitorInterval=10;
+  int alphaClippingEnabled=0,virtualMassEnabled=0,monitorInterval=10;
   int stressMaxIterations=80;
   dfloat stressTolerance=1e-9;
 
@@ -25,8 +25,8 @@ static const std::array<std::string,7> names={"alpha","ugx","ugy","ugz","ulx","u
 static deviceMemory<dfloat> ug,ul,lambdaG,lambdaL;
 static deviceMemory<dfloat> fields,cube,products,transportG,transportL,zeroAdvection;
 static occa::kernel interpolateKernel,productsKernel,projectKernel,alphaKernel;
-static occa::kernel reconstructKernel,initializeKernel,clipKernel,dragKernel,sourceKernel;
-static deviceMemory<dfloat> momentumBase,extrapG,extrapL;
+static occa::kernel reconstructKernel,initializeKernel,clipKernel,dragKernel,sourceKernel,historyKernel;
+static deviceMemory<dfloat> momentumBase,extrapG,extrapL,bdfG,bdfL,bdfMixture;
 static int preparedStep=-1,completedStep=-1,alphaStepDone=-1;
 static dfloat alphaClipMass=0;
 inline void validateLinearSolve(elliptic*,const std::string&);
@@ -82,6 +82,13 @@ inline void beginStep(double time)
   // source-time inlet/wall values before evaluating phase convection.
   s->applyDirichlet(time);
   reconstructMixture();convection(ug,transportG);convection(ul,transportL);
+  // Equation (99) uses the BDF history of the historical volume velocity,
+  // sum_q a_q ubar^{n-q}/dt.  Save it before the native host lags o_S.
+  // Also retain the two phasic BDF histories so they can be removed from the
+  // already assembled phase loads when constructing the pressure RHS.
+  historyKernel(m->Nlocal,O,static_cast<int>(s->o_coeffBDF.size()),s->fieldOffsetSum,
+      s->fieldOffsetScan[0],s->fieldOffsetScan[1],s->fieldOffsetScan[4],
+      1.0/nrs->dt[0],s->o_coeffBDF,s->o_S,bdfG,bdfL,bdfMixture);
   for(int c=0;c<3;++c) {
     extrapG.copyFrom(s->o_Se,m->Nlocal,c*O,s->fieldOffsetScan[1+c]);
     extrapL.copyFrom(s->o_Se,m->Nlocal,c*O,s->fieldOffsetScan[4+c]);
@@ -109,10 +116,13 @@ inline void postAlpha(double time,int)
   validateLinearSolve(nrs->scalar->ellipticSolver.at(0),"alpha");
   auto alpha=nrs->scalar->o_solution("alpha");
   auto mass=nrs->meshV->o_LMM;
-  const auto oldMass=platform->linAlg->innerProd(nrs->meshV->Nlocal,mass,alpha,platform->comm.mpiComm());
-  clipKernel(nrs->meshV->Nlocal,p.alphaMinimum,p.alphaMaximum,alpha);
-  alphaClipMass=platform->linAlg->innerProd(nrs->meshV->Nlocal,mass,alpha,platform->comm.mpiComm())-oldMass;
-  // Enforce inlet alpha again after clipping; restore six phase boundary values.
+  alphaClipMass=0;
+  if(p.alphaClippingEnabled) {
+    const auto oldMass=platform->linAlg->innerProd(nrs->meshV->Nlocal,mass,alpha,platform->comm.mpiComm());
+    clipKernel(nrs->meshV->Nlocal,p.alphaMinimum,p.alphaMaximum,alpha);
+    alphaClipMass=platform->linAlg->innerProd(nrs->meshV->Nlocal,mass,alpha,platform->comm.mpiComm())-oldMass;
+  }
+  // Restore all prescribed scalar boundary values after the alpha solve.
   nrs->scalar->compute.assign(7,1);
   nrs->scalar->applyDirichlet(time);
   packVelocities();
@@ -168,6 +178,7 @@ void UDF_Setup0(MPI_Comm,setupAide&)
   READ("initialplumeheight",initialPlumeHeight);READ("initialplumethickness",initialPlumeThickness);
   READ("gravityx",gravity[0]);READ("gravityy",gravity[1]);READ("gravityz",gravity[2]);
   READ("dragenabled",dragEnabled);READ("bubblediameter",bubbleDiameter);
+  READ("alphaclippingenabled",alphaClippingEnabled);
   READ("alphaminimum",alphaMinimum);READ("alphamaximum",alphaMaximum);
   READ("virtualmassenabled",virtualMassEnabled);READ("monitorinterval",monitorInterval);
   READ("stressmaxiterations",stressMaxIterations);READ("stresstolerance",stressTolerance);
@@ -179,7 +190,8 @@ void UDF_Setup0(MPI_Comm,setupAide&)
       && std::isfinite(p.gravity[0]) && std::isfinite(p.gravity[1]) && std::isfinite(p.gravity[2])
       && std::isfinite(p.initialPlumeHeight) && p.initialPlumeHeight>=0 && p.alphaMinimum>=0 && p.alphaMaximum<1
       && p.alphaMinimum<=p.alphaInlet && p.alphaInlet<=p.alphaMaximum
-      && (p.dragEnabled==0 || p.dragEnabled==1) && p.monitorInterval>=0
+      && (p.dragEnabled==0 || p.dragEnabled==1)
+      && (p.alphaClippingEnabled==0 || p.alphaClippingEnabled==1) && p.monitorInterval>=0
       && p.stressMaxIterations>0 && std::isfinite(p.stressTolerance) && p.stressTolerance>0
       && p.stressTolerance<1)
       || p.virtualMassEnabled!=0,
@@ -220,6 +232,7 @@ void UDF_LoadKernels(deviceKernelProperties& info)
     LOAD(clipKernel,"bubbleColumn4::equations","clipAlpha");
     LOAD(dragKernel,"bubbleColumn4::equations","drag");
     LOAD(sourceKernel,"bubbleColumn4::equations","phaseSource");
+    LOAD(historyKernel,"bubbleColumn4::equations","historyBDF");
     LOAD(transposeKernel,"bubbleColumn4::equations","transposeFlux");
     LOAD(pressureFluxKernel,"bubbleColumn4::equations","pressureFlux");
     LOAD(momentumLoadKernel,"bubbleColumn4::equations","momentumLoad");
@@ -259,6 +272,16 @@ void UDF_Setup()
     const auto range=platform->linAlg->minMax(m->Nlocal,{s->o_transportCoeff(names[is])},platform->comm.mpiComm());
     nekrsCheck(std::abs(range[0].first-1)>1e-12 || std::abs(range[0].second-1)>1e-12,
         platform->comm.mpiComm(),EXIT_FAILURE,"%s","All phase/alpha transportCoeff must be 1.\n");
+    nekrsCheck(!platform->options.compareArgs("SCALAR"+scalarDigitStr(is)+" REGULARIZATION METHOD","NONE"),
+        platform->comm.mpiComm(),EXIT_FAILURE,
+        "Method4 AT baseline does not include scalar regularization (%s must use NONE).\n",names[is].c_str());
+    if(is==0) {
+      const auto diffusion=platform->linAlg->minMax(m->Nlocal,
+          {s->o_diffusionCoeff(names[is])},platform->comm.mpiComm());
+      nekrsCheck(std::abs(diffusion[0].first)>1e-14 || std::abs(diffusion[0].second)>1e-14,
+          platform->comm.mpiComm(),EXIT_FAILURE,"%s",
+          "Equation (90) has no alpha diffusion; SCALAR ALPHA diffusionCoeff must be zero.\n");
+    }
   }
   nekrsCheck(!nrs->fluid->ellipticSolver.empty() || nrs->fluid->ellipticSolverP,
       platform->comm.mpiComm(),EXIT_FAILURE,"%s","Native UM/P solvers must be disabled.\n");
@@ -275,6 +298,7 @@ void UDF_Setup()
   // Our deferred assembly uses the same BDF/EXT histories as the native alpha.
   ug.resize(3*O);ul.resize(3*O);lambdaG.resize(O);lambdaL.resize(O);
   momentumBase.resize(s->fieldOffsetSum);extrapG.resize(3*O);extrapL.resize(3*O);
+  bdfG.resize(3*O);bdfL.resize(3*O);bdfMixture.resize(3*O);
   fields.resize(4*O);cube.resize(4*m->Nelements*m->cubNp);products.resize(cube.size());
   transportG.resize(4*O);transportL.resize(4*O);
   zeroAdvection.resize(std::max(s->o_coeffBDF.size(),s->o_coeffEXT.size())*s->fieldOffsetSum);
@@ -285,7 +309,8 @@ void UDF_Setup()
     initializeKernel(m->Nlocal,p.alphaInlet,p.ugInlet,p.ulInlet,p.initialPlumeHeight,
         p.initialPlumeThickness,m->o_z,s->o_solution("alpha"),s->o_solution("ugz"),s->o_solution("ulz"));
   }
-  clipKernel(m->Nlocal,p.alphaMinimum,p.alphaMaximum,s->o_solution("alpha"));
+  if(p.alphaClippingEnabled)
+    clipKernel(m->Nlocal,p.alphaMinimum,p.alphaMaximum,s->o_solution("alpha"));
   // Native scalar elliptic solvers are constructed after UDF_Setup. Boundary
   // application must wait until beginStep, when their masks are available.
   reconstructMixture();
