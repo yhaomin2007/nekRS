@@ -241,3 +241,10 @@ recomposition, VM/drag/pressure switches, low alpha, weak balance, component
 masks, nonfinite values, postprocessing and BDF-history capture, CSV rows, and
 all checkpoint names (including source alpha/drag/inertia coefficients). These checks do not replace full NekRS MPI/GPU validation.
 
+
+Diagnostic setup allocates buffers only: in v26, UDF_Setup precedes scalar
+elliptic-solver construction. Dirichlet masks are therefore read lazily at the
+first postScalar capture after UG solves, validated before dereference, and
+cached for the fixed mesh. The diagnostic regression starts with null solver
+pointers and separately checks a missing solver table before constructing
+solvers, so it exercises the native initialization order.

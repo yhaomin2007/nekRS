@@ -130,6 +130,7 @@ void UDF_Setup()
   nrs->scalar->userImplicitLinearTerm = &bubbleColumn::implicitGasDrag;
   nrs->userProperties = &bubbleColumn::updateProperties;
   nrs->userDivergence = &bubbleColumn::updateDivergence;
+  // Allocate diagnostics now; read elliptic masks lazily after the first UG solve.
   bubbleColumn::ugTerms::configure();
   bubbleColumn::oneThrough::configure();
 }

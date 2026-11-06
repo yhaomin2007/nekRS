@@ -96,7 +96,7 @@ prefix=prefix.replace('struct LA{','''struct LA{
  void axmy(long n,double a,Mem x,Mem y){for(int i=0;i<n;++i)y[i]*=a*x[i];}''')
 prefix=prefix.replace('struct Platform{LA *linAlg=&la;', 'struct Platform{Requests kernelRequests;LA *linAlg=&la;')
 prefix=prefix.replace('Mem o_vgeo{1},o_D{1},o_invLMM{4}', 'Mem o_vgeo{1},o_D{1},o_ggeo{1},o_LMM{4},o_invLMM{4}')
-prefix=prefix.replace('struct Scalar{','''struct Elliptic{int Nmasked(){return 0;}Mem o_maskIds(){return Mem(0);}};
+prefix=prefix.replace('struct Scalar{','''struct Elliptic{inline static int maskReads=0;int Nmasked(){++maskReads;return 0;}Mem o_maskIds(){return Mem(0);}};
 struct Scalar{
  std::vector<Elliptic*>ellipticSolver;
  std::vector<long>fieldOffsetScan{0,4,8,12};long fieldOffsetSum=16;
@@ -117,12 +117,21 @@ Mem o_ugDiffusionDivergence{12},o_convectionEXT{16},o_convectionSample{16},o_sca
 #include "bubbleColumnUGTerms.hpp"
 int main(){
  using namespace bubbleColumn::ugTerms;
- Elliptic e;scalar.ellipticSolver={&e,&e,&e,&e};
+ Elliptic e;scalar.ellipticSolver={nullptr,nullptr,nullptr,nullptr};
  for(int i=0;i<2;++i){mesh.o_LMM[i]=1;mesh.o_invLMM[i]=1;}
  scalar.o_coeffBDF[0]=2;scalar.o_coeffBDF[1]=-.5;
  for(int i=0;i<48;++i)scalar.o_S[i]=.01*(i+1);
  for(int i=0;i<16;++i)scalar.o_EXT[i]=-.03*i;
- configure();nrs->tstep=1;
+ // Match native init: UDF_Setup precedes setupEllipticSolver.
+ configure();assert(Elliptic::maskReads==0&&!freeMaskReady);
+ captureSolved(0.);assert(Elliptic::maskReads==0); // Initial step is not a solve.
+ bool guarded=false;try{initializeFreeMask();}catch(...){guarded=true;}
+ assert(guarded&&Elliptic::maskReads==0&&!freeMaskReady);
+ scalar.ellipticSolver.clear();guarded=false;
+ try{initializeFreeMask();}catch(...){guarded=true;}
+ assert(guarded&&Elliptic::maskReads==0&&!freeMaskReady);
+ // Solvers become available only after setup; masks are built on first solve.
+ scalar.ellipticSolver={&e,&e,&e,&e};nrs->tstep=1;
  std::vector<double>old(48);scalar.o_S.copyTo(old.data());
  captureSource(0.);
  auto hist=field(TimeHistory);
@@ -131,7 +140,9 @@ int main(){
  // Simulate native solution-history shift/update; captured BDF history must survive.
  for(int i=0;i<48;++i)scalar.o_S[i]=99+i;
  std::vector<double>physical(48);scalar.o_S.copyTo(physical.data());
- captureSolved(.1);capturePostprocessed(.1);
+ captureSolved(.1);assert(freeMaskReady&&Elliptic::maskReads==3);
+ initializeFreeMask();assert(Elliptic::maskReads==3); // Fixed-mesh mask cached.
+ capturePostprocessed(.1);
  for(int i=0;i<48;++i)assert(scalar.o_S[i]==physical[i]);
  auto pressure=field(Pressure);pressure[0]=-7;pressure[1]=2;
  writeCheckpoint(.1);assert(nrs->exports.size()==22);
@@ -142,8 +153,8 @@ int main(){
  while(std::getline(report,line)){++rows;if(line.find("checkpoint,pressure,x,-7.")!=std::string::npos)pressureRow=true;}
  assert(rows==1+3*(Count+Count)&&pressureRow); // 20 source/solved rows + 20 checkpoint rows, xyz.
  enabled=0;nrs->exports.clear();captureSource(.1);captureSolved(.2);capturePostprocessed(.2);writeCheckpoint(.2);
- assert(nrs->exports.empty());
- puts("Whole production C++ diagnostics header: allocation, pre-lag BDF snapshot, read-only source/solved callbacks, global range/CSV rows, all 20 checkpoint vectors + mask/source coefficients, and disabled path passed.");
+ assert(nrs->exports.empty());scalar.ellipticSolver.clear();initializeFreeMask();assert(Elliptic::maskReads==3);
+ puts("Whole production C++ diagnostics header: allocation before elliptic setup, null/empty-table guards, lazy one-time masks, pre-lag BDF snapshot, read-only source/solved callbacks, global range/CSV rows, all 20 checkpoint vectors + mask/source coefficients, and disabled path passed.");
 }
 '''
 with tempfile.TemporaryDirectory() as d:
@@ -161,7 +172,11 @@ begin=extract(order,'inline void beginStep(')
 assert begin.index('addExplicitSources')<begin.index('captureSource')
 udf=(case/'bubbleColumn.udf').read_text()
 assert 'ugTerms::registerKernels(kernelInfo)' in udf and 'ugTerms::writeCheckpoint(time)' in udf
-print('Source/solved/postprocessing capture timing and checkpoint/kernel registration routing passed.')
+header=(case/'bubbleColumnUGTerms.hpp').read_text()
+configure=extract(header,'inline void configure(')
+assert 'Nmasked' not in configure and 'ellipticSolver[' not in configure
+assert extract(header,'inline void captureSolved(').index('initializeFreeMask();') < extract(header,'inline void captureSolved(').index('finishKernel(')
+print('Setup-before-elliptic initialization, lazy-mask routing, capture timing and checkpoint/kernel registration checks passed.')
 
 
 # Build all new kernels with the real OCCA Serial backend when available.

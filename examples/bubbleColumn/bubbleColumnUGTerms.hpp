@@ -23,6 +23,7 @@ static const char *prefixes[Count] = {
   "gnd","gdt","grs","grb","gse","gpc","gcr","gdn","gbd","gbh"
 };
 static int enabled=1, interval=10, sourceStep=-1, solvedStep=-1;
+static bool freeMaskReady=false;
 static double sourceTime=0.0;
 static deviceMemory<dfloat> terms, solved, lambdaSource, diffusion, nativeExplicit, freeMask, bad, coefficients;
 static occa::kernel captureKernel, finishKernel, postprocessKernel, maskKernel, nonfiniteKernel;
@@ -104,7 +105,31 @@ inline void configure()
   freeMask.resize(3*offset); lambdaSource.resize(offset); bad.resize(offset); coefficients.resize(2*offset);
   platform->linAlg->fill(terms.size(),0.0,terms);
   platform->linAlg->fill(3*offset,1.0,freeMask);
+  // UDF_Setup runs before scalar->setupEllipticSolver(). Allocate only;
+  // solver mask pointers are not valid until time integration starts.
+  freeMaskReady=false;
+  if(platform->comm.mpiRank()==0)
+    printf("UGTERMS enabled: acceleration units; source snapshots + pre-postprocess "
+           "solved terms; interval=%d, first step and every checkpoint. "
+           "Balance uses free weak-equation rows, current zero-Neumann UG BCs.\n",interval);
+}
+
+inline void initializeFreeMask()
+{
+  if(!enabled || freeMaskReady) return;
+  const auto comm=platform->comm.mpiComm();
+  const dlong offset=nrs->fieldOffset;
   const char *gasNames[]={"ugx","ugy","ugz"};
+  // Validate every pointer before dereferencing any solver. This makes an
+  // accidental early call fail with a useful message rather than SIGSEGV.
+  for(const char *name:gasNames) {
+    const int is=nrs->scalar->nameToIndex.at(name);
+    nekrsCheck(is<0 || static_cast<size_t>(is)>=nrs->scalar->ellipticSolver.size(),
+        comm,EXIT_FAILURE,"%s","UG diagnostic scalar solver table is not ready.\n");
+    nekrsCheck(!nrs->scalar->ellipticSolver[is],comm,EXIT_FAILURE,
+        "UG diagnostic elliptic solver for %s is not ready; initialize masks after scalar solver setup.\n",name);
+  }
+  platform->linAlg->fill(3*offset,1.0,freeMask);
   for(int c=0;c<3;++c) {
     const int is=nrs->scalar->nameToIndex.at(gasNames[c]);
     const dlong count=nrs->scalar->ellipticSolver[is]->Nmasked();
@@ -113,10 +138,7 @@ inline void configure()
       maskKernel(count,nrs->scalar->ellipticSolver[is]->o_maskIds(),component);
     }
   }
-  if(platform->comm.mpiRank()==0)
-    printf("UGTERMS enabled: acceleration units; source snapshots + pre-postprocess "
-           "solved terms; interval=%d, first step and every checkpoint. "
-           "Balance uses free weak-equation rows, current zero-Neumann UG BCs.\n",interval);
+  freeMaskReady=true;
 }
 
 inline void captureSource(double time)
@@ -168,6 +190,9 @@ inline void captureSolved(double)
   if(!enabled || nrs->tstep<1) return;
   nekrsCheck(sourceStep!=nrs->tstep,platform->comm.mpiComm(),EXIT_FAILURE,
       "%s","UG diagnostics missing matching source snapshot.\n");
+  // First postScalar call: native scalar elliptic solvers now exist and UG
+  // has just been solved. Fixed mesh/BCs let us retain this mask thereafter.
+  initializeFreeMask();
   const dlong N=nrs->meshV->Nlocal,offset=nrs->fieldOffset;
   const char *gasNames[]={"ugx","ugy","ugz"};
   for(int c=0;c<3;++c) {
