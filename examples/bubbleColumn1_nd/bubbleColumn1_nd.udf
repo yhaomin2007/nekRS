@@ -1,0 +1,235 @@
+#include "bubbleColumnTerms.hpp"
+#include "bubbleColumnCubature.hpp"
+#include "bubbleColumnUGTerms.hpp"
+#include "bubbleColumnOneThrough.hpp"
+
+#ifdef __okl__
+#include "bubbleColumn1_nd.oudf"
+#endif
+
+namespace {
+constexpr double referenceLength = 0.1;   // m
+constexpr double referenceVelocity = 0.3; // m/s, dimensional gas inlet
+constexpr double referenceDensity = 998.2; // kg/m^3
+}
+
+void UDF_LoadKernels(deviceKernelProperties& kernelInfo)
+{
+  kernelInfo.define("p_RHO_LIQUID") = bubbleColumn::p.rhoLiquid;
+  kernelInfo.define("p_RHO_GAS") = bubbleColumn::p.rhoGas;
+  kernelInfo.define("p_ALPHA_INLET") = bubbleColumn::p.alphaInlet;
+  kernelInfo.define("p_UG_INLET") = bubbleColumn::p.ugInlet;
+  kernelInfo.define("p_ND_INV_DENSITY_REF") = 1.0 / referenceDensity;
+  kernelInfo.define("p_ND_OUTLET_INV_VELOCITY") = 20.0 * referenceVelocity;
+  bubbleColumn::registerKernels(kernelInfo);
+  bubbleColumn::ugTerms::registerKernels(kernelInfo);
+}
+
+void UDF_Setup0(MPI_Comm, setupAide &)
+{
+  // userDivergence does not require thermodynamic LOWMACH mode. Keep that
+  // mode disabled (and therefore avoid its p0th requirement), while retaining
+  // the variable 1/rho_m coefficient in the pressure projection.
+  platform->options.setArgs("LOWMACH", "FALSE");
+  platform->options.setArgs("FLUID PRESSURE ELLIPTIC COEFF FIELD", "TRUE");
+  // Core registrations copy platform->kernelInfo after setup0. OCCA emits
+  // literal headers after its includes, so this supplies only missing c_I.
+  int N = 0, cubN = 0;
+  platform->options.getArgs("POLYNOMIAL DEGREE", N);
+  platform->options.getArgs("CUBATURE POLYNOMIAL DEGREE", cubN);
+  const auto interpolationHeader = bubbleColumn::missingCubatureInterpolationHeader(N, cubN);
+  if (!interpolationHeader.empty()) {
+    platform->kernelInfo["headers"].asArray();
+    platform->kernelInfo["headers"] += interpolationHeader;
+  }
+  auto &p = bubbleColumn::p;
+  platform->par->extract("casedata", "rholiquid", p.rhoLiquid);
+  platform->par->extract("casedata", "rhogas", p.rhoGas);
+  platform->par->extract("casedata", "muliquid", p.muLiquid);
+  platform->par->extract("casedata", "mugas", p.muGas);
+  platform->par->extract("casedata", "alphainlet", p.alphaInlet);
+  platform->par->extract("casedata", "gasinletvelocity", p.ugInlet);
+  p.ugInitial = p.ugInlet;
+  platform->par->extract("casedata", "uginitial", p.ugInitial);
+  platform->par->extract("casedata", "gasinitialvelocity", p.ugInitial);
+  platform->par->extract("casedata", "initialplumeheight", p.initialPlumeHeight);
+  platform->par->extract("casedata", "initialplumethickness", p.initialPlumeThickness);
+  nekrsCheck(!(std::isfinite(p.initialPlumeHeight) && p.initialPlumeHeight >= 0.0
+               && std::isfinite(p.initialPlumeThickness) && p.initialPlumeThickness > 0.0
+               && std::isfinite(p.alphaInlet) && p.alphaInlet >= 0.0 && p.alphaInlet <= 1.0
+               && std::isfinite(p.ugInlet) && std::isfinite(p.ugInitial) && std::isfinite(p.rhoLiquid) && p.rhoLiquid > 0.0
+               && std::isfinite(p.rhoGas) && p.rhoGas > 0.0),
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "%s", "Plume initialization requires valid height/thickness, alphaInlet, "
+             "gasInitialVelocity and positive phase densities.\n");
+  platform->par->extract("casedata", "gravityx", p.gravity[0]);
+  platform->par->extract("casedata", "gravityy", p.gravity[1]);
+  platform->par->extract("casedata", "gravityz", p.gravity[2]);
+  platform->par->extract("casedata", "alphafloor", p.alphaFloor);
+  platform->par->extract("casedata", "alphaclippenabled", p.alphaClippingEnabled);
+  platform->par->extract("casedata", "alphaexplicitfiltermodes", p.alphaExplicitFilterModes);
+  platform->par->extract("casedata", "alphaexplicitfilterstrength", p.alphaExplicitFilterStrength);
+  platform->par->extract("casedata", "alphaminimum", p.alphaMinimum);
+  platform->par->extract("casedata", "alphamaximum", p.alphaMaximum);
+  platform->par->extract(
+      "casedata", "subtractalphadiffusion", p.subtractAlphaDiffusion);
+  platform->par->extract("casedata", "subtractugxdiffusion", p.subtractUgDiffusion[0]);
+  platform->par->extract("casedata", "subtractugydiffusion", p.subtractUgDiffusion[1]);
+  platform->par->extract("casedata", "subtractugzdiffusion", p.subtractUgDiffusion[2]);
+  platform->par->extract("casedata", "zrampbottom", p.zRampBottom);
+  platform->par->extract("casedata", "zramptop", p.zRampTop);
+  platform->par->extract("casedata", "outletdampingfactor", p.outletDampingFactor);
+  platform->par->extract("casedata",
+                         "smoothgasvelocitymaskenabled",
+                         p.smoothGasVelocityMaskEnabled);
+  platform->par->extract("casedata", "gasvelocityclipenabled", p.gasVelocityClipEnabled);
+  platform->par->extract("casedata", "gasvelocitymaximum", p.gasVelocityMaximum);
+  platform->par->extract(
+      "casedata", "mixturevelocityclipenabled", p.mixtureVelocityClipEnabled);
+  platform->par->extract(
+      "casedata", "mixturevelocitymaximum", p.mixtureVelocityMaximum);
+  platform->par->extract("casedata", "gasmomentumcutoff", p.gasMomentumCutoff);
+  platform->par->extract(
+      "casedata", "gasmomentumfullyactive", p.gasMomentumFullyActive);
+  platform->par->extract("casedata", "gaspressureenabled", p.gasPressureEnabled);
+  platform->par->extract("casedata", "gaspressuregradientextrapolation", p.gasPressureGradientExtrapolation);
+  platform->par->extract("casedata", "dragenabled", p.dragEnabled);
+  platform->par->extract("casedata", "bubblediameter", p.bubbleDiameter);
+  platform->par->extract("casedata", "driftstressenabled", p.driftStressEnabled);
+  platform->par->extract("casedata", "virtualmassenabled", p.virtualMassEnabled);
+  platform->par->extract("casedata", "virtualmasscoefficient", p.virtualMassCoefficient);
+  platform->par->extract("casedata", "gastransportmethod", p.gasTransportMethod);
+  platform->par->extract("casedata", "mixturedivergenceform", p.mixtureDivergenceForm);
+  platform->par->extract("casedata", "mixturedivergenceenabled", p.mixtureDivergenceEnabled);
+  nekrsCheck(p.mixtureDivergenceEnabled != 0 && p.mixtureDivergenceEnabled != 1,
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "%s", "mixtureDivergenceEnabled must be 0 or 1.\n");
+  platform->par->extract("casedata", "divergencecomparisoninterval", p.divergenceComparisonInterval);
+  platform->par->extract("casedata", "divergencefiltermodes", p.divergenceFilterModes);
+  platform->par->extract("casedata", "alphatransportform", p.alphaTransportForm);
+  platform->par->extract("casedata", "divergencefilterstrength", p.divergenceFilterStrength);
+  platform->par->extract("casedata", "divergenceinletthickness", p.divergenceInletThickness);
+  platform->par->extract(
+      "casedata", "divergenceextrapolationenabled", p.divergenceExtrapolationEnabled);
+  platform->par->extract("casedata", "divergencerampenabled", p.divergenceRampEnabled);
+  platform->par->extract("casedata", "divergencerampsteps", p.divergenceRampSteps);
+  platform->par->extract("casedata", "stabilitymonitorenabled", p.stabilityMonitorEnabled);
+  platform->par->extract("casedata", "stabilitymonitorinterval", p.stabilityMonitorInterval);
+  platform->par->extract(
+      "casedata", "validationoutputinterval", p.validationOutputInterval);
+}
+
+void UDF_Setup()
+{
+  if (platform->comm.mpiRank() == 0) {
+    printf("bubbleColumn1_nd reference L0=%.8g m U0=%.8g m/s rho0=%.8g kg/m^3 "
+           "T0=%.8g s P0=%.8g Pa Re=%.8g\n",
+           referenceLength, referenceVelocity, referenceDensity,
+           referenceLength / referenceVelocity,
+           referenceDensity * referenceVelocity * referenceVelocity,
+           1.0 / bubbleColumn::p.muLiquid);
+  }
+  bubbleColumn::allocate();
+  if (platform->options.getArgs("RESTART FILE NAME").empty()) {
+    const auto &p = bubbleColumn::p;
+    bubbleColumn::initializePlumeKernel(
+        nrs->meshV->Nlocal, nrs->fieldOffset, p.rhoLiquid, p.rhoGas,
+        p.alphaInlet, p.ugInitial, p.initialPlumeHeight, p.initialPlumeThickness,
+        nrs->meshV->o_z,
+        nrs->scalar->o_solution("alpha"), nrs->scalar->o_solution("ugx"),
+        nrs->scalar->o_solution("ugy"), nrs->scalar->o_solution("ugz"), nrs->fluid->o_U);
+  }
+
+  bubbleColumn::initializeHistory();
+  nrs->userSource = &bubbleColumn::oneThrough::beginStep;
+  nrs->postScalar = &bubbleColumn::postProcessAlpha;
+  nrs->userProperties = &bubbleColumn::updateProperties;
+  nrs->userDivergence = &bubbleColumn::updateDivergence;
+  // Allocate diagnostics now; read elliptic masks lazily after the first UG solve.
+  bubbleColumn::ugTerms::configure();
+  bubbleColumn::oneThrough::configure();
+}
+
+void UDF_ExecuteStep(double time, int tstep)
+{
+  // Alpha/UG and then native pressure/UM have completed exactly once.
+  if (tstep > 0) bubbleColumn::oneThrough::finishStep();
+  // Measure the fluid update before optional emergency clipping.
+  bubbleColumn::diagnoseDivergenceCoupling(time, tstep);
+  // Use bounded velocity for the remaining diagnostics, output and next step.
+  bubbleColumn::clipMixtureVelocity();
+  if (tstep > 0) {
+    bubbleColumn::updateDivergenceHistory();
+  }
+  if (tstep > 0 && bubbleColumn::p.virtualMassEnabled != 0.0) {
+    bubbleColumn::updateVirtualMassHistory();
+  }
+  if (tstep > 0) {
+    bubbleColumn::printDivergenceComparison(time, tstep);
+    bubbleColumn::printStabilityMonitors(time, tstep);
+    bubbleColumn::printPressureGradientComparison(time, tstep);
+  }
+  bubbleColumn::ugTerms::writeCheckpoint(time);
+  if (nrs->checkpointStep) {
+    // Write reconstructed phase velocities as separate vector fields without
+    // replacing the transported UG checkpoint variables used for restart.
+    bubbleColumn::reconstructGasVelocity();
+    bubbleColumn::reconstructLiquidVelocity();
+    const dlong offset = nrs->fieldOffset;
+    std::vector<deviceMemory<dfloat>> gasVelocity = {
+        bubbleColumn::o_ug.slice(0 * offset, nrs->meshV->Nlocal),
+        bubbleColumn::o_ug.slice(1 * offset, nrs->meshV->Nlocal),
+        bubbleColumn::o_ug.slice(2 * offset, nrs->meshV->Nlocal)};
+    nrs->writeToFile(
+        "ug", time, nrs->meshV, {{"velocity", gasVelocity}});
+    std::vector<deviceMemory<dfloat>> liquidVelocity = {
+        bubbleColumn::o_ul.slice(0 * offset, nrs->meshV->Nlocal),
+        bubbleColumn::o_ul.slice(1 * offset, nrs->meshV->Nlocal),
+        bubbleColumn::o_ul.slice(2 * offset, nrs->meshV->Nlocal)};
+    nrs->writeToFile(
+        "ul", time, nrs->meshV, {{"velocity", liquidVelocity}});
+
+    // Raw gradients cached before this step's fluid solve. UG uses raw strong
+    // or its independently selected EXT; weak is diagnostic only.
+    std::vector<deviceMemory<dfloat>> gradPStrong = {
+        bubbleColumn::o_gradPStrong.slice(0 * offset, nrs->meshV->Nlocal),
+        bubbleColumn::o_gradPStrong.slice(1 * offset, nrs->meshV->Nlocal),
+        bubbleColumn::o_gradPStrong.slice(2 * offset, nrs->meshV->Nlocal)};
+    std::vector<deviceMemory<dfloat>> gradPWeak = {
+        bubbleColumn::o_gradPWeak.slice(0 * offset, nrs->meshV->Nlocal),
+        bubbleColumn::o_gradPWeak.slice(1 * offset, nrs->meshV->Nlocal),
+        bubbleColumn::o_gradPWeak.slice(2 * offset, nrs->meshV->Nlocal)};
+    nrs->writeToFile(
+        "gradpStrong", time, nrs->meshV, {{"velocity", gradPStrong}});
+    nrs->writeToFile(
+        "gradpWeak", time, nrs->meshV, {{"velocity", gradPWeak}});
+
+    // Raw reconstructions are cached in userProperties before the fluid solve.
+    // scalar00: raw transport/diffusion target; scalar01: full BDF target;
+    // scalar02: actual applied target;
+    // scalar03: raw method0 - raw method1; scalar04: continuity coupling lag.
+    // No diagnostic scratch aliasing.
+    std::vector<deviceMemory<dfloat>> divAlphaRhs = {
+        bubbleColumn::o_divComparison.slice(0 * offset, nrs->meshV->Nlocal)};
+    std::vector<deviceMemory<dfloat>> divAlphaBdf = {
+        bubbleColumn::o_divComparison.slice(1 * offset, nrs->meshV->Nlocal)};
+    std::vector<deviceMemory<dfloat>> divPressureTarget = {
+        deviceMemory<dfloat>(nrs->fluid->o_div).slice(0, nrs->meshV->Nlocal)};
+    std::vector<deviceMemory<dfloat>> divDifference = {
+        bubbleColumn::o_divComparison.slice(2 * offset, nrs->meshV->Nlocal)};
+    std::vector<deviceMemory<dfloat>> divCouplingLag = {
+        bubbleColumn::o_divCouplingLag.slice(0, nrs->meshV->Nlocal)};
+    nrs->writeToFile("div", time, nrs->meshV,
+                     {{"scalar00", divAlphaRhs}, {"scalar01", divAlphaBdf},
+                      {"scalar02", divPressureTarget}, {"scalar03", divDifference},
+                      {"scalar04", divCouplingLag}});
+    nrs->copyToNek(time, tstep);
+    nek::userchk();
+  }
+  // Validation uses o_validationMassFlux as scratch. Run it after checkpoint
+  // output so the two stored divergence alternatives remain intact until the
+  // diagnostic field file has been written.
+  if (tstep > 0) {
+    bubbleColumn::writeValidationChecks(time, tstep);
+  }
+}

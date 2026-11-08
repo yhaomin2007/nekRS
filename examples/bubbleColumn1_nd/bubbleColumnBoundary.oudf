@@ -1,0 +1,34 @@
+void udfDirichlet(bcData *bc)
+{
+  if (isField("fluid velocity")) {
+    if (bc->id == 1) {
+      const dfloat rhoM = (1.0 - p_ALPHA_INLET) * p_RHO_LIQUID
+                          + p_ALPHA_INLET * p_RHO_GAS;
+      // Density-averaged inlet velocity; the liquid inlet velocity is zero.
+      bc->uxFluid = 0.0;
+      bc->uyFluid = 0.0;
+      // Uniform inlet; shared inlet/wall rim nodes retain wall precedence.
+      bc->uzFluid = bc->usrwrk[bc->idxVol]
+                    * p_ALPHA_INLET * p_RHO_GAS * p_UG_INLET / rhoM;
+    } else if (bc->id == 3) {
+      bc->uxFluid = 0.0;
+      bc->uyFluid = 0.0;
+      bc->uzFluid = 0.0;
+    }
+  } else if (isField("fluid pressure")) {
+    // Preserve the dimensional outlet pressure law under p*=p/(rho0*U0^2).
+    const dfloat iU0delta = p_ND_OUTLET_INV_VELOCITY;
+    const dfloat un = bc->uxFluid * bc->nx + bc->uyFluid * bc->ny + bc->uzFluid * bc->nz;
+    const dfloat s0 = 0.5 * (1.0 - tanh(un * iU0delta));
+    bc->pFluid = -0.5 * p_ND_INV_DENSITY_REF * (bc->uxFluid * bc->uxFluid + bc->uyFluid * bc->uyFluid + bc->uzFluid * bc->uzFluid) * s0;
+  } else if (isField("scalar alpha")) {
+    bc->sScalar = p_ALPHA_INLET;
+  } else if (isField("scalar ugx")) {
+    bc->sScalar = 0.0;
+  } else if (isField("scalar ugy")) {
+    bc->sScalar = 0.0;
+  } else if (isField("scalar ugz")) {
+    bc->sScalar = (bc->id == 1)
+        ? bc->usrwrk[bc->idxVol] * p_UG_INLET : 0.0;
+  }
+}
