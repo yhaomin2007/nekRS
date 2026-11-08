@@ -31,7 +31,8 @@ check('FLUID VELOCITY', 'viscosity', 1/(rho*U*L))
 for field, factor in [('FLUID PRESSURE', sqrt(L)/U**2),
                       ('FLUID VELOCITY', 1/(sqrt(L)*rho*U**2)),
                       ('SCALAR ALPHA', 1/(sqrt(L)*U)),
-                      *[('SCALAR UG'+axis, 1/(sqrt(L)*U**2)) for axis in 'XYZ']]:
+                      # UG trial tightens the SI-equivalent ND tolerance by 100.
+                      *[('SCALAR UG'+axis, 0.01/(sqrt(L)*U**2)) for axis in 'XYZ']]:
     check(field, 'residualTol', factor)
     if field.startswith('SCALAR'):
         check(field, 'diffusionCoeff', 1/(U*L))

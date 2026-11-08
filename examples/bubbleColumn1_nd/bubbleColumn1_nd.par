@@ -43,7 +43,8 @@ regularization = hpfrt + nModes=1 + scalingCoeff=3.333333333333333
 [SCALAR UGX]
 initialGuess = previous
 boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
-residualTol = 3.513641844631532e-05
+# UG tolerance trial: 100 times tighter than the SI-equivalent ND value.
+residualTol = 3.513641844631532e-07
 transportCoeff = 1.0
 diffusionCoeff = 0.0003333333333333334
 regularization = hpfrt + nModes=1 + scalingCoeff=3.333333333333333
@@ -51,7 +52,7 @@ regularization = hpfrt + nModes=1 + scalingCoeff=3.333333333333333
 [SCALAR UGY]
 initialGuess = previous
 boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
-residualTol = 3.513641844631532e-05
+residualTol = 3.513641844631532e-07
 transportCoeff = 1.0
 diffusionCoeff = 0.0003333333333333334
 regularization = hpfrt + nModes=1 + scalingCoeff=3.333333333333333
@@ -59,7 +60,7 @@ regularization = hpfrt + nModes=1 + scalingCoeff=3.333333333333333
 [SCALAR UGZ]
 initialGuess = previous
 boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
-residualTol = 3.513641844631532e-05
+residualTol = 3.513641844631532e-07
 transportCoeff = 1.0
 diffusionCoeff = 0.0003333333333333334
 regularization = hpfrt + nModes=1 + scalingCoeff=3.333333333333333

@@ -28,12 +28,17 @@ fields. The reference scales are fixed at the values below.
 Alpha, filter attenuation, VM coefficient, extrapolation weights and all step
 counts are dimensionless. The drag law evaluates the same bubble Reynolds
 number. The pressure outlet law uses the converted velocity switch and
-pressure scale. `residualTol` values match the baseline's absolute stopping
-thresholds after rescaling the assembled weak residual and mesh volume.
-Relative to the dimensional `residualTol`, the factors are `sqrt(L0)/U0²`
+pressure scale. To match the baseline's absolute stopping thresholds after
+rescaling the assembled weak residual and mesh volume, multiply the dimensional
+`residualTol` by `sqrt(L0)/U0²`
 for pressure, `1/(sqrt(L0)*rho0*U0²)` for UM, `1/(sqrt(L0)*U0)` for alpha,
 and `1/(sqrt(L0)*U0²)` for UG. This follows the NekRS threshold
 `residualTol * sqrt(mesh volume)` for the absolute residual of the weak system.
+
+This trial sets all three UG tolerances to `3.513641844631532e-07`, 100 times
+tighter than their SI-equivalent ND value of `3.513641844631532e-05`. To run
+the control, restore that value for UGX, UGY and UGZ. Compare the achieved UG
+residuals and stripe onset at the same physical time.
 
 Run from `examples/bubbleColumn1_nd` with the **same metre-based mesh** used
 for the dimensional comparison case. For the default layout:
