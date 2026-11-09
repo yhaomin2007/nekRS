@@ -326,12 +326,16 @@ inline void solveConsistentPhasePressure(double time,int step,bool log,double be
   };
   auto actualResidual=evaluate();
   double final=norm(actualResidual);
+  struct SchurSample { int pass,iteration; double norm; };
+  std::vector<SchurSample> history;
   // A fresh physical residual corrects the small error from inexact phase
   // inverses. Refinement shares the configured outer iteration budget.
   while(std::isfinite(final) && final>target && passes<3 && iterations<p.pressureSchurMaxIterations) {
     std::vector<double> correction(N,0.0);
     const auto result=method3Projection::solve(actualResidual,correction,apply,precondition,dot,
-        p.pressureSchurMaxIterations-iterations,15,0.0,0.25*target);
+        p.pressureSchurMaxIterations-iterations,p.pressureSchurRestart,0.0,0.25*target);
+    for(const auto& sample : result.residualHistory)
+      history.push_back({passes+1,iterations+sample.iteration,sample.norm});
     iterations+=result.iterations;
     linearResidual=result.residual;
     reason=result.reason;
@@ -347,10 +351,15 @@ inline void solveConsistentPhasePressure(double time,int step,bool log,double be
   pressureSolver->options().setArgs("SOLVER TOLERANCE",nativeTolerance);
   const bool converged=std::isfinite(final) && final<=target;
   if(platform->comm.mpiRank()==0) {
-    printf("method3Schur step=%d time=%.8e pressureForm=%s iterations=%d phaseEvaluations=%d "
+    if(log || !converged) {
+      for(const auto& sample : history)
+        printf("method3SchurRestart step=%d pass=%d iteration=%d weakLinearL2=%.8e\n",
+            step,sample.pass,sample.iteration,tau*sample.norm);
+    }
+    printf("method3Schur step=%d time=%.8e pressureForm=%s iterations=%d restart=%d phaseEvaluations=%d "
         "nativePreconditionerSolves=%d passes=%d weakL2(predictor,final)=(%.8e,%.8e) target=%.8e "
         "linearResidual=%.8e reason=%s converged=%s wallTime=%.6es\n",step,time,
-        incremental?"increment":"absolute",iterations,phaseEvaluations,nativeSolves,passes,
+        incremental?"increment":"absolute",iterations,p.pressureSchurRestart,phaseEvaluations,nativeSolves,passes,
         tau*predictorNorm,tau*final,tau*target,tau*linearResidual,
         converged?"converged":reason,converged?"yes":"no",MPI_Wtime()-start);
     fflush(stdout);

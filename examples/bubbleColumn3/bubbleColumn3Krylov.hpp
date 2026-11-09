@@ -5,8 +5,11 @@
 #include <limits>
 
 namespace method3Projection {
+struct ResidualSample { int iteration; double norm; };
 struct Result { int iterations=0; double initial=0, residual=0, rhsNorm=0, target=0; bool converged=false;
-  const char* reason="maximumIterations"; };
+  const char* reason="maximumIterations";
+  std::vector<ResidualSample> residualHistory;
+};
 // Restarted flexible GCR. Dot supplies a global, duplicate-aware inner product.
 // Recompute the true residual at every restart and before accepting convergence.
 // On success, the last apply call evaluated the accepted x.
@@ -24,6 +27,7 @@ Result solve(const std::vector<double>& b,std::vector<double>& x,
   apply(x,ax);
   for(size_t i=0;i<b.size();++i) r[i]-=ax[i];
   out.initial=norm(r);out.residual=out.initial;
+  out.residualHistory.push_back({0,out.initial});
   const double rhsNorm=norm(b);
   out.rhsNorm=rhsNorm;
   if(!std::isfinite(out.initial)||!std::isfinite(rhsNorm)) {out.reason="nonfiniteResidual";return out;}
@@ -51,6 +55,7 @@ Result solve(const std::vector<double>& b,std::vector<double>& x,
     apply(x,ax);
     for(size_t i=0;i<b.size();++i) r[i]=b[i]-ax[i];
     out.residual=norm(r);
+    out.residualHistory.push_back({out.iterations,out.residual});
     if(z.empty()) break;
   }
   out.converged=std::isfinite(out.residual)&&out.residual<=target;

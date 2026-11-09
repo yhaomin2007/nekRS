@@ -116,6 +116,7 @@ output contains UM, pressure and seven scalar fields.
 pressureSolveMode = consistent
 pressureWarmStart = 1
 pressureSchurMaxIterations = 100
+pressureSchurRestart = 30
 pressureSchurTolerance = 1e-6
 pressureSchurAbsoluteTolerance = 1e-12
 ```
@@ -158,8 +159,13 @@ preconditioner calls, physical weak residual before/after the update, target,
 and convergence. The final residual is measured after boundary restoration.
 `passes` counts outer correction/refinement passes. `linearResidual` reports
 the last homogeneous Schur residual in the same units as the measured weak
-residual. A small linear residual with a larger physical residual indicates
-that the computed phase response and full-flow solve differ at that scale.
+residual. `pressureSchurRestart` sets how many GCR directions are retained
+before rebuilding the basis. Each direction uses two host pressure vectors.
+`method3SchurRestart` reports the initial and recomputed weak linear residuals
+at each restart and at the final iteration of each pass. It is printed on
+monitored steps and on failure. A small linear residual with a larger physical
+residual indicates that the computed phase response and full-flow solve differ
+at that scale.
 A large linear residual can also reflect pressure-space compatibility or
 exhausted iterations.
 Use `mode=consistent` output to compare strong divergence and velocity fields.

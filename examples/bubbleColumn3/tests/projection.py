@@ -39,7 +39,37 @@ source=r'''
 #include <cassert>
 #include <cstdio>
 using V=std::vector<double>;
+
+void checkRestartHistory()
+{
+ constexpr int n=30;
+ V eigenvalues(n);
+ for(int i=0;i<n;++i) eigenvalues[i]=std::pow(10.0,-5.0*i/(n-1));
+ auto apply=[&](const V& x,V& y) {
+   for(int i=0;i<n;++i) y[i]=eigenvalues[i]*x[i];
+ };
+ auto identity=[](const V& x,V& y){y=x;};
+ auto dot=[](const V& x,const V& y){
+   double sum=0;
+   for(int i=0;i<n;++i) sum+=x[i]*y[i];
+   return sum;
+ };
+ const V rhs(n,1.0);
+ V shortGuess(n,0.0),longGuess(n,0.0);
+ const auto shortBasis=method3Projection::solve(rhs,shortGuess,apply,identity,dot,60,15,1e-8);
+ const auto longBasis=method3Projection::solve(rhs,longGuess,apply,identity,dot,60,30,1e-8);
+ assert(!shortBasis.converged && longBasis.converged);
+ assert(shortBasis.residualHistory.size()==5);
+ for(int i=0;i<5;++i) assert(shortBasis.residualHistory[i].iteration==15*i);
+ const auto& history=longBasis.residualHistory;
+ assert(history.front().iteration==0 && history.front().norm==longBasis.initial);
+ assert(history.back().iteration==longBasis.iterations && history.back().norm==longBasis.residual);
+ printf("PASS: restart residuals with 15 and 30 directions %.3e and %.3e\n",
+        shortBasis.residual,longBasis.residual);
+}
+
 int main(){
+ checkRestartHistory();
  const V A=AMATRIX, P=PMATRIX, b=BVECTOR;
  auto mult=[](const V& M,const V& x,V& y){y.assign(6,0);for(int i=0;i<6;++i)for(int j=0;j<6;++j)y[i]+=M[6*i+j]*x[j];};
  auto op=[&](const V& x,V& y){mult(A,x,y);};

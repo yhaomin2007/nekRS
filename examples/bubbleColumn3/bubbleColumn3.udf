@@ -22,7 +22,7 @@ struct Parameters {
   int pressureWarmStart=1;
   int pressureIncremental=0;
   std::string pressureSolveMode="consistent";
-  int pressureSchurMaxIterations=100;
+  int pressureSchurMaxIterations=100,pressureSchurRestart=30;
   dfloat pressureSchurTolerance=1e-6,pressureSchurAbsoluteTolerance=1e-12;
 };
 static Parameters p;
@@ -224,6 +224,7 @@ void UDF_Setup0(MPI_Comm,setupAide&)
   READ("pressureincremental",pressureIncremental);
   READ("pressuresolvemode",pressureSolveMode);
   READ("pressureschurmaxiterations",pressureSchurMaxIterations);
+  READ("pressureschurrestart",pressureSchurRestart);
   READ("pressureschurtolerance",pressureSchurTolerance);
   READ("pressureschurabsolutetolerance",pressureSchurAbsoluteTolerance);
   p.pressureSolveMode=lowerCase(p.pressureSolveMode);
@@ -237,7 +238,7 @@ void UDF_Setup0(MPI_Comm,setupAide&)
       && p.alphaMinimum<=p.alphaInlet && p.alphaInlet<=p.alphaMaximum
       && (p.dragEnabled==0 || p.dragEnabled==1) && p.monitorInterval>=0
       && (p.pressureSolveMode=="consistent" || p.pressureSolveMode=="native")
-      && p.pressureSchurMaxIterations>0
+      && p.pressureSchurMaxIterations>0 && p.pressureSchurRestart>0
       && std::isfinite(p.pressureSchurTolerance) && p.pressureSchurTolerance>0 && p.pressureSchurTolerance<1
       && std::isfinite(p.pressureSchurAbsoluteTolerance) && p.pressureSchurAbsoluteTolerance>=0
       && (p.pressureWarmStart==0 || p.pressureWarmStart==1)

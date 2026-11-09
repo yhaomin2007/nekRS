@@ -110,6 +110,7 @@ pressureWarmStart = 1
 # Schur pressure uses the actual coupled phase Helmholtz response.
 pressureSolveMode = consistent
 pressureSchurMaxIterations = 100
+pressureSchurRestart = 30
 pressureSchurTolerance = 1e-6
 pressureSchurAbsoluteTolerance = 1e-12
 
