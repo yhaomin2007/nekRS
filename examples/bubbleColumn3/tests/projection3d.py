@@ -34,6 +34,25 @@ null_part=V[rank:]@b
 floor=np.linalg.norm(null_part)/np.linalg.norm(b)
 # This ideal symmetric inflow is compatible despite the pressure null modes.
 assert floor<1e-12
+# Full two-phase Helmholtz response on free velocity DOFs. This retains the
+# wall-masked null modes while changing the response through viscosity/drag.
+free=G[np.tile(freeU,3)][:,freeP]
+mass_free=np.diag(weight[F])
+stiffness=G.T@(weight[:,None]*G)
+stiffness=np.kron(np.eye(3),stiffness)[np.ix_(F,F)]
+alpha,rho_g,rho_l,tau=.05,1.2,998.2,.02
+lg=25.
+ll=alpha*rho_g*lg/((1-alpha)*rho_l)
+H=np.block([[(1/tau+lg)*mass_free+.003*stiffness,-lg*mass_free],
+            [-ll*mass_free,(1/tau+ll)*mass_free+.006*stiffness]])
+load=-np.vstack((mass_free@free/rho_g,mass_free@free/rho_l))
+D_m=free.T@mass_free@np.hstack((alpha*np.eye(len(free)),(1-alpha)*np.eye(len(free))))
+full_schur=-D_m@np.linalg.solve(H,load)/tau
+assert np.linalg.matrix_rank(full_schur,tol=1e-10)==rank
+# A nontrivial pressure load gives a compatible, nonzero weak residual.
+compatible_rhs=full_schur@np.sin(np.arange(len(A)))
+assert np.linalg.norm(compatible_rhs)>1e-3
+assert np.linalg.norm(compatible_rhs-full_schur@np.linalg.solve(K,compatible_rhs))>1e-3
 # A controlled incompatible component tests failure handling and stabilization;
 # it represents a perturbed discrete boundary/RHS, not measured user-run data.
 b+=.01*np.linalg.norm(b)*V[rank]
@@ -57,7 +76,7 @@ source=r'''
 #include <cassert>
 #include <cstdio>
 using V=std::vector<double>;
-int main(){const int n=SIZE;const V S=SMATRIX,A=AMATRIX,K=KMATRIX,P=PMATRIX,b=BVECTOR;
+int main(){const int n=SIZE;const V S=SMATRIX,A=AMATRIX,K=KMATRIX,P=PMATRIX,b=BVECTOR,full=FULL_MATRIX,compatible=COMPATIBLE_RHS;
  auto mult=[&](const V& M,const V& x,V& y){y.assign(n,0);for(int i=0;i<n;++i)for(int j=0;j<n;++j)y[i]+=M[n*i+j]*x[j];};
  auto op=[&](const V& x,V& y){mult(S,x,y);};
  bool inexact=false;int calls=0;
@@ -72,6 +91,11 @@ int main(){const int n=SIZE;const V S=SMATRIX,A=AMATRIX,K=KMATRIX,P=PMATRIX,b=BV
      assert(dot(residual,residual)<=.0001*dot(x,x));
    }
  };
+ V exact(n,0.0);
+ auto fullOp=[&](const V& x,V& y){mult(full,x,y);};
+ auto fullResult=method3Projection::solve(compatible,exact,fullOp,pre,dot,100,15,1e-8);
+ assert(fullResult.converged);
+ printf("PASS: full two-phase Helmholtz Schur on compatible 3D wall-masked space, residual %.3e\n",fullResult.residual);
  V bad;pre(b,bad);
  auto singularOp=[&](const V& x,V& y){mult(A,x,y);};
  auto failed=method3Projection::solve(b,bad,singularOp,pre,dot,200,15,1e-8);
@@ -92,7 +116,7 @@ int main(){const int n=SIZE;const V S=SMATRIX,A=AMATRIX,K=KMATRIX,P=PMATRIX,b=BV
  printf("PASS: 3D stabilized production GCR iterations=%d true relative residual=%.3e\n",result.iterations,relative);
 }
 '''
-for key,val in [('SIZE',str(n)),('KMATRIX',literal(K)),('AMATRIX',literal(A)),('SMATRIX',literal(S)),('PMATRIX',literal(P)),('BVECTOR',literal(b))]:source=source.replace(key,val)
+for key,val in [('SIZE',str(n)),('KMATRIX',literal(K)),('AMATRIX',literal(A)),('SMATRIX',literal(S)),('PMATRIX',literal(P)),('BVECTOR',literal(b)),('FULL_MATRIX',literal(full_schur)),('COMPATIBLE_RHS',literal(compatible_rhs))]:source=source.replace(key,val)
 with tempfile.TemporaryDirectory() as tmp:
     f=Path(tmp)/'projection.cpp';f.write_text(source);exe=Path(tmp)/'projection'
     subprocess.run(['c++','-std=c++17','-Wall','-Wextra','-Werror','-I'+str(root),str(f),'-o',str(exe)],check=True)

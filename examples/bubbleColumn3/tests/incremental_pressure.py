@@ -54,3 +54,67 @@ assert np.linalg.norm(residual) < .03*old_defect
 assert np.linalg.norm(np.linalg.solve(K, b-A@reference_pressure)) == 0
 print(f'PASS: one Poisson increment leaves (K-A)dp, not (K-A)p; '
       f'manufactured defect ratio={np.linalg.norm(residual)/old_defect:.3f}')
+
+# Exercise the production outer iteration with the actual two-phase response.
+# Store the velocity and residual from each trial, just as the case does before
+# committing the final trial's fields. The inlet velocity has been eliminated.
+from pathlib import Path
+import subprocess
+import tempfile
+
+root = Path(__file__).resolve().parents[1]
+response = np.linalg.solve(H, load)
+continuity = W[q, v] @ mixture / tau
+
+def literal(a):
+    return '{'+','.join(format(value, '.17g') for value in a.flat)+'}'
+
+source = r'''
+#include "bubbleColumn3Krylov.hpp"
+#include <cassert>
+#include <cstdio>
+using V=std::vector<double>;
+V multiply(const V& A,const V& x,int rows) {
+  V y(rows);
+  for(int i=0;i<rows;++i) for(size_t j=0;j<x.size();++j) y[i]+=A[i*x.size()+j]*x[j];
+  return y;
+}
+double dot(const V& a,const V& b) {
+  double sum=0;
+  for(size_t i=0;i<a.size();++i) sum+=a[i]*b[i];
+  return sum;
+}
+int main() {
+  const V response=RESPONSE, continuity=CONTINUITY, invK=INVERSE, b=RHS, reference=REFERENCE;
+  for(bool incremental:{false,true}) {
+    const V prior=incremental?reference:V(6,0.0);
+    auto rhs=multiply(continuity,multiply(response,prior,12),6);
+    for(int i=0;i<6;++i) rhs[i]+=b[i];
+    V acceptedTrial,actual,delta(6,0.0);
+    auto apply=[&](const V& trial,V& action) {
+      acceptedTrial=trial;
+      V total=prior;
+      for(int i=0;i<6;++i) total[i]+=trial[i];
+      actual=multiply(continuity,multiply(response,total,12),6);
+      action.resize(6);
+      for(int i=0;i<6;++i) {actual[i]+=b[i];action[i]=rhs[i]-actual[i];}
+    };
+    auto precondition=[&](const V& r,V& z){z=multiply(invK,r,6);};
+    auto result=method3Projection::solve(rhs,delta,apply,precondition,dot,100,15,1e-10,1e-13);
+    assert(result.converged && acceptedTrial==delta);
+    assert(std::sqrt(dot(actual,actual))<=result.target);
+    printf("PASS: full Helmholtz Schur %s solve, measured residual %.3e\n",
+        incremental?"increment":"absolute",std::sqrt(dot(actual,actual)));
+  }
+}
+'''
+for key, value in [('RESPONSE', response), ('CONTINUITY', continuity), ('INVERSE', np.linalg.inv(K)),
+                   ('RHS', b), ('REFERENCE', previous)]:
+    source = source.replace(key, literal(value))
+with tempfile.TemporaryDirectory() as tmp:
+    path = Path(tmp)/'schur.cpp'
+    path.write_text(source)
+    executable = Path(tmp)/'schur'
+    subprocess.run(['c++','-std=c++17','-Wall','-Wextra','-Werror','-I'+str(root),str(path),
+                    '-o',str(executable)],check=True)
+    subprocess.run([str(executable)],check=True)

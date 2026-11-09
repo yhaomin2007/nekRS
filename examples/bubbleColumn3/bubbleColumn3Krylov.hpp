@@ -9,10 +9,11 @@ struct Result { int iterations=0; double initial=0, residual=0, rhsNorm=0, targe
   const char* reason="maximumIterations"; };
 // Restarted flexible GCR. Dot supplies a global, duplicate-aware inner product.
 // Recompute the true residual at every restart and before accepting convergence.
+// On success, the last apply call evaluated the accepted x.
 template<class Apply,class Precondition,class Dot>
 Result solve(const std::vector<double>& b,std::vector<double>& x,
              Apply apply,Precondition precondition,Dot dot,
-             int maximum,int restart,double tolerance)
+             int maximum,int restart,double tolerance,double absoluteTolerance=0)
 {
   Result out;
   std::vector<double> r=b, ax(b.size());
@@ -26,7 +27,7 @@ Result solve(const std::vector<double>& b,std::vector<double>& x,
   const double rhsNorm=norm(b);
   out.rhsNorm=rhsNorm;
   if(!std::isfinite(out.initial)||!std::isfinite(rhsNorm)) {out.reason="nonfiniteResidual";return out;}
-  const double target=tolerance*std::max(out.initial,rhsNorm);out.target=target;
+  const double target=std::max(absoluteTolerance,tolerance*rhsNorm);out.target=target;
   while(out.iterations<maximum) {
     if(std::isfinite(out.residual)&&out.residual<=target) {out.converged=true;break;}
     if(!std::isfinite(out.residual)) {out.reason="nonfiniteResidual";break;}

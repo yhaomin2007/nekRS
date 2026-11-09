@@ -1,4 +1,4 @@
-# bubbleColumn3: native pressure and phase Helmholtz velocity solves
+# bubbleColumn3: consistent pressure and native phase Helmholtz solves
 
 This example advances ALPHA, UGX, UGY, UGZ, ULX, ULY, ULZ with native scalar
 BDF/EXT/elliptic machinery. Native velocity storage contains only the reconstructed
@@ -9,21 +9,18 @@ pressure solver stay disabled. No NekRS core files are changed.
 
 | Operation | Native fluid solver | Method3 |
 |---|---|---|
-| Pressure linear solver | `elliptic::solve` | Same class and solve method, separate `phasePressure` instance |
-| Pressure linear algebra | native PGMRES/pMG/ASM/BoomerAMG | Native configuration from `[ELLIPTIC phasePressure]` |
-| Pressure RHS/coefficient | native single-fluid force/stress construction, inverse density | Two-phase predictor weak divergence/boundary flux, coupled local mobility betaM/tau |
+| Pressure linear solver | `elliptic::solve` | Flexible GCR with actual phase response and native `phasePressure` preconditioner |
+| Poisson preconditioner | native PGMRES/pMG/ASM/BoomerAMG | Same native machinery, configured by `[ELLIPTIC phasePressure]` |
+| Pressure RHS/coefficient | native single-fluid force/stress construction, inverse density | Predictor weak divergence/boundary flux. Local mobility betaM/tau is used by the preconditioner |
 | Pressure gradient for velocity | `core-wGradientVolumeHex3D` | Identical registered kernel, no nodal averaging/mass inversion |
 | Pressure force placement | Weak load added to momentum RHS before Helmholtz | Same placement, divided by each constant phase density since scalar transportCoeff=1 |
 | Final velocity solve | component native elliptic Helmholtz (or vector stress option) | Six component native scalar elliptic Helmholtz solves with coupled drag |
 | Boundary lifting | native velocity elliptic Dirichlet masks; natural traction | Native scalar elliptic masks; supplied p=0 outlet has zero pressure traction |
 
-The previous `u_k=u_k*-beta_k*strongGrad(p)` correction did NOT use the same
-pressure response as native `solveVelocity`. It has been removed from the
-runtime path. Custom host GCR, stabilized composed pressure, and their knobs are
-also removed from the runtime. `pressureSolveMode=native` is required;
-`pressureSolveMode=composed` is rejected. Historical pointwise/cubature tests
-and the standalone Krylov header remain for regression/history only; the UDF
-neither includes nor executes that Krylov solver.
+`pressureSolveMode=consistent` is the default. It solves the discrete pressure
+Schur equation using the actual coupled phase Helmholtz response. Set
+`pressureSolveMode=native` to compare against the previous single native
+Poisson solve using local mobility as the pressure operator.
 
 For each phase k, the final normalized equation is
 
@@ -58,20 +55,29 @@ velocities are divergence-free. It uses the stated scalar Laplacian phase model.
    current alpha and lagged slip.
 3. Solve pressure-free gas/liquid Helmholtz predictors with fixed RHSs and
    coupled partner loads; reconstruct UM predictor.
-4. Solve one native variable-coefficient pressure Poisson equation, normalized
-   on BOTH sides by tau=dt/g0. betaG/L come from the coupled local inertia/drag
-   inverse; betaM=alpha*betaG+(1-alpha)*betaL. betaM/tau is the pressure diffusion
-   coefficient. No custom outer pressure iteration is called.
-5. Evaluate the latest pressure with the native WEAK gradient kernel, add its
-   load/rho_k to each phase base RHS, and solve both final phase Helmholtz
-   equations with the SAME frozen coefficients and histories. Reconstruct UM.
-6. Restore scalar boundary values and report diagnostics/output.
+4. Form the assembled predictor weak continuity residual `r*`, including the
+   inlet/wall flux. Pressure test rows at the fixed-pressure outlet are removed.
+5. For each trial pressure, solve both coupled phase Helmholtz equations with
+   the native weak pressure load. Reapply the phase boundary conditions and
+   form `r(trial)` with the same weak continuity operator. The Schur action is
+   `r* - r(trial)`. All trials reuse the frozen phase RHSs, drag, and alpha.
+6. Use flexible GCR to solve `S deltaP = r*`. The local mobility Poisson
+   operator is the native preconditioner. Commit the accepted trial pressure
+   and phase velocities together after checking their actual post-BC residual.
 
-There are TWO sets of phase solves (predictors and pressure-loaded final solves),
-with one pressure solve. This costs more than the earlier algebraic correction,
-but includes the full phase Helmholtz response to pressure. Pressure construction
-still uses a local mobility approximation, not the inverse spatial Helmholtz
-operator. Small pressure residual does NOT establish zero final UM divergence.
+The GCR residual is assembled in pressure DOF order with inverse-multiplicity
+weights. For native preconditioning it is divided among shared element copies
+because native elliptic assembles its input. Operator and RHS use the same
+`tau=dt/g0` normalization. `betaM/tau` is the Poisson coefficient, where betaM
+is the volume-weighted mobility from the local coupled inertia/drag inverse.
+
+One Schur application costs a full pair of coupled phase solves. GCR vectors
+reside on the host, with device transfers and collective reductions. The
+pressure equation uses the full numerical phase response up to the accuracy
+of those solves. Equal-order pressure and fixed velocity boundaries can leave
+null modes. If the target continuity residual is unattainable, the case reports
+failure instead of accepting a pressure residual from the approximate Poisson
+operator. This weak constraint does not enforce pointwise zero divergence.
 
 ## Supported boundaries and model
 
@@ -104,55 +110,50 @@ output contains UM, pressure and seven scalar fields.
 
 ```
 [CASEDATA]
-pressureSolveMode = native
+pressureSolveMode = consistent
 pressureWarmStart = 1
+pressureSchurMaxIterations = 100
+pressureSchurTolerance = 1e-6
+pressureSchurAbsoluteTolerance = 1e-12
 ```
 
-Pressure tolerance/PGMRES/multigrid settings come from `[ELLIPTIC phasePressure]`.
-Native UM remains `solver=none`; the UDF never installs its own pressure instance
-as `fluid->ellipticSolverP`. Old pressureProjection* and
-pressurePreconditionerTolerance CASEDATA controls are obsolete and ignored.
-The v26 parser rejects an elliptic `poisson` PAR key, so Setup0 sets the internal
-Poisson/coefficient-field options before native kernel registration.
+The outer iteration accepts `norm(r_final) <= max(absoluteTolerance,
+relativeTolerance*norm(r_predictor))`, with both norms in physical weak-RHS
+units and after pressure-row masking. The absolute floor allows small predictor
+residuals to be accepted at the configured absolute accuracy. The absolute mode
+uses the previous total pressure as its outer initial guess when available and
+`pressureWarmStart=1`. The native preconditioner uses a loose relative tolerance
+(`1e-2+relative` with native volume scaling) and the existing multigrid settings.
+The native reference mode uses the original `[ELLIPTIC phasePressure]` tolerance.
+
+Native UM uses `solver=none`. The case creates a separate native `phasePressure`
+instance. Setup0 sets internal Poisson/coefficient-field options before kernel
+registration, since the installed v26 parser rejects the elliptic `poisson` key.
 
 ## Pressure increment comparison
 
-Set `pressureIncremental=1` in CASEDATA to test a lagged-pressure predictor.
-The supplied default is 0 for the absolute-pressure reference. The first step
-of a run bootstraps with absolute pressure. Subsequent increment-mode steps
-compute the two predictors with the previous final pressure, form the same
-weak continuity RHS from that mixture, and solve one native Poisson equation
-for deltaP with zero outlet deltaP. The final Helmholtz solves use
-`pNew=pOld+deltaP`. Both phase solves use the same frozen base RHS and drag
-coefficients. `pressureWarmStart=1` reuses the previous increment as the linear
-solver guess after the first increment.
+Set `pressureIncremental=1` to use the previous final pressure in the phase
+predictors after the first solve. Both modes then compute a pressure increment
+with zero outlet increment, and the final phases use `pNew=pOld+deltaP`.
+Consistent mode initializes the increment to zero. Native mode can reuse the
+previous increment as its Poisson guess with `pressureWarmStart=1`.
 
-Let A denote the actual assembled weak continuity response of the coupled
-phase Helmholtz solves to pressure, with the same tau normalization as K.
-The absolute-pressure algorithm leaves the operator defect `(K-A)*p` in the
-continuity residual. With the lagged-pressure predictor, it leaves
-`(K-A)*deltaP`. This can reduce the defect from a large, slowly changing
-hydrostatic pressure, while keeping one native pressure solve per step.
-The operators still differ. This experiment does not establish exact
-continuity, stable long-time behavior, or removal of the velocity bands.
-
-Check `pressureForm=increment` after the first step. In this mode,
-`nativeEquationResidual` and `correctionDefect` use the increment and the
-actual change between the lagged-pressure predictor and final phase velocities.
-Compare absolute/increment runs on the same mesh and physical times using
-post-correction weak/strong divergence and the axial velocity profile.
-
-`python3 tests/incremental_pressure.py` checks the residual identity with
-assembled two-element SEM operators, two coupled phase Helmholtz inverses
-and mixed inlet/outlet masks. Its manufactured pressure-lag case tests the
-expected defect reduction. The target-column GPU comparison is pending.
+In native reference mode the approximate pressure operator K differs from the
+actual Helmholtz response S. The operator defect acts on the full pressure in
+absolute mode and on deltaP in increment mode. Consistent mode uses S for both
+forms and checks the residual against the final computed phase velocities.
 
 ## Logs and continuity
+
+`method3Schur` reports outer iterations, phase evaluations, native Poisson
+preconditioner calls, physical weak residual before/after the update, target,
+and convergence. The final residual is measured after boundary restoration.
+Use `mode=consistent` output to compare strong divergence and velocity fields.
 
 `method3Pressure mode=native` reports the actual native solve each step,
 including initial/final residual, target, convergence and time.
 `method3PressureCost velocityPressure=weakRhsHelmholtz nativeSolves=1 innerCalls=0`
-identifies the new path. The cost includes final phase solves, not only Poisson.
+identifies the native reference path. The cost includes final phase solves, not only Poisson.
 `dragIterations`/`dragChange` on the final summary refer to pressure-loaded solves.
 
 At monitorInterval, `weakL2(pre,corrected,BC)` uses one assembled weak operator
@@ -199,7 +200,9 @@ c++ -std=c++17 -I"$NEKRS_HOME/occa/include" tests/weak_pressure.cpp \
 This executes the actual native weak gradient, verifies all nodal loads and its
 interior negative-gradient sign; maximum absolute error was 1.78e-15. OCCA CUDA
 translation is also checked with `OCCA_BIN=... python3 tests/cuda_translation.py`.
-Historical projection.py/projection3d.py test old projection algebra and do not
-validate the new final-phase Helmholtz spatial response. The full target column
+`tests/incremental_pressure.py` exercises production GCR with assembled two-element
+coupled Helmholtz responses in absolute and incremental form. `tests/projection3d.py`
+checks the full Helmholtz Schur operator on a compatible wall-masked space and
+rejection of an incompatible RHS in the historical masked projection model. The full target column
 GPU/MPI run, long-time stability, velocity-band behavior and physical accuracy
 remain unverified. No exact UM divergence-free claim is made.

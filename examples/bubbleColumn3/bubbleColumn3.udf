@@ -2,6 +2,7 @@
 #include "udf.hpp"
 #include "bubbleColumn3Cubature.hpp"
 #include <array>
+#include "bubbleColumn3Krylov.hpp"
 
 #ifdef __okl__
 #include "bubbleColumn3.oudf"
@@ -20,7 +21,9 @@ struct Parameters {
   dfloat dragCouplingTolerance=1e-10;
   int pressureWarmStart=1;
   int pressureIncremental=0;
-  std::string pressureSolveMode="native";
+  std::string pressureSolveMode="consistent";
+  int pressureSchurMaxIterations=100;
+  dfloat pressureSchurTolerance=1e-6,pressureSchurAbsoluteTolerance=1e-12;
 };
 static Parameters p;
 static const std::array<std::string,7> names={"alpha","ugx","ugy","ugz","ulx","uly","ulz"};
@@ -214,6 +217,9 @@ void UDF_Setup0(MPI_Comm,setupAide&)
   READ("pressurewarmstart",pressureWarmStart);
   READ("pressureincremental",pressureIncremental);
   READ("pressuresolvemode",pressureSolveMode);
+  READ("pressureschurmaxiterations",pressureSchurMaxIterations);
+  READ("pressureschurtolerance",pressureSchurTolerance);
+  READ("pressureschurabsolutetolerance",pressureSchurAbsoluteTolerance);
   p.pressureSolveMode=lowerCase(p.pressureSolveMode);
 #undef READ
   nekrsCheck(!(std::isfinite(p.rhoLiquid)&&p.rhoLiquid>0 && std::isfinite(p.rhoGas)&&p.rhoGas>0
@@ -224,13 +230,16 @@ void UDF_Setup0(MPI_Comm,setupAide&)
       && std::isfinite(p.initialPlumeHeight) && p.initialPlumeHeight>=0 && p.alphaMinimum>=0 && p.alphaMaximum<1
       && p.alphaMinimum<=p.alphaInlet && p.alphaInlet<=p.alphaMaximum
       && (p.dragEnabled==0 || p.dragEnabled==1) && p.monitorInterval>=0
-      && p.pressureSolveMode=="native"
+      && (p.pressureSolveMode=="consistent" || p.pressureSolveMode=="native")
+      && p.pressureSchurMaxIterations>0
+      && std::isfinite(p.pressureSchurTolerance) && p.pressureSchurTolerance>0 && p.pressureSchurTolerance<1
+      && std::isfinite(p.pressureSchurAbsoluteTolerance) && p.pressureSchurAbsoluteTolerance>=0
       && (p.pressureWarmStart==0 || p.pressureWarmStart==1)
       && (p.pressureIncremental==0 || p.pressureIncremental==1)
       && p.dragCouplingMaxIterations>0 && std::isfinite(p.dragCouplingTolerance) && p.dragCouplingTolerance>0)
       || p.virtualMassEnabled!=0,
       platform->comm.mpiComm(),EXIT_FAILURE,"%s",
-      "Invalid method3 parameters; pressureSolveMode=native, alphaMaximum<1 and virtualMassEnabled=0 required.\n");
+      "Invalid method3 parameters; pressureSolveMode must be consistent or native, alphaMaximum<1 and virtualMassEnabled=0 required.\n");
   int N=0,C=0;
   platform->options.getArgs("POLYNOMIAL DEGREE",N);
   platform->options.getArgs("CUBATURE POLYNOMIAL DEGREE",C);
@@ -324,14 +333,14 @@ void UDF_Setup()
   clipKernel(m->Nlocal,p.alphaMinimum,p.alphaMaximum,s->o_solution("alpha"));
   // Native scalar elliptic solvers are constructed after UDF_Setup. Boundary
   // application must wait until beginStep, when their masks are available.
-  reconstructMixture(); // optional lagged-pressure predictor and native Poisson increment
+  reconstructMixture(); // consistent pressure uses the final coupled Helmholtz response
   if(platform->comm.mpiRank()==0)
-    printf("method3 pressureSolveMode=%s: native elliptic Poisson, native weak pressure RHS + "
-        "six Helmholtz solves; custom GCR and pointwise phase corrections disabled.\n",p.pressureSolveMode.c_str());
+    printf("method3 pressureSolveMode=%s; native weak pressure load and phase Helmholtz solves\n",
+        p.pressureSolveMode.c_str());
   nrs->userSource=&beginStep;nrs->postScalar=&postAlpha;
   nrs->userConvergenceCheck=&singlePass;s->userImplicitLinearTerm=&implicitDrag;
   if(platform->comm.mpiRank()==0)
-    printf("bubbleColumn3: seven scalars ALPHA UGX UGY UGZ ULX ULY ULZ; native velocity/pressure OFF; "
+    printf("bubbleColumn3: seven scalars ALPHA UGX UGY UGZ ULX ULY ULZ; default fluid UM/P OFF; "
         "user phase convection ON; alpha -> UG/UL predictors -> shared P -> both phase corrections -> reconstructed UM; VM OFF\n");
 }
 
