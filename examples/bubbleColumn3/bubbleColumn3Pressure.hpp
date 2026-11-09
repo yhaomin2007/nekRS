@@ -8,7 +8,7 @@ namespace bubbleColumn3 {
 // Own this solver here: assigning it to fluid->ellipticSolverP would cause the
 // native fluid->solve() call to solve pressure again.
 static std::unique_ptr<elliptic> pressureSolver;
-static deviceMemory<dfloat> betaG,betaL,betaM,pressureDiffusion,pressureRhs,pressureGrad;
+static deviceMemory<dfloat> betaG,betaL,betaM,pressureDiffusion,pressureRhs,pressureGrad,pressureIncrement;
 static occa::kernel mobilityKernel,surfaceKernel;
 
 inline void allocatePressureStorage()
@@ -66,18 +66,11 @@ inline double divergenceNorm()
   return platform->linAlg->weightedNorm2(m->Nlocal,m->o_LMM,div,platform->comm.mpiComm());
 }
 
-// Host Krylov vectors keep this diagnostic implementation independent of
-// private elliptic callbacks (which operate on partial element lists). All SEM
-// derivatives and gather/scatters still run on the device. This costs host/device
-// transfers and is a correctness baseline, not a performance implementation.
+// Host copies below are for monitor-step diagnostics.
 inline std::vector<double> pressureHost(const occa::memory& a)
 {
   std::vector<dfloat> v(nrs->meshV->Nlocal);a.copyTo(v.data(),v.size());
   return std::vector<double>(v.begin(),v.end());
-}
-inline void pressureDevice(const std::vector<double>& a,occa::memory& b)
-{
-  std::vector<dfloat> v(a.begin(),a.end());b.copyFrom(v.data(),v.size());
 }
 inline std::vector<dlong> pressureMask(elliptic* e)
 {
@@ -137,17 +130,27 @@ inline void solveNativePressureVelocities(double time,const occa::memory& pressu
 // Native-only baseline: one variable-coefficient Poisson solve per timestep.
 // This solves K p=b, not the stabilized composed equation S p=b. Keep the
 // continuity diagnostics explicit: a small K residual is not zero nodal div(U).
-inline void solveNativePhasePressure(double time,int step,bool log,double before,dfloat tau)
+inline void solveNativePhasePressure(double time,int step,bool log,double before,dfloat tau,bool incremental)
 {
   auto m=nrs->meshV;const auto O=nrs->fieldOffset;
   auto pressure=nrs->fluid->o_solution("pressure");
   static bool initialized=false;
-  if(!initialized || !p.pressureWarmStart) platform->linAlg->fill(O,0.0,pressure);
+  occa::memory pressureUpdate=pressure;
+  if(incremental) {
+    const bool firstIncrement=!pressureIncrement.size();
+    if(firstIncrement) pressureIncrement.resize(O);
+    pressureUpdate=pressureIncrement;
+    if(firstIncrement || !p.pressureWarmStart)
+      platform->linAlg->fill(O,0.0,pressureUpdate);
+  } else if(!initialized || !p.pressureWarmStart) {
+    platform->linAlg->fill(O,0.0,pressureUpdate);
+  }
   initialized=true;
   if(pressureSolver->Nmasked()) platform->linAlg->mask<dfloat>(
-      pressureSolver->Nmasked(),pressureSolver->o_maskIds(),pressure);
+      pressureSolver->Nmasked(),pressureSolver->o_maskIds(),pressureUpdate);
+  const char* pressureForm=incremental?"increment":"absolute";
   const double start=MPI_Wtime();
-  pressureSolver->solve(pressureDiffusion,o_NULL,pressureRhs,pressure.slice(0,m->Nlocal));
+  pressureSolver->solve(pressureDiffusion,o_NULL,pressureRhs,pressureUpdate.slice(0,m->Nlocal));
   if(platform->comm.mpiRank()==0) {
     const double initial=pressureSolver->initialResidual(),final=pressureSolver->finalResidual();
     const auto tolerance=pressureSolver->options().getArgs("SOLVER TOLERANCE");
@@ -155,9 +158,9 @@ inline void solveNativePhasePressure(double time,int step,bool log,double before
         *(upperCase(tolerance).find("+RELATIVE")!=std::string::npos?initial:1.0);
     const double threshold=std::max(target,100*std::numeric_limits<dfloat>::epsilon()*initial);
     const bool converged=std::isfinite(initial)&&std::isfinite(final)&&final<=threshold;
-    printf("method3Pressure step=%d time=%.8e mode=native iterations=%d initial=%.8e "
+    printf("method3Pressure step=%d time=%.8e mode=native pressureForm=%s iterations=%d initial=%.8e "
         "final=%.8e relative=%.8e target=%.8e converged=%s wallTime=%.6es\n",
-        step,time,pressureSolver->Niter(),initial,final,initial>0?final/initial:final,
+        step,time,pressureForm,pressureSolver->Niter(),initial,final,initial>0?final/initial:final,
         threshold,converged?"yes":"no",MPI_Wtime()-start);
     fflush(stdout);
   }
@@ -171,9 +174,10 @@ inline void solveNativePhasePressure(double time,int step,bool log,double before
     b=pressureHost(work);preWeak=assembledWeak(nrs->fluid->o_U);
     boundary.resize(b.size());
     for(size_t i=0;i<b.size();++i) boundary[i]=preWeak[i]-tau*b[i];
-    nativePressureAction(pressure,work);k=pressureHost(work);
+    nativePressureAction(pressureUpdate,work);k=pressureHost(work);
     outlet=pressureMask(pressureSolver.get());degree=pressureHost(m->ogs->o_invDegree);
   }
+  if(incremental) platform->linAlg->axpby(m->Nlocal,1.0,pressureUpdate,1.0,pressure);
   solveNativePressureVelocities(time,pressure);
   std::vector<double> corrected;
   if(log) corrected=assembledWeak(nrs->fluid->o_U);
@@ -205,9 +209,9 @@ inline void solveNativePhasePressure(double time,int step,bool log,double before
     const auto cflG=phaseCFL(ug),cflL=phaseCFL(ul);
     const auto mm=platform->linAlg->minMax(m->Nlocal,{pressure,betaM},platform->comm.mpiComm());
     if(platform->comm.mpiRank()==0) {
-      printf("method3Continuity step=%d mode=native weakL2(pre,corrected,BC)=(%.8e,%.8e,%.8e) "
+      printf("method3Continuity step=%d mode=native pressureForm=%s weakL2(pre,corrected,BC)=(%.8e,%.8e,%.8e) "
           "boundaryChange=%.8e nativeEquationResidual=%.8e correctionDefect=%.8e residualBalanceError=%.8e\n",
-          step,w0,w1,w2,bc,nr,nd,balance);
+          step,pressureForm,w0,w1,w2,bc,nr,nd,balance);
       printf("method3 step=%d mode=native divL2(pre,post)=(%.8e,%.8e) p=(%.8e,%.8e) "
           "mobility=(%.8e,%.8e) phaseCFL(g,l)=(%.8e,%.8e) dragIterations=%d dragChange=%.8e\n",
           step,before,after,mm[0].first,mm[0].second,mm[1].first,mm[1].second,
@@ -220,6 +224,16 @@ inline void solvePressureAndCorrect(double time,int step)
 {
   auto m=nrs->meshV; auto &s=nrs->scalar; const auto O=nrs->fieldOffset;
   if(!pressureDiffusion.size()) allocatePressureStorage();
+  // Bootstrap absolute pressure once. Afterwards use the previous final
+  // pressure in the predictor and solve only the increment. The predictor
+  // and final solves reuse the same BDF/EXT base and frozen drag coefficients.
+  const bool incremental=p.pressureIncremental && bool(pressureSolver);
+  if(incremental) {
+    solveNativePressureVelocities(time,nrs->fluid->o_solution("pressure"));
+  } else {
+    solvePhasePredictors(time);
+    reconstructMixture();
+  }
   const bool log=p.monitorInterval>0 && (step==1 || step%p.monitorInterval==0);
   const double before=log?divergenceNorm():0;
   // Use the inverse local coupled inertia/drag block of both phase predictors.
@@ -239,6 +253,6 @@ inline void solvePressureAndCorrect(double time,int step)
   platform->linAlg->axpby(m->Nlocal,1/tau,betaM,0.0,pressureDiffusion);
   platform->linAlg->axpby(m->Nlocal,1/tau,pressureRhs,0.0,pressureRhs);
   if(!pressureSolver) setupPressure(); // normalized coefficient is now ready
-  solveNativePhasePressure(time,step,log,before,tau);
+  solveNativePhasePressure(time,step,log,before,tau,incremental);
 }
 } // namespace bubbleColumn3

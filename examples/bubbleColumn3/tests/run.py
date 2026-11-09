@@ -31,7 +31,7 @@ assert 'dragLoadKernel(' not in begin  # partner loads never enter EXT history
 pressure=(root/'bubbleColumn3Pressure.hpp').read_text()
 assert 'if(!pressureSolver) setupPressure();' in pressure
 assert 'validateLinearSolve(pressureSolver.get()' in pressure
-assert 'reconstructMixture();solvePressureAndCorrect' in udf
+assert 'solvePressureAndCorrect(time,step);' in udf
 print('PASS: unconditional core cubature registration, lazy pressure setup, unextrapolated drag, and linear convergence guards')
 
 # Installed v26 sha:96b3cf9 rejects `poisson` in an elliptic PAR section.

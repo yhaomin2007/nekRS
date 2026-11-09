@@ -19,6 +19,7 @@ struct Parameters {
   int dragCouplingMaxIterations=30;
   dfloat dragCouplingTolerance=1e-10;
   int pressureWarmStart=1;
+  int pressureIncremental=0;
   std::string pressureSolveMode="native";
 };
 static Parameters p;
@@ -211,6 +212,7 @@ void UDF_Setup0(MPI_Comm,setupAide&)
   READ("virtualmassenabled",virtualMassEnabled);READ("monitorinterval",monitorInterval);
   READ("dragcouplingmaxiterations",dragCouplingMaxIterations);READ("dragcouplingtolerance",dragCouplingTolerance);
   READ("pressurewarmstart",pressureWarmStart);
+  READ("pressureincremental",pressureIncremental);
   READ("pressuresolvemode",pressureSolveMode);
   p.pressureSolveMode=lowerCase(p.pressureSolveMode);
 #undef READ
@@ -224,6 +226,7 @@ void UDF_Setup0(MPI_Comm,setupAide&)
       && (p.dragEnabled==0 || p.dragEnabled==1) && p.monitorInterval>=0
       && p.pressureSolveMode=="native"
       && (p.pressureWarmStart==0 || p.pressureWarmStart==1)
+      && (p.pressureIncremental==0 || p.pressureIncremental==1)
       && p.dragCouplingMaxIterations>0 && std::isfinite(p.dragCouplingTolerance) && p.dragCouplingTolerance>0)
       || p.virtualMassEnabled!=0,
       platform->comm.mpiComm(),EXIT_FAILURE,"%s",
@@ -321,7 +324,7 @@ void UDF_Setup()
   clipKernel(m->Nlocal,p.alphaMinimum,p.alphaMaximum,s->o_solution("alpha"));
   // Native scalar elliptic solvers are constructed after UDF_Setup. Boundary
   // application must wait until beginStep, when their masks are available.
-  reconstructMixture(); // native pressure + native weak pressure RHS in final phase Helmholtz solves
+  reconstructMixture(); // optional lagged-pressure predictor and native Poisson increment
   if(platform->comm.mpiRank()==0)
     printf("method3 pressureSolveMode=%s: native elliptic Poisson, native weak pressure RHS + "
         "six Helmholtz solves; custom GCR and pointwise phase corrections disabled.\n",p.pressureSolveMode.c_str());
@@ -338,8 +341,7 @@ void UDF_ExecuteStep(double time,int step)
   if(step<=0) return;
   nekrsCheck(step!=preparedStep || step==completedStep || !nrs->timeStepConverged,
       platform->comm.mpiComm(),EXIT_FAILURE,"%s","Method3 deferred solve out of order.\n");
-  solvePhasePredictors(time);
-  reconstructMixture();solvePressureAndCorrect(time,step);
+  solvePressureAndCorrect(time,step);
   completedStep=step;
   if(nrs->checkpointStep) {
     const auto O=nrs->fieldOffset,N=nrs->meshV->Nlocal;

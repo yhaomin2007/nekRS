@@ -109,3 +109,6 @@ pressureWarmStart = 1
 
 # Native-only elliptic pressure and weak-load phase Helmholtz solves.
 pressureSolveMode = native
+
+# A/B test: use prior final pressure in predictors and solve its increment.
+pressureIncremental = 0

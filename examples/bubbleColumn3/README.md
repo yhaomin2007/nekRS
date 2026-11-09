@@ -115,6 +115,38 @@ pressurePreconditionerTolerance CASEDATA controls are obsolete and ignored.
 The v26 parser rejects an elliptic `poisson` PAR key, so Setup0 sets the internal
 Poisson/coefficient-field options before native kernel registration.
 
+## Pressure increment comparison
+
+Set `pressureIncremental=1` in CASEDATA to test a lagged-pressure predictor.
+The supplied default is 0 for the absolute-pressure reference. The first step
+of a run bootstraps with absolute pressure. Subsequent increment-mode steps
+compute the two predictors with the previous final pressure, form the same
+weak continuity RHS from that mixture, and solve one native Poisson equation
+for deltaP with zero outlet deltaP. The final Helmholtz solves use
+`pNew=pOld+deltaP`. Both phase solves use the same frozen base RHS and drag
+coefficients. `pressureWarmStart=1` reuses the previous increment as the linear
+solver guess after the first increment.
+
+Let A denote the actual assembled weak continuity response of the coupled
+phase Helmholtz solves to pressure, with the same tau normalization as K.
+The absolute-pressure algorithm leaves the operator defect `(K-A)*p` in the
+continuity residual. With the lagged-pressure predictor, it leaves
+`(K-A)*deltaP`. This can reduce the defect from a large, slowly changing
+hydrostatic pressure, while keeping one native pressure solve per step.
+The operators still differ. This experiment does not establish exact
+continuity, stable long-time behavior, or removal of the velocity bands.
+
+Check `pressureForm=increment` after the first step. In this mode,
+`nativeEquationResidual` and `correctionDefect` use the increment and the
+actual change between the lagged-pressure predictor and final phase velocities.
+Compare absolute/increment runs on the same mesh and physical times using
+post-correction weak/strong divergence and the axial velocity profile.
+
+`python3 tests/incremental_pressure.py` checks the residual identity with
+assembled two-element SEM operators, two coupled phase Helmholtz inverses
+and mixed inlet/outlet masks. Its manufactured pressure-lag case tests the
+expected defect reduction. The target-column GPU comparison is pending.
+
 ## Logs and continuity
 
 `method3Pressure mode=native` reports the actual native solve each step,

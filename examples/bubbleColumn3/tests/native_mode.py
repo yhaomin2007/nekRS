@@ -13,9 +13,9 @@ assert native.count('pressureSolver->solve(')==1
 assert 'method3Projection::solve' not in native and 'precondition(' not in native
 assert 'correctKernel(' not in native and 'strongGrad(' not in native
 assert native.index('pressureSolver->solve(')<native.index('solveNativePressureVelocities(time,pressure)')
-assert 'if(log)' in native and 'nativePressureAction(pressure,work)' in native
+assert 'if(log)' in native and 'nativePressureAction(pressureUpdate,work)' in native
 main=header.split('inline void solvePressureAndCorrect(',1)[1]
-assert 'solveNativePhasePressure(time,step,log,before,tau);' in main
+assert 'solveNativePhasePressure(time,step,log,before,tau,incremental);' in main
 assert 'method3Projection::solve(' not in header and 'correctKernel(' not in header
 assert 'bubbleColumn3Krylov.hpp' not in udf
 assert udf.count('pressureSolver')==0 # no installation as default fluid pressure solver
