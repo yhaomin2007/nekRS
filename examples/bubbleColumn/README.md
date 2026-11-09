@@ -6,7 +6,7 @@ For alphaTransportForm=2, set cubaturePolynomialOrder >= 2*N because the conserv
 
 Fresh starts have only the axial plume: f(z)=0.5*(1-tanh((z-H)/delta)), alpha=alphaInlet*f, UGz=gasInitialVelocity*f. Initial liquid is stationary and mixture velocity follows the density-weighted relation. initialPlumeHeight and initialPlumeThickness remain configurable. Restart files take precedence. Uniform initialization selectors were removed.
 
-Inlet alpha and UG are uniform (alphaInlet and gasInletVelocity). Shared inlet/wall rim nodes retain wall precedence for velocity. The tapered inlet option was removed.
+Inlet alpha and UG are uniform (alphaInlet and gasInletVelocity), with the existing zero-velocity weight at shared inlet/wall rim nodes. At the vertical sidewall (ID 3), UGX and UGY are zero and UGZ has zero normal gradient. This allows axial gas slip while the horizontal velocity constraint enforces no gas penetration at the vertical wall.
 
 UG reconstruction and pressure/drag/gravity/VM sources are not switched off at low alpha. Division by alpha/beta remains protected with alphaFloor; magnitude clipping is a separate optional control. The old low-alpha cutoff and smooth-mask par options no longer control this case.
 

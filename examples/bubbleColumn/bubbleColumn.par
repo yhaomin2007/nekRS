@@ -54,7 +54,8 @@ regularization = hpfrt + nModes=1 + scalingCoeff=10.0
 
 [SCALAR UGZ]
 initialGuess = previous
-boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
+# Vertical sidewall: zero normal derivative for the axial gas velocity.
+boundaryTypeMap = udfDirichlet, zeroNeumann, zeroNeumann
 residualTol = 1e-6
 transportCoeff = 1.0
 diffusionCoeff = 1e-5
