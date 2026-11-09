@@ -114,5 +114,5 @@ pressureSchurRestart = 30
 pressureSchurTolerance = 1e-6
 pressureSchurAbsoluteTolerance = 1e-12
 
-# A/B test: use prior final pressure in predictors and solve its increment.
-pressureIncremental = 0
+# Reuse the pressure-loaded predictor after the first step.
+pressureIncremental = 1

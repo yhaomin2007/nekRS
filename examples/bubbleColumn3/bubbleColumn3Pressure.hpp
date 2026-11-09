@@ -244,96 +244,129 @@ inline void solveConsistentPhasePressure(double time,int step,bool log,double be
   auto m=nrs->meshV;
   const auto N=m->Nlocal,O=nrs->fieldOffset;
   auto pressure=nrs->fluid->o_solution("pressure");
-  const auto outlet=pressureMask(pressureSolver.get());
-  const auto degree=pressureHost(m->ogs->o_invDegree);
+  const auto& degree=m->ogs->o_invDegree;
   const auto comm=platform->comm.mpiComm();
-  const auto dot=[&](const std::vector<double>& a,const std::vector<double>& b) {
-    double sum=0;
-    for(size_t i=0;i<a.size();++i) sum+=degree[i]*a[i]*b[i];
-    MPI_Allreduce(MPI_IN_PLACE,&sum,1,MPI_DOUBLE,MPI_SUM,comm);
-    return sum;
+  auto* linalg=platform->linAlg;
+  const auto mask=[&](occa::memory& vector) {
+    if(pressureSolver->Nmasked()) linalg->mask<dfloat>(
+        pressureSolver->Nmasked(),pressureSolver->o_maskIds(),vector);
   };
+  using Vector=deviceMemory<dfloat>;
+  const auto axpby=[&](double a,const Vector& x,double b,Vector& y) {
+    linalg->axpby(N,a,x,b,y);
+  };
+  const auto scale=[&](double a,Vector& x) {linalg->scale(N,a,x);};
+  const auto dot=[&](const Vector& a,const Vector& b) {
+    return linalg->weightedInnerProd(N,degree,a,b,comm);
+  };
+  const auto norm=[&](const occa::memory& v) {return linalg->weightedNorm2(N,degree,v,comm);};
   const auto continuity=[&]() {
     // Native elliptic::solve expects unassembled element RHSs. The outer
     // iteration uses assembled rows, counting each shared node only once.
     oogs::startFinish(pressureRhs,1,0,ogsDfloat,ogsAdd,m->oogs);
-    auto residual=pressureHost(pressureRhs);
-    zeroPressureRows(residual,outlet);
-    return residual;
+    mask(pressureRhs);
   };
-  const auto norm=[&](const std::vector<double>& v) {return std::sqrt(dot(v,v));};
-  const auto rhs=continuity();
-  const double predictorNorm=norm(rhs);
+  continuity();
+  const double predictorNorm=norm(pressureRhs);
   const double target=std::max(p.pressureSchurAbsoluteTolerance/tau,
                                p.pressureSchurTolerance*predictorNorm);
   nekrsCheck(!std::isfinite(predictorNorm) || !std::isfinite(target),comm,EXIT_FAILURE,
       "%s","Nonfinite predictor continuity residual or Schur tolerance.\n");
-  std::vector<double> totalPressure(N,0.0);
-  if(incremental || (havePreviousPressure && p.pressureWarmStart))
-    totalPressure=pressureHost(pressure);
-  zeroPressureRows(totalPressure,outlet);
+  static Vector totalPressure,trialPressure,actualResidual;
+  totalPressure.resize(O);trialPressure.resize(O);actualResidual.resize(O);
+  const bool usePreviousPressure=incremental || (havePreviousPressure && p.pressureWarmStart);
+  if(usePreviousPressure) totalPressure.copyFrom(pressure,N);
+  else linalg->fill(N,0.0,totalPressure);
+  mask(totalPressure);
 
-  deviceMemory<dfloat> predictorGas,predictorLiquid,trialPressure,preconditioned;
-  predictorGas.resize(3*O);predictorGas.copyFrom(ug,3*O);
-  predictorLiquid.resize(3*O);predictorLiquid.copyFrom(ul,3*O);
-  trialPressure.resize(O);preconditioned.resize(O);
-  std::vector<dfloat> upload(N);
+  static Vector predictorGas,predictorLiquid;
+  predictorGas.resize(3*O);predictorLiquid.resize(3*O);
+  predictorGas.copyFrom(ug,3*O);predictorLiquid.copyFrom(ul,3*O);
   int phaseEvaluations=0,nativeSolves=0,iterations=0,passes=0;
-  double linearResidual=0;
+  double linearResidual=0,phaseTime=0,preconditionerTime=0;
   const char* reason="postBcResidual";
   const double start=MPI_Wtime();
-  const auto evaluate=[&]() {
-    ug.copyFrom(predictorGas,3*O);ul.copyFrom(predictorLiquid,3*O);
-    unpackVelocities();
-    std::copy(totalPressure.begin(),totalPressure.end(),upload.begin());
-    trialPressure.copyFrom(upload,N);
-    solveNativePressureVelocities(time,trialPressure,false,std::min(p.dragCouplingTolerance,dfloat(1e-12)));
+  const auto evaluate=[&](bool reusePredictor) {
+    const double phaseStart=MPI_Wtime();
+    if(!reusePredictor) {
+      ug.copyFrom(predictorGas,3*O);ul.copyFrom(predictorLiquid,3*O);
+      unpackVelocities();
+      solveNativePressureVelocities(time,totalPressure,false,std::min(p.dragCouplingTolerance,dfloat(1e-12)));
+      ++phaseEvaluations;
+    }
     nrs->scalar->applyDirichlet(time);
     reconstructMixture();
     formPressureRhs(tau);
-    ++phaseEvaluations;
-    return continuity();
+    continuity();
+    actualResidual.copyFrom(pressureRhs,N);
+    const double residualNorm=norm(actualResidual);
+    phaseTime+=MPI_Wtime()-phaseStart;
+    return residualNorm;
   };
-  const auto apply=[&](const std::vector<double>& increment,std::vector<double>& action) {
-    // Compute -D_m H^-1 G directly. Scaling the trial to unit peak pressure
-    // keeps tiny Krylov directions away from the phase-solve accuracy floor.
-    double scale=0;
-    for(const auto value:increment)
-      scale=std::max(scale,std::isfinite(value)?std::abs(value):std::numeric_limits<double>::infinity());
-    MPI_Allreduce(MPI_IN_PLACE,&scale,1,MPI_DOUBLE,MPI_MAX,comm);
-    nekrsCheck(!std::isfinite(scale),comm,EXIT_FAILURE,"%s","Nonfinite Schur pressure direction.\n");
-    if(scale==0) {action.assign(N,0.0);return;}
-    for(size_t i=0;i<upload.size();++i) upload[i]=increment[i]/scale;
-    for(const auto id:outlet) upload[id]=0;
-    trialPressure.copyFrom(upload,N);
-    solveNativePressureVelocities(time,trialPressure,true);
-    formPressureRhs(tau);
-    action=continuity();
-    for(auto &value:action) value*=-scale;
-    ++phaseEvaluations;
+  const auto apply=[&](const Vector& increment,Vector& action) {
+    const double phaseStart=MPI_Wtime();
+    // Scale tiny Krylov directions before the homogeneous Helmholtz solves.
+    const double magnitude=norm(increment);
+    nekrsCheck(!std::isfinite(magnitude),comm,EXIT_FAILURE,"%s","Nonfinite Schur pressure direction.\n");
+    if(magnitude!=0) {
+      axpby(1/magnitude,increment,0,trialPressure);
+      mask(trialPressure);
+      solveNativePressureVelocities(time,trialPressure,true);
+      formPressureRhs(tau);
+      continuity();
+      axpby(-magnitude,pressureRhs,0,action);
+      ++phaseEvaluations;
+    } else {
+      linalg->fill(N,0.0,action);
+    }
+    phaseTime+=MPI_Wtime()-phaseStart;
   };
   const auto nativeTolerance=pressureSolver->options().getArgs("SOLVER TOLERANCE");
   pressureSolver->options().setArgs("SOLVER TOLERANCE","1e-2+relative");
-  const auto precondition=[&](const std::vector<double>& residual,std::vector<double>& direction) {
-    for(size_t i=0;i<upload.size();++i) upload[i]=degree[i]*residual[i];
-    pressureRhs.copyFrom(upload,N);
-    platform->linAlg->fill(O,0.0,preconditioned);
-    pressureSolver->solve(pressureDiffusion,o_NULL,pressureRhs,preconditioned.slice(0,N));
+  const auto precondition=[&](const Vector& residual,Vector& direction) {
+    const double preconditionerStart=MPI_Wtime();
+    linalg->axmyz(N,1.0,degree,residual,pressureRhs);
+    linalg->fill(N,0.0,direction);
+    pressureSolver->solve(pressureDiffusion,o_NULL,pressureRhs,direction);
     validateLinearSolve(pressureSolver.get(),"Schur Poisson preconditioner");
-    direction=pressureHost(preconditioned);
-    zeroPressureRows(direction,outlet);
+    mask(direction);
     ++nativeSolves;
+    preconditionerTime+=MPI_Wtime()-preconditionerStart;
   };
-  auto actualResidual=evaluate();
-  double final=norm(actualResidual);
+  // An incremental predictor already includes totalPressure. A pressure-free
+  // predictor also matches the initial guess when it is zero.
+  double final=evaluate(incremental || !usePreviousPressure);
+  static Vector directions,images,correction,residual,action,combination,deviceCoefficients;
+  static std::vector<dfloat> coefficients;
+  const int restart=std::min(p.pressureSchurRestart,p.pressureSchurMaxIterations);
+  if(final>target) {
+    directions.resize(restart*O);images.resize(restart*O);
+    correction.resize(O);residual.resize(O);action.resize(O);combination.resize(O);
+    deviceCoefficients.resize(restart);coefficients.resize(restart);
+  }
+  const auto direction=[&](int k) {return directions.slice(k*O,N);};
+  const auto image=[&](int k) {return images.slice(k*O,N);};
+  const auto combinationKernel=std::string("gmres::")+
+      (std::is_same<dfloat,double>::value?"double":"float")+"::1::PGMRESSolution";
+  const auto orthogonalize=[&](int k,Vector& v,Vector& w) {
+    // Two batched reductions per GCR step. The existing GMRES kernel forms
+    // the corresponding basis combinations without transferring field data.
+    linalg->weightedInnerProdMulti(N,k,1,O,degree,images,w,comm,coefficients.data());
+    deviceCoefficients.copyFrom(coefficients,k);
+    launchKernel(combinationKernel,N,O,k,deviceCoefficients,images,combination);
+    axpby(-1,combination,1,w);
+    launchKernel(combinationKernel,N,O,k,deviceCoefficients,directions,combination);
+    axpby(-1,combination,1,v);
+  };
   struct SchurSample { int pass,iteration; double norm; };
   std::vector<SchurSample> history;
   // A fresh physical residual corrects the small error from inexact phase
   // inverses. Refinement shares the configured outer iteration budget.
   while(std::isfinite(final) && final>target && passes<3 && iterations<p.pressureSchurMaxIterations) {
-    std::vector<double> correction(N,0.0);
-    const auto result=method3Projection::solve(actualResidual,correction,apply,precondition,dot,
-        p.pressureSchurMaxIterations-iterations,p.pressureSchurRestart,0.0,0.25*target);
+    linalg->fill(N,0.0,correction);
+    const auto result=method3Projection::solveWithWorkspace(actualResidual,correction,residual,action,
+        apply,precondition,dot,axpby,scale,direction,image,orthogonalize,
+        p.pressureSchurMaxIterations-iterations,restart,0.0,0.25*target);
     for(const auto& sample : result.residualHistory)
       history.push_back({passes+1,iterations+sample.iteration,sample.norm});
     iterations+=result.iterations;
@@ -341,10 +374,9 @@ inline void solveConsistentPhasePressure(double time,int step,bool log,double be
     reason=result.reason;
     ++passes;
     if(!result.iterations || !std::isfinite(linearResidual)) break;
-    for(size_t i=0;i<totalPressure.size();++i) totalPressure[i]+=correction[i];
+    axpby(1,correction,1,totalPressure);
     const double previous=final;
-    actualResidual=evaluate();
-    final=norm(actualResidual);
+    final=evaluate(false);
     if(final>=previous) {reason="physicalResidualStalled";break;}
     if(result.converged && final>target) reason="postBcResidual";
   }
@@ -358,17 +390,17 @@ inline void solveConsistentPhasePressure(double time,int step,bool log,double be
     }
     printf("method3Schur step=%d time=%.8e pressureForm=%s iterations=%d restart=%d phaseEvaluations=%d "
         "nativePreconditionerSolves=%d passes=%d weakL2(predictor,final)=(%.8e,%.8e) target=%.8e "
-        "linearResidual=%.8e reason=%s converged=%s wallTime=%.6es\n",step,time,
-        incremental?"increment":"absolute",iterations,p.pressureSchurRestart,phaseEvaluations,nativeSolves,passes,
+        "linearResidual=%.8e reason=%s converged=%s phaseTime=%.6es preconditionerTime=%.6es wallTime=%.6es\n",step,time,
+        incremental?"increment":"absolute",iterations,restart,phaseEvaluations,nativeSolves,passes,
         tau*predictorNorm,tau*final,tau*target,tau*linearResidual,
-        converged?"converged":reason,converged?"yes":"no",MPI_Wtime()-start);
+        converged?"converged":reason,converged?"yes":"no",phaseTime,preconditionerTime,MPI_Wtime()-start);
     fflush(stdout);
   }
   nekrsCheck(!converged,comm,EXIT_FAILURE,
       "Method3 Schur solve did not reach the post-BC continuity target: weakL2=%g target=%g. "
       "Inspect phase-solve accuracy, iteration history and pressure-space compatibility.\n",
       tau*final,tau*target);
-  pressure.copyFrom(trialPressure,N);
+  pressure.copyFrom(totalPressure,N);
   if(log) {
     const auto after=divergenceNorm();
     const auto cflG=phaseCFL(ug),cflL=phaseCFL(ul);

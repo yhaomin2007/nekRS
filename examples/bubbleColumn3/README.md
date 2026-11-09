@@ -53,13 +53,14 @@ velocities are divergence-free. It uses the stated scalar Laplacian phase model.
    GL cubature; prepare six BDF/EXT base RHSs before one native history shift.
 2. Advance/clip alpha, restore its inlet, freeze paired drag coefficients using
    current alpha and lagged slip.
-3. Solve pressure-free gas/liquid Helmholtz predictors with fixed RHSs and
-   coupled partner loads; reconstruct UM predictor.
+3. Solve gas/liquid Helmholtz predictors with fixed RHSs and coupled partner
+   loads. The default incremental form includes the previous pressure after
+   the first step. Reconstruct the UM predictor.
 4. Form the assembled predictor weak continuity residual `r*`, including the
    inlet/wall flux. Pressure test rows at the fixed-pressure outlet are removed.
 5. For each Schur direction, solve both coupled phase Helmholtz equations
    with only the native weak pressure load and homogeneous velocity boundary
-   data. Normalize the pressure direction to unit peak magnitude before the
+   data. Normalize the pressure direction to unit weighted norm before the
    solves and rescale its weak continuity response afterwards. This computes
    `S = -D_m H^-1 G` directly, without subtracting two full-flow residuals.
 6. Use flexible GCR with the native local-mobility Poisson preconditioner.
@@ -141,11 +142,13 @@ registration, since the installed v26 parser rejects the elliptic `poisson` key.
 
 ## Pressure increment comparison
 
-Set `pressureIncremental=1` to use the previous final pressure in the phase
+The default `pressureIncremental=1` uses the previous final pressure in the phase
 predictors after the first solve. Both modes then compute a pressure increment
 with zero outlet increment, and the final phases use `pNew=pOld+deltaP`.
-Consistent mode initializes the increment to zero. Native mode can reuse the
+Consistent mode initializes the increment to zero and reuses the predictor
+for the first continuity evaluation. Native mode can reuse the
 previous increment as its Poisson guess with `pressureWarmStart=1`.
+Set `pressureIncremental=0` to compare with the absolute-pressure form.
 
 In native reference mode the approximate pressure operator K differs from the
 actual Helmholtz response S. The operator defect acts on the full pressure in
@@ -160,7 +163,10 @@ and convergence. The final residual is measured after boundary restoration.
 `passes` counts outer correction/refinement passes. `linearResidual` reports
 the last homogeneous Schur residual in the same units as the measured weak
 residual. `pressureSchurRestart` sets how many GCR directions are retained
-before rebuilding the basis. Each direction uses two host pressure vectors.
+before rebuilding the basis. Each direction uses two device pressure vectors.
+The solver batches the inner products in each orthogonalization pass. The
+`phaseTime` and `preconditionerTime` fields show elapsed host time inside the
+phase evaluations and native Poisson preconditioner calls, respectively.
 `method3SchurRestart` reports the initial and recomputed weak linear residuals
 at each restart and at the final iteration of each pass. It is printed on
 monitored steps and on failure. A small linear residual with a larger physical

@@ -20,7 +20,7 @@ struct Parameters {
   int dragCouplingMaxIterations=30;
   dfloat dragCouplingTolerance=1e-10;
   int pressureWarmStart=1;
-  int pressureIncremental=0;
+  int pressureIncremental=1;
   std::string pressureSolveMode="consistent";
   int pressureSchurMaxIterations=100,pressureSchurRestart=30;
   dfloat pressureSchurTolerance=1e-6,pressureSchurAbsoluteTolerance=1e-12;
