@@ -112,17 +112,24 @@ inline void addNativePhasePressureLoad(const occa::memory& pressure)
     platform->linAlg->axpby(m->Nlocal,1/p.rhoLiquid,gp,1.0,liquid);
   }
 }
-inline void solveNativePressureVelocities(double time,const occa::memory& pressure)
+inline void solveNativePressureVelocities(double time,const occa::memory& pressure,
+                                          bool homogeneous=false,dfloat dragTolerance=0)
 {
   auto &s=nrs->scalar;const auto O=nrs->fieldOffset,N=nrs->meshV->Nlocal;
   static deviceMemory<dfloat> pressureFreeBase;
   if(!pressureFreeBase.size()) pressureFreeBase.resize(6*O);
-  for(int is=1;is<7;++is)
-    pressureFreeBase.copyFrom(predictorBase,N,(is-1)*O,s->fieldOffsetScan[is]);
+  for(int is=1;is<7;++is) {
+    const auto offset=s->fieldOffsetScan[is];
+    pressureFreeBase.copyFrom(predictorBase,N,(is-1)*O,offset);
+    if(homogeneous) {
+      platform->linAlg->fill(N,0.0,predictorBase.slice(offset,N));
+      platform->linAlg->fill(N,0.0,s->o_solution(names[is]));
+    }
+  }
   addNativePhasePressureLoad(pressure);
   // Reuse frozen BDF/EXT RHS and drag coefficients, not makeForcing/lagSolution.
   // Both partner velocities converge with the SAME fixed, latest pressure.
-  solvePhasePredictors(time);
+  solvePhasePredictors(time,homogeneous,dragTolerance);
   for(int is=1;is<7;++is)
     predictorBase.copyFrom(pressureFreeBase,N,s->fieldOffsetScan[is],(is-1)*O);
   reconstructMixture();
@@ -254,38 +261,55 @@ inline void solveConsistentPhasePressure(double time,int step,bool log,double be
     zeroPressureRows(residual,outlet);
     return residual;
   };
+  const auto norm=[&](const std::vector<double>& v) {return std::sqrt(dot(v,v));};
   const auto rhs=continuity();
-  std::vector<double> reference(N,0.0),update(N,0.0);
-  if(incremental) reference=pressureHost(pressure);
-  if(!incremental && havePreviousPressure && p.pressureWarmStart)
-    update=pressureHost(pressure);
-  zeroPressureRows(reference,outlet);
-  zeroPressureRows(update,outlet);
+  const double predictorNorm=norm(rhs);
+  const double target=std::max(p.pressureSchurAbsoluteTolerance/tau,
+                               p.pressureSchurTolerance*predictorNorm);
+  nekrsCheck(!std::isfinite(predictorNorm) || !std::isfinite(target),comm,EXIT_FAILURE,
+      "%s","Nonfinite predictor continuity residual or Schur tolerance.\n");
+  std::vector<double> totalPressure(N,0.0);
+  if(incremental || (havePreviousPressure && p.pressureWarmStart))
+    totalPressure=pressureHost(pressure);
+  zeroPressureRows(totalPressure,outlet);
 
   deviceMemory<dfloat> predictorGas,predictorLiquid,trialPressure,preconditioned;
   predictorGas.resize(3*O);predictorGas.copyFrom(ug,3*O);
   predictorLiquid.resize(3*O);predictorLiquid.copyFrom(ul,3*O);
   trialPressure.resize(O);preconditioned.resize(O);
   std::vector<dfloat> upload(N);
-  std::vector<double> actualResidual;
-  int phaseEvaluations=0,nativeSolves=0;
+  int phaseEvaluations=0,nativeSolves=0,iterations=0,passes=0;
+  double linearResidual=0;
+  const char* reason="postBcResidual";
   const double start=MPI_Wtime();
-  const auto apply=[&](const std::vector<double>& increment,std::vector<double>& action) {
-    // Reset the current phase fields so trial responses do not depend on the
-    // previous Krylov direction. No history or drag-coefficient update occurs.
+  const auto evaluate=[&]() {
     ug.copyFrom(predictorGas,3*O);ul.copyFrom(predictorLiquid,3*O);
     unpackVelocities();
-    for(size_t i=0;i<upload.size();++i) upload[i]=reference[i]+increment[i];
-    for(const auto id:outlet) upload[id]=0;
+    std::copy(totalPressure.begin(),totalPressure.end(),upload.begin());
     trialPressure.copyFrom(upload,N);
-    solveNativePressureVelocities(time,trialPressure);
+    solveNativePressureVelocities(time,trialPressure,false,std::min(p.dragCouplingTolerance,dfloat(1e-12)));
     nrs->scalar->applyDirichlet(time);
     reconstructMixture();
     formPressureRhs(tau);
-    actualResidual=continuity();
-    // r(p_ref + increment) = rhs - S*increment, with S=-D_m H^-1 G.
-    action.resize(rhs.size());
-    for(size_t i=0;i<rhs.size();++i) action[i]=rhs[i]-actualResidual[i];
+    ++phaseEvaluations;
+    return continuity();
+  };
+  const auto apply=[&](const std::vector<double>& increment,std::vector<double>& action) {
+    // Compute -D_m H^-1 G directly. Scaling the trial to unit peak pressure
+    // keeps tiny Krylov directions away from the phase-solve accuracy floor.
+    double scale=0;
+    for(const auto value:increment)
+      scale=std::max(scale,std::isfinite(value)?std::abs(value):std::numeric_limits<double>::infinity());
+    MPI_Allreduce(MPI_IN_PLACE,&scale,1,MPI_DOUBLE,MPI_MAX,comm);
+    nekrsCheck(!std::isfinite(scale),comm,EXIT_FAILURE,"%s","Nonfinite Schur pressure direction.\n");
+    if(scale==0) {action.assign(N,0.0);return;}
+    for(size_t i=0;i<upload.size();++i) upload[i]=increment[i]/scale;
+    for(const auto id:outlet) upload[id]=0;
+    trialPressure.copyFrom(upload,N);
+    solveNativePressureVelocities(time,trialPressure,true);
+    formPressureRhs(tau);
+    action=continuity();
+    for(auto &value:action) value*=-scale;
     ++phaseEvaluations;
   };
   const auto nativeTolerance=pressureSolver->options().getArgs("SOLVER TOLERANCE");
@@ -300,26 +324,41 @@ inline void solveConsistentPhasePressure(double time,int step,bool log,double be
     zeroPressureRows(direction,outlet);
     ++nativeSolves;
   };
-  const auto result=method3Projection::solve(rhs,update,apply,precondition,dot,
-      p.pressureSchurMaxIterations,15,p.pressureSchurTolerance,p.pressureSchurAbsoluteTolerance/tau);
+  auto actualResidual=evaluate();
+  double final=norm(actualResidual);
+  // A fresh physical residual corrects the small error from inexact phase
+  // inverses. Refinement shares the configured outer iteration budget.
+  while(std::isfinite(final) && final>target && passes<3 && iterations<p.pressureSchurMaxIterations) {
+    std::vector<double> correction(N,0.0);
+    const auto result=method3Projection::solve(actualResidual,correction,apply,precondition,dot,
+        p.pressureSchurMaxIterations-iterations,15,0.0,0.25*target);
+    iterations+=result.iterations;
+    linearResidual=result.residual;
+    reason=result.reason;
+    ++passes;
+    if(!result.iterations || !std::isfinite(linearResidual)) break;
+    for(size_t i=0;i<totalPressure.size();++i) totalPressure[i]+=correction[i];
+    const double previous=final;
+    actualResidual=evaluate();
+    final=norm(actualResidual);
+    if(final>=previous) {reason="physicalResidualStalled";break;}
+    if(result.converged && final>target) reason="postBcResidual";
+  }
   pressureSolver->options().setArgs("SOLVER TOLERANCE",nativeTolerance);
-  // GCR's last apply on success evaluates the accepted update. Check the
-  // actual residual from that velocity field, after boundary restoration.
-  const double finalSquared=dot(actualResidual,actualResidual);
-  const double final=std::sqrt(finalSquared);
-  const bool converged=result.converged && std::isfinite(final) && final<=result.target;
+  const bool converged=std::isfinite(final) && final<=target;
   if(platform->comm.mpiRank()==0) {
     printf("method3Schur step=%d time=%.8e pressureForm=%s iterations=%d phaseEvaluations=%d "
-        "nativePreconditionerSolves=%d weakL2(predictor,final)=(%.8e,%.8e) target=%.8e "
-        "reason=%s converged=%s wallTime=%.6es\n",step,time,incremental?"increment":"absolute",
-        result.iterations,phaseEvaluations,nativeSolves,tau*result.rhsNorm,tau*final,
-        tau*result.target,result.reason,converged?"yes":"no",MPI_Wtime()-start);
+        "nativePreconditionerSolves=%d passes=%d weakL2(predictor,final)=(%.8e,%.8e) target=%.8e "
+        "linearResidual=%.8e reason=%s converged=%s wallTime=%.6es\n",step,time,
+        incremental?"increment":"absolute",iterations,phaseEvaluations,nativeSolves,passes,
+        tau*predictorNorm,tau*final,tau*target,tau*linearResidual,
+        converged?"converged":reason,converged?"yes":"no",MPI_Wtime()-start);
     fflush(stdout);
   }
   nekrsCheck(!converged,comm,EXIT_FAILURE,
       "Method3 Schur solve did not reach the post-BC continuity target: weakL2=%g target=%g. "
       "Inspect phase-solve accuracy, iteration history and pressure-space compatibility.\n",
-      tau*final,tau*result.target);
+      tau*final,tau*target);
   pressure.copyFrom(trialPressure,N);
   if(log) {
     const auto after=divergenceNorm();
@@ -341,12 +380,20 @@ inline void solvePressureAndCorrect(double time,int step)
   // Bootstrap absolute pressure once. Afterwards use the previous final
   // pressure in the predictor and solve only the increment. The predictor
   // and final solves reuse the same BDF/EXT base and frozen drag coefficients.
+  const bool consistent=p.pressureSolveMode=="consistent";
+  std::array<std::string,6> phaseTolerances;
+  if(consistent) for(int is=1;is<7;++is) {
+    auto &options=s->ellipticSolver[is]->options();
+    phaseTolerances[is-1]=options.getArgs("SOLVER TOLERANCE");
+    options.setArgs("SOLVER TOLERANCE","1e-11+relative");
+  }
+  const dfloat dragTolerance=consistent?std::min(p.dragCouplingTolerance,dfloat(1e-12)):0;
   const bool havePreviousPressure=bool(pressureSolver);
   const bool incremental=p.pressureIncremental && havePreviousPressure;
   if(incremental) {
-    solveNativePressureVelocities(time,nrs->fluid->o_solution("pressure"));
+    solveNativePressureVelocities(time,nrs->fluid->o_solution("pressure"),false,dragTolerance);
   } else {
-    solvePhasePredictors(time);
+    solvePhasePredictors(time,false,dragTolerance);
     reconstructMixture();
   }
   const bool log=p.monitorInterval>0 && (step==1 || step%p.monitorInterval==0);
@@ -360,10 +407,12 @@ inline void solvePressureAndCorrect(double time,int step)
   formPressureRhs(tau);
   platform->linAlg->axpby(m->Nlocal,1/tau,betaM,0.0,pressureDiffusion);
   if(!pressureSolver) setupPressure(); // normalized coefficient is now ready
-  if(p.pressureSolveMode=="consistent") {
+  if(consistent) {
     solveConsistentPhasePressure(time,step,log,before,tau,incremental,havePreviousPressure);
   } else {
     solveNativePhasePressure(time,step,log,before,tau,incremental);
   }
+  if(consistent) for(int is=1;is<7;++is)
+    s->ellipticSolver[is]->options().setArgs("SOLVER TOLERANCE",phaseTolerances[is-1]);
 }
 } // namespace bubbleColumn3

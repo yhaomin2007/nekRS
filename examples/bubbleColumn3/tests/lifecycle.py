@@ -53,6 +53,7 @@ struct Mem{
 template<class T>using deviceMemory=Mem;
 struct Comm{int mpiComm(){return 0;}int mpiRank(){return 0;}};
 struct LA{
+ void fill(int n,double a,Mem x){for(int i=0;i<n;++i)x[i]=a;}
  void axpby(int n,double a,Mem x,double b,Mem y){for(int i=0;i<n;++i)y[i]=a*x[i]+b*y[i];}
  double weightedNorm2Many(int n,int fields,int stride,Mem w,Mem x,int){double sum=0;for(int c=0;c<fields;++c)for(int i=0;i<n;++i)sum+=w[i]*x[i+c*stride]*x[i+c*stride];return std::sqrt(sum);}
 }la;
@@ -63,13 +64,13 @@ struct Fluid{Mem o_U{12};std::vector<elliptic*>ellipticSolver;elliptic*ellipticS
 struct Scalar{
  int fieldOffsetSum=28;std::vector<int>compute=std::vector<int>(7,1);std::vector<int>fieldOffsetScan{0,4,8,12,16,20,24};
  Mem o_S{56},o_JwF{28},o_EXT{56},o_coeffEXT{2},o_coeffBDF{2},rho{28};
- std::vector<elliptic*>ellipticSolver;int explicitCalls=0,historyShifts=0,solutionShifts=0,solveCalls=0;
+ std::vector<elliptic*>ellipticSolver;int explicitCalls=0,historyShifts=0,solutionShifts=0,solveCalls=0,dirichletCalls=0,lastStage=0;
  int index(const std::string&name){static std::vector<std::string>v={"alpha","ugx","ugy","ugz","ulx","uly","ulz"};return std::find(v.begin(),v.end(),name)-v.begin();}
  Mem o_solution(const std::string&name){return o_S.slice(4*index(name),4);}
  Mem o_explicitTerms(const std::string&name){return o_EXT.slice(4*index(name),4);}
  Mem o_transportCoeff(){return rho;}
  void makeExplicit(int,double,int){++explicitCalls;}
- void applyDirichlet(double){for(int is=0;is<7;++is)if(compute[is])assert(ellipticSolver.at(is));}
+ void applyDirichlet(double){++dirichletCalls;for(int is=0;is<7;++is)if(compute[is])assert(ellipticSolver.at(is));}
  void solve(double,int stage);
 }scalar;
 struct Nrs{Scalar*scalar=::std::addressof(::scalar);Fluid*fluid=::std::addressof(::fluid);Mesh*meshV=&mesh;int fieldOffset=4,tstep=1;double g0=1.5,dt[1]={1e-5};}nrsObject;
@@ -103,7 +104,7 @@ void launchKernel(const char* name,int elements,Mem,Mem,int offset,const Mem& pr
 """
 functions=functions.replace('occa::memory','Mem').replace('return o_NULL;','return Mem();')
 suffix=r'''
-void Scalar::solve(double,int){++solveCalls;for(int is=1;is<7;++is)if(compute[is]){Mem l=implicitDrag(0,is);for(int i=0;i<2;++i)o_S[4*is+i]=o_JwF[4*is+i]/(mesh.o_LMM[i]*(nrs->g0/nrs->dt[0]+l[i]));}}
+void Scalar::solve(double,int stage){++solveCalls;lastStage=stage;for(int is=1;is<7;++is)if(compute[is]){Mem l=implicitDrag(0,is);for(int i=0;i<2;++i)o_S[4*is+i]=o_JwF[4*is+i]/(mesh.o_LMM[i]*(nrs->g0/nrs->dt[0]+l[i]));}}
 int main(){
  elliptic e;scalar.ellipticSolver.assign(7,&e);for(int i=0;i<2;++i)mesh.o_LMM[i]=1;
  for(int i=0;i<28;++i)scalar.rho[i]=1;
@@ -143,6 +144,23 @@ int main(){
   assert(lambdaG[0]==lg&&lambdaL[0]==ll);
  }
  puts("PASS: production native weak-pressure RHS, density scaling, coupled phase response, restored base, no duplicate pressure/history");
+ // The homogeneous pressure response excludes the BDF/EXT base and inlet
+ // lifting. Its small load must scale linearly, with the same coupled drag.
+ const int boundaryCalls=scalar.dirichletCalls;
+ for(double scale:{1.0,1e-8}) {
+  Mem load(12);
+  for(int i=0;i<2;++i)load[8+i]=scale*fixedPressure[8+i];
+  solveNativePressureVelocities(1e-5,load,true);
+  for(int i=0;i<2;++i) {
+   assert(std::abs(scalar.o_solution("ugz")[i]/scale-(expectedGas-expected))<1e-11);
+   assert(std::abs(scalar.o_solution("ulz")[i]/scale-(expectedLiquid-expected))<1e-11);
+  }
+  for(int is=1;is<7;++is)for(int i=0;i<2;++i)
+   assert(predictorBase[4*is+i]==savedBase[4*is+i]);
+  assert(scalar.dirichletCalls==boundaryCalls&&scalar.lastStage>1);
+  assert(scalar.historyShifts==1&&scalar.solutionShifts==1&&scalar.explicitCalls==6);
+ }
+ puts("PASS: pressure-only homogeneous phase response scales to small directions without history or inlet loads");
  // A new timestep is forbidden until the deferred step is marked completed.
  nrs->tstep=2;bool blocked=false;try{beginStep(1e-5);}catch(...){blocked=true;}assert(blocked);
  e.residual=1;blocked=false;try{validateLinearSolve(&e,"test");}catch(...){blocked=true;}assert(blocked);e.residual=0;

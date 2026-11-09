@@ -146,12 +146,13 @@ inline void validateLinearSolve(elliptic *solver,const std::string& field)
       "%s linear solve did not converge: initial=%g final=%g target=%g iterations=%d preconditioner=%s\n",
       field.c_str(),initial,final,target,solver->Niter(),solver->options().getArgs("PRECONDITIONER").c_str());
 }
-inline void solvePhasePredictors(double time)
+inline void solvePhasePredictors(double time,bool homogeneous=false,dfloat requestedTolerance=0)
 {
   auto &s=nrs->scalar;auto m=nrs->meshV;const auto N=m->Nlocal,O=nrs->fieldOffset;
   s->compute.assign(7,1);s->compute[0]=0;
   packVelocities();
   const int maxIterations=p.dragEnabled?p.dragCouplingMaxIterations:1;
+  const auto couplingTolerance=requestedTolerance>0?requestedTolerance:p.dragCouplingTolerance;
   dragChange=0;
   for(dragIterations=1;dragIterations<=maxIterations;++dragIterations) {
     phasePrevious.copyFrom(ug,3*O);phasePrevious.copyFrom(ul,3*O,3*O,0);
@@ -164,7 +165,10 @@ inline void solvePhasePredictors(double time)
       dragLoadKernel(N,O,c,m->o_LMM,lambdaG,ul,rg);
       dragLoadKernel(N,O,c,m->o_LMM,lambdaL,ug,rl);
     }
-    s->applyDirichlet(time);s->solve(time,dragIterations);
+    // Response solves start from zero Dirichlet data. The native elliptic
+    // mask holds those values, and stage > 1 prevents an extrapolated guess.
+    if(!homogeneous) s->applyDirichlet(time);
+    s->solve(time,dragIterations+(homogeneous?1:0));
     for(int is=1;is<7;++is) validateLinearSolve(s->ellipticSolver.at(is),names[is]);
     packVelocities();
     if(!p.dragEnabled) break;
@@ -172,14 +176,16 @@ inline void solvePhasePredictors(double time)
     const dfloat norm=platform->linAlg->weightedNorm2Many(N,6,O,m->o_LMM,phaseDelta,platform->comm.mpiComm());
     platform->linAlg->axpby(6*O,-1.0,phasePrevious,1.0,phaseDelta);
     const dfloat diff=platform->linAlg->weightedNorm2Many(N,6,O,m->o_LMM,phaseDelta,platform->comm.mpiComm());
-    dragChange=diff/std::max(std::sqrt(m->volume),norm);
+    const auto scale=homogeneous?std::max(norm,std::numeric_limits<dfloat>::min())
+                                :std::max(std::sqrt(m->volume),norm);
+    dragChange=diff/scale;
     nekrsCheck(!std::isfinite(dragChange),platform->comm.mpiComm(),EXIT_FAILURE,
         "%s","Nonfinite phase predictor during drag coupling.\n");
-    if(dragChange<=p.dragCouplingTolerance) break;
+    if(dragChange<=couplingTolerance) break;
   }
   nekrsCheck(dragIterations>maxIterations,platform->comm.mpiComm(),EXIT_FAILURE,
       "Phase drag coupling did not converge: change=%g tolerance=%g maxIterations=%d\n",
-      dragChange,p.dragCouplingTolerance,maxIterations);
+      dragChange,couplingTolerance,maxIterations);
   s->compute.assign(7,1);
 }
 inline bool singlePass(int stage)
@@ -333,7 +339,7 @@ void UDF_Setup()
   clipKernel(m->Nlocal,p.alphaMinimum,p.alphaMaximum,s->o_solution("alpha"));
   // Native scalar elliptic solvers are constructed after UDF_Setup. Boundary
   // application must wait until beginStep, when their masks are available.
-  reconstructMixture(); // consistent pressure uses the final coupled Helmholtz response
+  reconstructMixture(); // homogeneous Schur action and verified physical residual refinement
   if(platform->comm.mpiRank()==0)
     printf("method3 pressureSolveMode=%s; native weak pressure load and phase Helmholtz solves\n",
         p.pressureSolveMode.c_str());

@@ -57,13 +57,16 @@ velocities are divergence-free. It uses the stated scalar Laplacian phase model.
    coupled partner loads; reconstruct UM predictor.
 4. Form the assembled predictor weak continuity residual `r*`, including the
    inlet/wall flux. Pressure test rows at the fixed-pressure outlet are removed.
-5. For each trial pressure, solve both coupled phase Helmholtz equations with
-   the native weak pressure load. Reapply the phase boundary conditions and
-   form `r(trial)` with the same weak continuity operator. The Schur action is
-   `r* - r(trial)`. All trials reuse the frozen phase RHSs, drag, and alpha.
-6. Use flexible GCR to solve `S deltaP = r*`. The local mobility Poisson
-   operator is the native preconditioner. Commit the accepted trial pressure
-   and phase velocities together after checking their actual post-BC residual.
+5. For each Schur direction, solve both coupled phase Helmholtz equations
+   with only the native weak pressure load and homogeneous velocity boundary
+   data. Normalize the pressure direction to unit peak magnitude before the
+   solves and rescale its weak continuity response afterwards. This computes
+   `S = -D_m H^-1 G` directly, without subtracting two full-flow residuals.
+6. Use flexible GCR with the native local-mobility Poisson preconditioner.
+   Evaluate the updated total pressure with the physical phase RHSs and
+   boundary conditions. Refine against that measured residual for up to three
+   passes within the configured iteration budget. Commit the pressure and
+   phase velocities together once the post-BC continuity target is reached.
 
 The GCR residual is assembled in pressure DOF order with inverse-multiplicity
 weights. For native preconditioning it is divided among shared element copies
@@ -125,6 +128,11 @@ uses the previous total pressure as its outer initial guess when available and
 `pressureWarmStart=1`. The native preconditioner uses a loose relative tolerance
 (`1e-2+relative` with native volume scaling) and the existing multigrid settings.
 The native reference mode uses the original `[ELLIPTIC phasePressure]` tolerance.
+Consistent mode uses `1e-11+relative` for the phase Helmholtz solves during
+pressure coupling and restores their configured tolerances afterwards. The
+physical drag-coupling target is capped at `1e-12`. The homogeneous response
+uses relative drag convergence. The continuity acceptance tolerance is
+independent of these inner tolerances.
 
 Native UM uses `solver=none`. The case creates a separate native `phasePressure`
 instance. Setup0 sets internal Poisson/coefficient-field options before kernel
@@ -148,6 +156,12 @@ forms and checks the residual against the final computed phase velocities.
 `method3Schur` reports outer iterations, phase evaluations, native Poisson
 preconditioner calls, physical weak residual before/after the update, target,
 and convergence. The final residual is measured after boundary restoration.
+`passes` counts outer correction/refinement passes. `linearResidual` reports
+the last homogeneous Schur residual in the same units as the measured weak
+residual. A small linear residual with a larger physical residual indicates
+that the computed phase response and full-flow solve differ at that scale.
+A large linear residual can also reflect pressure-space compatibility or
+exhausted iterations.
 Use `mode=consistent` output to compare strong divergence and velocity fields.
 
 `method3Pressure mode=native` reports the actual native solve each step,

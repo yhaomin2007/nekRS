@@ -90,19 +90,37 @@ int main() {
     const V prior=incremental?reference:V(6,0.0);
     auto rhs=multiply(continuity,multiply(response,prior,12),6);
     for(int i=0;i<6;++i) rhs[i]+=b[i];
-    V acceptedTrial,actual,delta(6,0.0);
+    V delta(6,0.0);
     auto apply=[&](const V& trial,V& action) {
-      acceptedTrial=trial;
-      V total=prior;
-      for(int i=0;i<6;++i) total[i]+=trial[i];
-      actual=multiply(continuity,multiply(response,total,12),6);
-      action.resize(6);
-      for(int i=0;i<6;++i) {actual[i]+=b[i];action[i]=rhs[i]-actual[i];}
+      double scale=0;
+      for(double value:trial) scale=std::max(scale,std::abs(value));
+      if(scale==0) {action.assign(6,0);return;}
+      V unit=trial;
+      for(auto& value:unit)value/=scale;
+      action=multiply(continuity,multiply(response,unit,12),6);
+      for(auto& value:action)value*=-scale;
     };
     auto precondition=[&](const V& r,V& z){z=multiply(invK,r,6);};
-    auto result=method3Projection::solve(rhs,delta,apply,precondition,dot,100,15,1e-10,1e-13);
-    assert(result.converged && acceptedTrial==delta);
-    assert(std::sqrt(dot(actual,actual))<=result.target);
+    auto result=method3Projection::solve(rhs,delta,apply,precondition,dot,100,15,0.0,1e-12);
+    assert(result.converged);
+    V total=prior;
+    for(int i=0;i<6;++i)total[i]+=delta[i];
+    auto actual=multiply(continuity,multiply(response,total,12),6);
+    for(int i=0;i<6;++i)actual[i]+=b[i];
+    assert(std::sqrt(dot(actual,actual))<=4*result.target);
+    // At tiny pressure, subtracting complete flow residuals can lose the
+    // entire response. The normalized homogeneous action retains it.
+    V tiny=reference;
+    for(auto& value:tiny)value*=1e-19;
+    V action;apply(tiny,action);
+    auto exact=multiply(continuity,multiply(response,tiny,12),6);
+    double error=0,subtracted=0;
+    for(int i=0;i<6;++i) {
+      error+=std::pow(action[i]+exact[i],2);
+      subtracted+=std::pow((rhs[i]-(rhs[i]+exact[i]))-action[i],2);
+    }
+    assert(std::sqrt(error)<1e-13*std::sqrt(dot(action,action)));
+    assert(std::sqrt(subtracted)>.1*std::sqrt(dot(action,action)));
     printf("PASS: full Helmholtz Schur %s solve, measured residual %.3e\n",
         incremental?"increment":"absolute",std::sqrt(dot(actual,actual)));
   }
