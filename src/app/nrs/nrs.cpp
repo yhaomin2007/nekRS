@@ -1692,7 +1692,7 @@ void nrs_t::initInnerStep(double time, dfloat _dt, int _tstep)
     }
   }
 
-  if (fluid) {
+  if (fluid && !fluid->pressureFromVelocity) {
     platform->timer.tic("makef");
 
     if (platform->options.compareArgs("EQUATION TYPE", "NAVIERSTOKES")) {
@@ -1773,7 +1773,7 @@ bool nrs_t::runInnerStep(std::function<bool(int)> convergenceCheck, int iter, bo
     }
   }
 
-  if (fluid) {
+  if (fluid && !fluid->pressureFromVelocity) {
     fluid->applyDirichlet(timeNew);
     if (neknek && fieldsToSolveContains("fluid velocity")) {
       if (!platform->app->bc->hasOutflow("fluid velocity")) {
@@ -1809,7 +1809,7 @@ bool nrs_t::runInnerStep(std::function<bool(int)> convergenceCheck, int iter, bo
   if (fluid) {
     fluid->solve(timeNew, iter);
 
-    if (platform->options.compareArgs("CONSTANT FLOW RATE", "TRUE")) {
+    if (!fluid->pressureFromVelocity && platform->options.compareArgs("CONSTANT FLOW RATE", "TRUE")) {
       adjustFlowRate(tstep, timeNew);
     }
   }

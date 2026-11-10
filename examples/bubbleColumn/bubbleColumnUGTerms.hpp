@@ -156,7 +156,7 @@ inline void captureSource(double time)
   auto inertia=coefficients.slice(offset,N);
   platform->linAlg->fill(N,p.rhoGas+virtualInertia,inertia);
   captureKernel(N,offset,p.rhoGas,p.rhoGas+virtualInertia,virtualInertia,
-      p.gasPressureEnabled,p.alphaFloor,p.gravity[0],p.gravity[1],p.gravity[2],
+      phaseMomentumEnabled ? 0.0 : p.gasPressureEnabled,p.alphaFloor,p.gravity[0],p.gravity[1],p.gravity[2],
       p.subtractUgDiffusion[0],p.subtractUgDiffusion[1],p.subtractUgDiffusion[2],
       nrs->scalar->o_solution("alpha"),o_gradP,lambdaSource,o_ul,o_ug,
       o_liquidAccelerationEXT,o_divGasStress,o_ugDiffusionDivergence,

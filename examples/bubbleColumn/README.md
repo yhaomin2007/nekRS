@@ -1,4 +1,39 @@
-# Density-averaged method1: conservative UG transport of alpha
+# Method 1 bubble column
+
+## Separate phase momentum
+
+`phaseMomentumEnabled = 1` advances `ALPHA`, `UGX/Y/Z` and `ULX/Y/Z` as
+native scalar solves. Use the NekRS executable rebuilt from this branch.
+Keep the configured fluid velocity solver so NekRS allocates its native pressure
+field, mesh and boundary data. The core skips mixture momentum forcing and its
+velocity solve in this mode.
+
+1. Build pressure-free gas and liquid momentum predictors with the native scalar
+   BDF/diffusion solves. The liquid RHS uses its own material convection, physical
+   stress, gravity, and the opposite of the gas drag and VM loads. `UL` scalar
+   diffusion is numerical regularization, separate from the physical stress.
+2. Reconstruct `UM* = (alpha*rhoGas*UG* + (1-alpha)*rhoLiquid*UL*)/rhoM` before
+   the pressure solve. The native pressure path builds the projection RHS from
+   `(g0/dt)*UM*` and the existing Method 1 divergence target. It uses the native
+   boundary terms and variable-coefficient pressure Poisson solve with `1/rhoM`.
+3. Apply the new pressure gradient once to the phase predictors, restore their
+   prescribed scalar boundary values, and reconstruct the final `UM`. The
+   pressure impulse in UG is divided by `rhoGas + Cvm*rhoLiquid` when VM is
+   enabled. UL receives the opposite VM reaction, so the density-weighted
+   pressure impulse sums to `-(dt/g0)*grad(p)/rhoM` before boundary restoration.
+
+This uses a split pressure correction with the assembled strong gradient.
+The native Poisson residual and the divergence of the corrected, boundary-restored
+velocity are separate diagnostics. `method1PhaseContinuity` logs the volume-weighted
+RMS of `div(UM) - target` before and after the projection. Existing `UGTERMS`
+balances refer to the pressure-free scalar predictor in this mode. The checkpoint
+`ug`, `ul` and main velocity fields contain the corrected solution.
+
+Set `phaseMomentumEnabled = 0` to restore the four-scalar Method 1 path
+described below. The setup excludes `ULX/Y/Z` automatically. Use a fresh run
+when switching paths, or restart from a checkpoint written in the same mode.
+
+## Original mixture-momentum path
 
 Alpha and UG have no native mixture convection or matching RHS cancellation: their device-only advection compute flags are disabled before the first timestep. All four Helmholtz solves, diffusion, HPFRT and boundary conditions remain enabled. The native scalar loop solves alpha then UG before the native pressure/UM solve; host solve masks are never changed. Native alpha/UG advection histories are zero-initialized and remain zero. The alpha RHS directly supplies conservative div(alpha*UG): alphaTransportForm=1 forms the product at GLL nodes then applies assembled opSEM::strongDivergence; alphaTransportForm=2 retains conservative cubature differentiation (default). Both use the same frozen UG and time treatment. The former aliases the nodal product; neither form guarantees boundedness. UGX/UGY/UGZ receive only the user cubature -UG.grad(UG) convection in their explicit RHS. UG remains transported velocity, not QG. Gas drag is fully explicit, K*(UL-UG)/rhoEff at source time. Effective virtual-mass inertia remains semi-implicit; its liquid material acceleration uses native fluid time extrapolation. Pressure uses the latest completed pressure or independently selected gradient EXT; other nonconvection sources retain latest-sample treatment.
 

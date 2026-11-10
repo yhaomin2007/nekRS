@@ -73,6 +73,8 @@ namespace bubbleColumn {
 namespace ugTerms {void captureSource(double){} void captureSolved(double){} void capturePostprocessed(double){}}
 struct Parameters{int gasPressureGradientExtrapolation=0,mixtureDivergenceForm=1;}p;
 bool assemblingExplicitSources=false;
+bool phaseMomentumEnabled=false;
+namespace phaseMomentum {void addLiquidSources(){assert(false);}}
 ExplicitHistory convectionHistory,pressureHistory,divergenceTransportHistory;
 Mem o_gradPStrong{12},o_gradPWeak{12},o_gradP{12};
 Mem o_alphaSource{4},o_alphaRelativeRhs{4},o_divergenceTransportEXT{4};

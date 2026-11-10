@@ -24,6 +24,8 @@ struct Fluid {Mem o_U{velocity};Mem o_explicitTerms(){return {fluidRhs};}}fluid;
 struct Nrs {Mesh *meshV=&mesh;Scalar *scalar;Fluid *fluid;long fieldOffset=5;} nr{&mesh,&scalar,&fluid},*nrs=&nr;
 double ugSource[15],transport[20],alphaSource[5],mixtureForce[15],snapshot[15];
 bool assemblingExplicitSources=false;
+bool phaseMomentumEnabled=false;
+namespace phaseMomentum {void addLiquidSources(){assert(false);}}
 double conv[20],alphaDiff[5];Mem o_convectionEXT{conv},o_alphaExplicitDiffusion{alphaDiff};
 Mem o_ugSource{ugSource},o_gasTransport{transport},o_alphaSource{alphaSource},o_mixtureForce{mixtureForce},o_mixtureAdvectorUsed{snapshot};
 void prepareGasAdvection(){}

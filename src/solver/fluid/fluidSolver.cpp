@@ -163,44 +163,50 @@ void fluidSolver_t::solvePressure(double time, int stage)
     return o_del;
   }();
 
-  const auto o_stressTerm = [&]() {
-    auto o_curl = platform->deviceMemoryPool.reserve<dfloat>(fieldOffsetSum);
+  auto o_rhs = [&]() {
+    if (pressureFromVelocity) {
+      auto o_predictor = platform->deviceMemoryPool.reserve<dfloat>(fieldOffsetSum);
+      platform->linAlg->axpbyMany(mesh->Nlocal, mesh->dim, fieldOffset,
+                                 g0idt, o_U, 0.0, o_predictor);
+      return o_predictor;
+    }
 
-    launchKernel("core-curlHex3D", mesh->Nelements, 1, mesh->o_vgeo, mesh->o_D, fieldOffset, o_Ue, o_curl);
-    flopCount += static_cast<double>(mesh->Nelements) * (18 * mesh->Np * mesh->Nq + 36 * mesh->Np);
+    const auto o_stressTerm = [&]() {
+      auto o_curl = platform->deviceMemoryPool.reserve<dfloat>(fieldOffsetSum);
 
-    oogs::startFinish(o_curl, mesh->dim, fieldOffset, ogsDfloat, ogsAdd, mesh->oogs3);
+      launchKernel("core-curlHex3D", mesh->Nelements, 1, mesh->o_vgeo, mesh->o_D, fieldOffset, o_Ue, o_curl);
+      flopCount += static_cast<double>(mesh->Nelements) * (18 * mesh->Np * mesh->Nq + 36 * mesh->Np);
 
-    platform->linAlg->axmyVector(mesh->Nlocal, fieldOffset, 0, 1.0, mesh->o_invLMM, o_curl);
-    flopCount += mesh->Nlocal;
+      oogs::startFinish(o_curl, mesh->dim, fieldOffset, ogsDfloat, ogsAdd, mesh->oogs3);
 
-    auto o_stressTerm = platform->deviceMemoryPool.reserve<dfloat>(fieldOffsetSum);
-    launchKernel("core-curlHex3D",
-                 mesh->Nelements,
-                 1,
-                 mesh->o_vgeo,
-                 mesh->o_D,
-                 fieldOffset,
-                 o_curl,
-                 o_stressTerm);
-    flopCount += static_cast<double>(mesh->Nelements) * (18 * mesh->Np * mesh->Nq + 36 * mesh->Np);
+      platform->linAlg->axmyVector(mesh->Nlocal, fieldOffset, 0, 1.0, mesh->o_invLMM, o_curl);
+      flopCount += mesh->Nlocal;
 
-    if (platform->options.compareArgs(upperCase(name) + " STRESSFORMULATION", "TRUE")) {
-      launchKernel("fluidSolver_t::pressureStressHex3D",
+      auto o_stressTerm = platform->deviceMemoryPool.reserve<dfloat>(fieldOffsetSum);
+      launchKernel("core-curlHex3D",
                    mesh->Nelements,
+                   1,
                    mesh->o_vgeo,
                    mesh->o_D,
                    fieldOffset,
-                   o_mue,
-                   o_Ue,
-                   o_div,
+                   o_curl,
                    o_stressTerm);
-      flopCount += static_cast<double>(mesh->Nelements) * (18 * mesh->Nq * mesh->Np + 100 * mesh->Np);
-    }
-    return o_stressTerm;
-  }();
+      flopCount += static_cast<double>(mesh->Nelements) * (18 * mesh->Np * mesh->Nq + 36 * mesh->Np);
 
-  auto o_rhs = [&]() {
+      if (platform->options.compareArgs(upperCase(name) + " STRESSFORMULATION", "TRUE")) {
+        launchKernel("fluidSolver_t::pressureStressHex3D",
+                     mesh->Nelements,
+                     mesh->o_vgeo,
+                     mesh->o_D,
+                     fieldOffset,
+                     o_mue,
+                     o_Ue,
+                     o_div,
+                     o_stressTerm);
+        flopCount += static_cast<double>(mesh->Nelements) * (18 * mesh->Nq * mesh->Np + 100 * mesh->Np);
+      }
+      return o_stressTerm;
+    }();
     auto o_gradDiv = platform->deviceMemoryPool.reserve<dfloat>(fieldOffsetSum);
 
     launchKernel("core-gradientVolumeHex3D",
@@ -549,11 +555,16 @@ void fluidSolver_t::setupEllipticSolver()
 
 void fluidSolver_t::applyDirichlet(double time)
 {
-  if (ellipticSolver.size() == 0) {
+  applyDirichlet(time, false);
+}
+
+void fluidSolver_t::applyDirichlet(double time, bool pressureOnly)
+{
+  if (!ellipticSolverP || (!pressureOnly && ellipticSolver.empty())) {
     return;
   }
 
-  if (platform->app->bc->hasUnalignedMixed(velocityName)) {
+  if (!pressureOnly && platform->app->bc->hasUnalignedMixed(velocityName)) {
     launchKernel("mesh-applyZeroNormalMask",
                  mesh->Nelements,
                  fieldOffset,
@@ -576,7 +587,7 @@ void fluidSolver_t::applyDirichlet(double time)
 
   // lower than any other possible Dirichlet value
   static constexpr dfloat TINY = -1e30;
-  occa::memory o_tmp = platform->deviceMemoryPool.reserve<dfloat>((mesh->dim + 1) * fieldOffset);
+  occa::memory o_tmp = platform->deviceMemoryPool.reserve<dfloat>((pressureOnly ? 1 : mesh->dim + 1) * fieldOffset);
   platform->linAlg->fill(o_tmp.size(), TINY, o_tmp);
 
   auto &neknek = platform->app->neknek;
@@ -597,36 +608,38 @@ void fluidSolver_t::applyDirichlet(double time)
                  o_rho,
                  o_mue,
                  platform->app->bc->o_usrwrk,
-                 o_Ue,
+                 pressureOnly ? o_U : o_Ue,
                  o_tmp);
 
-    launchKernel("fluidSolver_t::velocityDirichletBCHex3D",
-                 o_velocityName,
-                 mesh->Nelements,
-                 fieldOffset,
-                 time,
-                 mesh->o_sgeo,
-                 mesh->o_x,
-                 mesh->o_y,
-                 mesh->o_z,
-                 mesh->o_vmapM,
-                 mesh->o_EToB,
-                 o_EToB,
-                 o_rho,
-                 o_mue,
-                 neknek ? neknek->intValOffset() : 0,
-                 neknek ? neknek->o_pointMap() : o_NULL,
-                 neknek ? neknek->getField(velocityName).o_intVal : o_NULL,
-                 platform->app->bc->o_usrwrk,
-                 o_U,
-                 o_tmp.slice(fieldOffset));
+    if (!pressureOnly) {
+      launchKernel("fluidSolver_t::velocityDirichletBCHex3D",
+                   o_velocityName,
+                   mesh->Nelements,
+                   fieldOffset,
+                   time,
+                   mesh->o_sgeo,
+                   mesh->o_x,
+                   mesh->o_y,
+                   mesh->o_z,
+                   mesh->o_vmapM,
+                   mesh->o_EToB,
+                   o_EToB,
+                   o_rho,
+                   o_mue,
+                   neknek ? neknek->intValOffset() : 0,
+                   neknek ? neknek->o_pointMap() : o_NULL,
+                   neknek ? neknek->getField(velocityName).o_intVal : o_NULL,
+                   platform->app->bc->o_usrwrk,
+                   o_U,
+                   o_tmp.slice(fieldOffset));
+    }
 
     oogs::startFinish(o_tmp,
-                      1 + mesh->dim,
+                      pressureOnly ? 1 : 1 + mesh->dim,
                       fieldOffset,
                       ogsDfloat,
                       (sweep == 0) ? ogsMax : ogsMin,
-                      mesh->oogs3);
+                      pressureOnly ? mesh->oogs : mesh->oogs3);
   }
 
   if (ellipticSolverP->Nmasked()) {
@@ -638,6 +651,10 @@ void fluidSolver_t::applyDirichlet(double time)
                  ellipticSolverP->o_maskIds(),
                  o_dirichletValues,
                  o_P);
+  }
+
+  if (pressureOnly) {
+    return;
   }
 
   int cnt = 0;

@@ -36,22 +36,23 @@ inline bool singlePass(int stage)
       "%s", "Method1 one-through requires exactly one native stage.\n");
   return true;
 }
-inline void configure()
+inline void configure(int scalarCount = 4)
 {
   const auto comm = platform->comm.mpiComm();
   platform->par->extract("casedata", "onethroughloginterval", logInterval);
   nekrsCheck(logInterval < 0, comm, EXIT_FAILURE,
       "%s", "oneThroughLogInterval must be nonnegative.\n");
-  nekrsCheck(nrs->Nscalar != 4 || nrs->geom || nrs->neknek
+  nekrsCheck(nrs->Nscalar != scalarCount || nrs->geom || nrs->neknek
       || nrs->advectionSubcycingSteps || nrs->scalar->cvode,
-      comm, EXIT_FAILURE, "%s", "Method1 requires four fixed-mesh elliptic gas scalars.\n");
+      comm, EXIT_FAILURE, "%s", "Method1 requires fixed-mesh elliptic scalars and one stage.\n");
   nekrsCheck(nrs->preFluid || nrs->userConvergenceCheck, comm, EXIT_FAILURE,
       "%s", "Method1 cannot overwrite existing stage callbacks.\n");
   int index = 0;
-  for (const char *name : {"alpha", "ugx", "ugy", "ugz"}) {
-    const int is = nrs->scalar->nameToIndex.at(name);
+  const char *names[] = {"alpha", "ugx", "ugy", "ugz", "ulx", "uly", "ulz"};
+  for (int i = 0; i < scalarCount; ++i) {
+    const int is = nrs->scalar->nameToIndex.at(names[i]);
     nekrsCheck(is != index++ || !nrs->scalar->compute[is], comm, EXIT_FAILURE,
-        "%s", "Method1 scalar order must be ALPHA, UGX, UGY, UGZ, all enabled.\n");
+        "%s", "Method1 requires ALPHA, UGX/Y/Z and, in phase mode, ULX/Y/Z in that order.\n");
   }
   for (const char *key : {"MOVING MESH", "NEKNEK MULTIRATE TIMESTEPPER"})
     nekrsCheck(platform->options.compareArgs(key, "TRUE"), comm, EXIT_FAILURE,
@@ -59,7 +60,7 @@ inline void configure()
   nrs->postScalar = &postScalar;
   nrs->preFluid = &preFluid;
   nrs->userConvergenceCheck = &singlePass;
-  if (platform->comm.mpiRank() == 0)
+  if (scalarCount == 4 && platform->comm.mpiRank() == 0)
     printf("Method1 order: ALPHA -> UG -> PRESSURE -> UM; convection=fluid EXT; "
            "UG pressure=strong %s (latest available completed pressure).\n",
         p.gasPressureGradientExtrapolation ? "EXT" : "latest");

@@ -1,0 +1,91 @@
+@kernel void phaseMixtureVelocity(const dlong N, const dlong offset,
+                                 const dfloat rhoL, const dfloat rhoG,
+                                 @ restrict const dfloat *alpha,
+                                 @ restrict const dfloat *ug,
+                                 @ restrict const dfloat *ul,
+                                 @ restrict dfloat *um)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    const dfloat gasMass = alpha[n] * rhoG;
+    const dfloat liquidMass = (1.0 - alpha[n]) * rhoL;
+    for (int c = 0; c < 3; ++c) {
+      const dlong i = n + c * offset;
+      um[i] = (gasMass * ug[i] + liquidMass * ul[i]) / (gasMass + liquidMass);
+    }
+  }
+}
+
+@kernel void phaseLiquidTransport(const dlong N, const dlong offset,
+                                  const dfloat muL,
+                                  @ restrict const dfloat *alpha,
+                                  @ restrict const dfloat *ul,
+                                  @ restrict const dfloat *gradUl,
+                                  @ restrict dfloat *convection,
+                                  @ restrict dfloat *stress)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    const dfloat trace = (2.0 / 3.0) *
+        (gradUl[n] + gradUl[n + 4 * offset] + gradUl[n + 8 * offset]);
+    for (int i = 0; i < 3; ++i) {
+      dfloat material = 0.0;
+      for (int j = 0; j < 3; ++j) {
+        const dlong ij = n + (3 * i + j) * offset;
+        const dfloat gij = gradUl[ij];
+        material += ul[n + j * offset] * gij;
+        stress[ij] = (1.0 - alpha[n]) * muL *
+            (gij + gradUl[n + (3 * j + i) * offset] - (i == j ? trace : 0.0));
+      }
+      convection[n + i * offset] = material;
+    }
+  }
+}
+
+@kernel void phaseLiquidRhs(const dlong N, const dlong offset,
+                            const dfloat rhoL, const dfloat rhoEff,
+                            const dfloat cVM, const dfloat alphaFloor,
+                            const dfloat gx, const dfloat gy, const dfloat gz,
+                            @ restrict const dfloat *alpha,
+                            @ restrict const dfloat *ug,
+                            @ restrict const dfloat *ul,
+                            @ restrict const dfloat *dragRate,
+                            @ restrict const dfloat *gasAcceleration,
+                            @ restrict const dfloat *liquidAccelerationEXT,
+                            @ restrict const dfloat *convectionEXT,
+                            @ restrict const dfloat *divStress,
+                            @ restrict dfloat *rhs)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    const dfloat beta = 1.0 - alpha[n];
+    const dfloat mass = rhoL * (beta > alphaFloor ? beta : alphaFloor);
+    for (int c = 0; c < 3; ++c) {
+      const dlong i = n + c * offset;
+      const dfloat gravity = c == 0 ? gx : (c == 1 ? gy : gz);
+      // Opposite of the interfacial load in the pressure-free UG predictor.
+      const dfloat drag = rhoEff * dragRate[n] * (ul[i] - ug[i]);
+      const dfloat vm = cVM * (liquidAccelerationEXT[i] - gasAcceleration[i]);
+      rhs[i] = gravity - convectionEXT[i] + (divStress[i] - alpha[n] * (drag + vm)) / mass;
+    }
+  }
+}
+
+@kernel void phasePressureResponse(const dlong N, const dlong offset,
+                                    const dfloat rhoL, const dfloat rhoEff,
+                                    const dfloat cVM, const dfloat alphaFloor,
+                                    const dfloat dtOverG0,
+                                    @ restrict const dfloat *alpha,
+                                    @ restrict const dfloat *gradP,
+                                    @ restrict dfloat *deltaUg,
+                                    @ restrict dfloat *deltaUl)
+{
+  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    const dfloat beta = 1.0 - alpha[n];
+    const dfloat betaSafe = beta > alphaFloor ? beta : alphaFloor;
+    const dfloat liquidMobility = (1.0 + alpha[n] * cVM / (betaSafe * rhoEff)) / rhoL;
+    for (int c = 0; c < 3; ++c) {
+      const dlong i = n + c * offset;
+      const dfloat impulse = -dtOverG0 * gradP[i];
+      deltaUg[i] = impulse / rhoEff;
+      deltaUl[i] = liquidMobility * impulse;
+    }
+  }
+}

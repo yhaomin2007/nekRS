@@ -109,6 +109,7 @@ prefix=prefix.replace('int geom=0,neknek=0,advectionSubcycingSteps=0;', '''int g
  void writeToFile(const char*n,double,Mesh*,const std::vector<std::tuple<std::string,std::vector<Mem>>>&){exports.push_back(n);}''')
 parent=r'''
 namespace bubbleColumn {
+bool phaseMomentumEnabled=false;
 struct P{double rhoGas=1.2,rhoLiquid=998.2,virtualMassEnabled=1,virtualMassCoefficient=.5;
  double gasPressureEnabled=1,alphaFloor=1e-6,gravity[3]={0,0,-9.81},subtractUgDiffusion[3]={0,0,0};}p;
 Mem o_dragLambda{4},o_gradP{12},o_ul{12},o_ug{12},o_liquidAccelerationEXT{12},o_divGasStress{12};
