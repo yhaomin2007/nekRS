@@ -12,7 +12,7 @@ numSteps = 100000
 dt = 1e-5
 timeStepper = tombo2
 checkpointInterval = 1000
-scalars = ALPHA, UGX, UGY, UGZ, ULX, ULY, ULZ
+scalars = ALPHA, UGX, UGY, UGZ
 
 [FLUID PRESSURE]
 initialGuess = previous
@@ -61,33 +61,7 @@ transportCoeff = 1.0
 diffusionCoeff = 1e-5
 regularization = hpfrt + nModes=1 + scalingCoeff=10.0
 
-[SCALAR ULX]
-initialGuess = previous
-boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
-residualTol = 1e-6
-transportCoeff = 1.0
-diffusionCoeff = 1e-5
-regularization = hpfrt + nModes=1 + scalingCoeff=10.0
-
-[SCALAR ULY]
-initialGuess = previous
-boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
-residualTol = 1e-6
-transportCoeff = 1.0
-diffusionCoeff = 1e-5
-regularization = hpfrt + nModes=1 + scalingCoeff=10.0
-
-[SCALAR ULZ]
-initialGuess = previous
-boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
-residualTol = 1e-6
-transportCoeff = 1.0
-diffusionCoeff = 1e-5
-regularization = hpfrt + nModes=1 + scalingCoeff=10.0
-
 [CASEDATA]
-# 1: solve phase velocities and project with native pressure. 0: original Method 1.
-phaseMomentumEnabled = 1
 rhoLiquid = 998.2
 rhoGas = 1.2
 muLiquid = 1.0e-3
@@ -172,8 +146,9 @@ stabilityMonitorEnabled = 1.0
 stabilityMonitorInterval = 10
 validationOutputInterval = 10
 
-# With phaseMomentumEnabled=1: ALPHA -> UG/UL predictors -> reconstructed UM
-# -> native pressure -> phase correction. With 0: ALPHA -> UG -> pressure -> UM.
+# Fixed native order: ALPHA -> UGX/UGY/UGZ -> pressure -> UM.
+# Only convection and the independently enabled pressure gradient use EXT.
+# Other explicit sources keep their previous latest-sample treatment.
 # Rank-0 solve-order trace: first step plus every N steps.
 # 1 prints every step; 0 disables the trace.
 oneThroughLogInterval = 10

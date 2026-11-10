@@ -43,23 +43,18 @@ const double c_I[3][2]={{}},c_D[3][3]={{}};
 struct Mem {std::vector<long>a;void resize(size_t n){a.resize(n);}
 void copyFrom(const std::vector<long>&b){a=b;}void copyFrom(const long*b){std::copy(b,b+a.size(),a.begin());}};
 Mem o_userAdvectionCompute;
-bool phaseMomentumEnabled=false;
-const char *momentumScalarNames[]={"alpha","ugx","ugy","ugz","ulx","uly","ulz"};
-struct Scalar {std::vector<int>compute{1,1,1,1,1,1,1,1};Mem o_compute;
-std::map<std::string,int>nameToIndex{{"alpha",0},{"ugx",1},{"ugy",2},{"ugz",3},{"ulx",4},{"uly",5},{"ulz",6}};} scalar;
+struct Scalar {std::vector<int>compute{1,1,1,1,1};Mem o_compute;
+std::map<std::string,int>nameToIndex{{"alpha",0},{"ugx",1},{"ugy",2},{"ugz",3}};} scalar;
 struct Nrs {Scalar *scalar;} nr{&scalar},*nrs=&nr;
 '''
 native=(root/'src/core/kernels/strongAdvectionVolumeScalarHex3D.okl').read_text()
 cub=(root/'src/core/kernels/strongAdvectionCubatureVolumeScalarHex3D.okl').read_text()
 forcing=(root/'src/solver/scalar/kernels/sumMakef.okl').read_text()
 main=r'''
-int main(){scalar.o_compute.resize(8);disableNativeGasScalarAdvection();
+int main(){scalar.o_compute.resize(5);disableNativeGasScalarAdvection();
 assert(scalar.compute[0]==1);assert(scalar.o_compute.a[0]==0);
 for(int i=0;i<4;++i){assert(scalar.compute[i]==1);assert(o_userAdvectionCompute.a[i]==1);assert(scalar.o_compute.a[i]==0);}
 assert(scalar.o_compute.a[4]==1); // An unrelated scalar stays enabled.
-phaseMomentumEnabled=true; disableNativeGasScalarAdvection();
-for(int i=0;i<7;++i){assert(scalar.compute[i]==1);assert(scalar.o_compute.a[i]==0);}
-assert(scalar.o_compute.a[7]==1);
 double geo[96]={},D[4]={},I[6]={},DI[6]={},P[6]={},rho[8],S[24]={},Urst[81]={},adv[16]={};
 for(int i=0;i<8;++i){geo[80+i]=1.;rho[i]=1.;S[8+i]=.1;}
 long offsets[1]={0};double ext[2]={1.,0.},bdf[2]={1.,0.},mass[8],source[16],out[8];
@@ -67,7 +62,7 @@ for(int i=0;i<8;++i)mass[i]=1.;for(int i=0;i<16;++i)source[i]=-.03;
 for(int step=0;step<4;++step){
 // Arbitrary changing mixture advector cannot enter alpha or any UG component.
 for(int i=0;i<81;++i)Urst[i]=(step+1)*(.3+i);
-for(int field=0;field<7;++field){
+for(int field=0;field<4;++field){
 strongAdvectionVolumeScalarHex3D(1,1,0,geo,D,scalar.o_compute.a.data()+field,offsets,8,S,Urst,rho,adv);
 strongAdvectionCubatureVolumeScalarHex3D(1,1,0,0,geo,DI,I,P,scalar.o_compute.a.data()+field,offsets,8,27,S,Urst,rho,adv);
 }

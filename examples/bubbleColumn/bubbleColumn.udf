@@ -1,6 +1,5 @@
 #include "bubbleColumnTerms.hpp"
 #include "bubbleColumnCubature.hpp"
-#include "bubbleColumnPhaseMomentum.hpp"
 #include "bubbleColumnUGTerms.hpp"
 #include "bubbleColumnOneThrough.hpp"
 
@@ -16,9 +15,6 @@ void UDF_LoadKernels(deviceKernelProperties& kernelInfo)
   kernelInfo.define("p_UG_INLET") = bubbleColumn::p.ugInlet;
   bubbleColumn::registerKernels(kernelInfo);
   bubbleColumn::ugTerms::registerKernels(kernelInfo);
-  if (bubbleColumn::phaseMomentumEnabled) {
-    bubbleColumn::phaseMomentum::registerKernels(kernelInfo);
-  }
 }
 
 void UDF_Setup0(MPI_Comm, setupAide &)
@@ -37,20 +33,6 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   if (!interpolationHeader.empty()) {
     platform->kernelInfo["headers"].asArray();
     platform->kernelInfo["headers"] += interpolationHeader;
-  }
-  int phaseMomentum = 0;
-  platform->par->extract("casedata", "phasemomentumenabled", phaseMomentum);
-  nekrsCheck(phaseMomentum != 0 && phaseMomentum != 1,
-      platform->comm.mpiComm(), EXIT_FAILURE, "%s", "phaseMomentumEnabled must be 0 or 1.\n");
-  bubbleColumn::phaseMomentumEnabled = phaseMomentum == 1;
-  int scalarCount = 0;
-  platform->options.getArgs("NUMBER OF SCALARS", scalarCount);
-  if (!bubbleColumn::phaseMomentumEnabled && scalarCount == 7 &&
-      platform->options.compareArgs("SCALAR04 NAME", "ULX") &&
-      platform->options.compareArgs("SCALAR05 NAME", "ULY") &&
-      platform->options.compareArgs("SCALAR06 NAME", "ULZ")) {
-    // Drop the optional liquid scalars before field/kernel allocation.
-    platform->options.setArgs("NUMBER OF SCALARS", "4");
   }
   auto &p = bubbleColumn::p;
   platform->par->extract("casedata", "rholiquid", p.rhoLiquid);
@@ -131,23 +113,6 @@ void UDF_Setup0(MPI_Comm, setupAide &)
 
 void UDF_Setup()
 {
-  if (bubbleColumn::phaseMomentumEnabled) {
-    using namespace bubbleColumn;
-    const auto comm = platform->comm.mpiComm();
-    nekrsCheck(!nrs->fluid || nrs->Nscalar != 7 ||
-        platform->options.compareArgs("FLUID PRESSURE SOLVER", "NONE") ||
-        platform->options.compareArgs("FLUID PRESSURE RHO SPLITTING", "TRUE") ||
-        platform->options.compareArgs("CONSTANT FLOW RATE", "TRUE"), comm, EXIT_FAILURE, "%s",
-        "Phase momentum requires seven scalars, native variable-coefficient pressure, and no constant flow rate.\n");
-    p.alphaMaximum = std::min(p.alphaMaximum, 1.0 - p.alphaFloor);
-    nekrsCheck(p.gasPressureEnabled != 1.0 || p.mixtureVelocityClipEnabled != 0.0 ||
-        p.alphaClippingEnabled == 0.0 || p.alphaFloor <= 0.0 ||
-        p.alphaInlet < p.alphaMinimum || p.alphaInlet > p.alphaMaximum,
-        comm, EXIT_FAILURE, "%s",
-        "Phase momentum requires pressure coupling, alpha clipping with a positive liquid floor, and no mixture clipping.\n");
-    nrs->fluid->pressureFromVelocity = true;
-    phaseMomentum::allocate();
-  }
   bubbleColumn::allocate();
   if (platform->options.getArgs("RESTART FILE NAME").empty()) {
     const auto &p = bubbleColumn::p;
@@ -157,17 +122,8 @@ void UDF_Setup()
         nrs->meshV->o_z,
         nrs->scalar->o_solution("alpha"), nrs->scalar->o_solution("ugx"),
         nrs->scalar->o_solution("ugy"), nrs->scalar->o_solution("ugz"), nrs->fluid->o_U);
-    if (bubbleColumn::phaseMomentumEnabled) {
-      for (const char *name : bubbleColumn::liquidScalarNames) {
-        auto liquid = nrs->scalar->o_solution(name);
-        platform->linAlg->fill(nrs->meshV->Nlocal, 0.0, liquid);
-      }
-    }
   }
 
-  if (bubbleColumn::phaseMomentumEnabled) {
-    bubbleColumn::phaseMomentum::rebuildMixture();
-  }
   bubbleColumn::initializeHistory();
   nrs->userSource = &bubbleColumn::oneThrough::beginStep;
   nrs->postScalar = &bubbleColumn::postProcessAlpha;
@@ -175,37 +131,13 @@ void UDF_Setup()
   nrs->userDivergence = &bubbleColumn::updateDivergence;
   // Allocate diagnostics now; read elliptic masks lazily after the first UG solve.
   bubbleColumn::ugTerms::configure();
-  if (bubbleColumn::phaseMomentumEnabled) {
-    using namespace bubbleColumn;
-    oneThrough::configure(7);
-    nrs->postScalar = [](double time, int step) {
-      oneThrough::postScalar(time, step);
-      phaseMomentum::rebuildMixture();
-    };
-    nrs->preFluid = [](double, int) {
-      if (phaseMomentum::reportContinuity()) {
-        phaseMomentum::predictorDivergenceRms = phaseMomentum::divergenceRms();
-      }
-      oneThrough::stageLog("PHASE_PRESSURE_BEGIN");
-    };
-    if (platform->comm.mpiRank() == 0) {
-      printf("Method1 phase momentum: ALPHA -> UG/UL predictors -> reconstructed UM -> native PRESSURE -> UG/UL correction.\n");
-    }
-  } else {
-    bubbleColumn::oneThrough::configure();
-  }
+  bubbleColumn::oneThrough::configure();
 }
 
 void UDF_ExecuteStep(double time, int tstep)
 {
-  if (tstep > 0) {
-    if (bubbleColumn::phaseMomentumEnabled) {
-      bubbleColumn::phaseMomentum::applyPressure(time);
-      bubbleColumn::oneThrough::stageLog("PHASE_PRESSURE_DONE");
-    } else {
-      bubbleColumn::oneThrough::finishStep();
-    }
-  }
+  // Alpha/UG and then native pressure/UM have completed exactly once.
+  if (tstep > 0) bubbleColumn::oneThrough::finishStep();
   // Measure the fluid update before optional emergency clipping.
   bubbleColumn::diagnoseDivergenceCoupling(time, tstep);
   // Use bounded velocity for the remaining diagnostics, output and next step.

@@ -18,7 +18,6 @@ class fluidSolver_t : public solver_t
 private:
   void solvePressure(double time, int stage);
   void solveVelocity(double time, int stage);
-  void applyDirichlet(double time, bool pressureOnly);
 
   void advectionSubcycling(int nEXT, double time);
 
@@ -92,11 +91,6 @@ public:
 
   void solve(double time, int stage) override
   {
-    if (pressureFromVelocity) {
-      applyDirichlet(time, true);
-      solvePressure(time, stage);
-      return;
-    }
     solvePressure(time, stage);
     solveVelocity(time, stage);
   };
@@ -140,10 +134,6 @@ public:
   occa::memory o_mue;
 
   occa::memory o_relUrst;
-
-  // A user-supplied provisional o_U drives the native pressure projection.
-  // The caller supplies the velocity response after the pressure solve.
-  bool pressureFromVelocity = false;
 
   void finalize() override
   {

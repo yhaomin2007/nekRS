@@ -70,11 +70,6 @@ struct Parameters {
 };
 
 static Parameters p;
-static bool phaseMomentumEnabled = false;
-static constexpr const char *liquidScalarNames[] = {"ulx", "uly", "ulz"};
-static constexpr const char *momentumScalarNames[] = {"alpha", "ugx", "ugy", "ugz", "ulx", "uly", "ulz"};
-namespace phaseMomentum { inline void addLiquidSources(); }
-
 
 static deviceMemory<dfloat> o_gasTransportFields;
 static deviceMemory<dfloat> o_gasCubatureFields;
@@ -466,7 +461,7 @@ inline void allocate()
   o_alphaDiffusionFlux.resize(3 * offset);
   o_alphaDiffusionDivergence.resize(offset);
   o_ugDiffusionDivergence.resize(3 * offset);
-  o_scalarDiffusionBase.resize((phaseMomentumEnabled ? 7 : 4) * offset);
+  o_scalarDiffusionBase.resize(4 * offset);
   o_outletRampFactor.resize(offset);
   o_alphaNativeMaterialAdvection.resize(nrs->scalar->fieldOffsetSum);
   o_driftStress.resize(9 * offset);
@@ -500,9 +495,10 @@ inline void allocate()
   o_inletBoundaryID.copyFrom(std::vector<int>{1});
   o_scalarFieldOffsetScan.resize(1);
   o_scalarFieldOffsetScan.copyFrom(std::vector<dlong>{0});
-  for (int i = 0; i < (phaseMomentumEnabled ? 7 : 4); ++i) {
+  const char *scalarNames[4] = {"alpha", "ugx", "ugy", "ugz"};
+  for (int i = 0; i < 4; ++i) {
     o_scalarDiffusionBase.copyFrom(
-        nrs->scalar->o_diffusionCoeff(momentumScalarNames[i]),
+        nrs->scalar->o_diffusionCoeff(scalarNames[i]),
         nrs->meshV->Nlocal,
         i * offset,
         0);
@@ -582,12 +578,6 @@ inline void reconstructLiquidVelocity()
   const dlong Nlocal = nrs->meshV->Nlocal;
   const dlong offset = nrs->fieldOffset;
   reconstructGasFlux();
-  if (phaseMomentumEnabled) {
-    for (int c = 0; c < 3; ++c) {
-      o_ul.copyFrom(nrs->scalar->o_solution(liquidScalarNames[c]), Nlocal, c * offset, 0);
-    }
-    return;
-  }
   buildLiquidVelocityKernel(Nlocal,
                             offset,
                             p.rhoLiquid,
@@ -673,7 +663,17 @@ inline void evaluatePointwiseTerms()
   const dlong offset = nrs->fieldOffset;
   auto alpha = nrs->scalar->o_solution("alpha");
 
-  reconstructLiquidVelocity();
+  reconstructGasFlux();
+  reconstructGasVelocity();
+  buildLiquidVelocityKernel(mesh->Nlocal,
+                            offset,
+                            p.rhoLiquid,
+                            p.rhoGas,
+                            p.alphaFloor,
+                            alpha,
+                            nrs->fluid->o_U,
+                            o_qg,
+                            o_ul);
   // Use normalized gather-scatter assembly for every user-side SEM gradient
   // and divergence. This keeps user-side derivative and conservative
   // flux terms single-valued at shared CG nodes.
@@ -681,9 +681,7 @@ inline void evaluatePointwiseTerms()
   opSEM::strongDivergence(mesh, offset, o_qg, o_divQg);
   opSEM::strongGradVec(mesh, offset, o_ug, o_gradUg);
   opSEM::strongGradVec(mesh, offset, o_ul, o_gradUl);
-  if (!phaseMomentumEnabled) {
-    evaluateGasPressureGradient();
-  }
+  evaluateGasPressureGradient();
 
   buildEquationTermsKernel(mesh->Nlocal,
                            offset,
@@ -692,7 +690,7 @@ inline void evaluatePointwiseTerms()
                            p.muLiquid,
                            p.muGas,
                            p.alphaFloor,
-                           phaseMomentumEnabled ? 0.0 : p.gasPressureEnabled,
+                           p.gasPressureEnabled,
                            p.dragEnabled,
                            p.bubbleDiameter,
                            p.virtualMassEnabled,
@@ -730,8 +728,9 @@ inline void evaluatePointwiseTerms()
                               mesh->o_z,
                               o_outletRampFactor);
   platform->linAlg->axmy(mesh->Nlocal, 1.0, o_outletRampFactor, o_muM);
-  for (int i = 0; i < (phaseMomentumEnabled ? 7 : 4); ++i) {
-    auto diffusion = nrs->scalar->o_diffusionCoeff(momentumScalarNames[i]);
+  const char *scalarNames[4] = {"alpha", "ugx", "ugy", "ugz"};
+  for (int i = 0; i < 4; ++i) {
+    auto diffusion = nrs->scalar->o_diffusionCoeff(scalarNames[i]);
     diffusion.copyFrom(o_scalarDiffusionBase, mesh->Nlocal, 0, i * offset);
     platform->linAlg->axmy(
         mesh->Nlocal, 1.0, o_outletRampFactor, diffusion);
@@ -826,8 +825,8 @@ inline void disableNativeGasScalarAdvection()
   std::vector<dlong> flags(nrs->scalar->compute.begin(), nrs->scalar->compute.end());
   o_userAdvectionCompute.resize(flags.size());
   o_userAdvectionCompute.copyFrom(flags);
-  for (int i = 0; i < (phaseMomentumEnabled ? 7 : 4); ++i) {
-    flags[nrs->scalar->nameToIndex.at(momentumScalarNames[i])] = 0;
+  for (const char *name : {"alpha", "ugx", "ugy", "ugz"}) {
+    flags[nrs->scalar->nameToIndex.at(name)] = 0;
   }
   nrs->scalar->o_compute.copyFrom(flags.data());
   // v26 device allocations zero-initialize private o_ADV and its histories.
@@ -968,8 +967,27 @@ inline void updateVirtualMassHistory()
 {
   auto mesh = nrs->meshV;
   const dlong offset = nrs->fieldOffset;
+  auto alpha = nrs->scalar->o_solution("alpha");
 
-  reconstructLiquidVelocity();
+  reconstructGasFlux();
+  reconstructGasVelocityKernel(mesh->Nlocal,
+                               offset,
+                               p.gasVelocityLowAlphaCutoffEnabled,
+                               p.alphaFloor,
+                               alpha,
+                               nrs->scalar->o_solution("ugx"),
+                               nrs->scalar->o_solution("ugy"),
+                               nrs->scalar->o_solution("ugz"),
+                               o_ug);
+  buildLiquidVelocityKernel(mesh->Nlocal,
+                            offset,
+                            p.rhoLiquid,
+                            p.rhoGas,
+                            p.alphaFloor,
+                            alpha,
+                            nrs->fluid->o_U,
+                            o_qg,
+                            o_ul);
   opSEM::strongGradVec(mesh, offset, o_ug, o_gradUg);
   opSEM::strongGradVec(mesh, offset, o_ul, o_gradUl);
   updateVirtualMassHistoryKernel(mesh->Nlocal,
@@ -1149,9 +1167,6 @@ inline void addExplicitSources(double)
   assemblingExplicitSources = true;
   evaluatePointwiseTerms();
   assemblingExplicitSources = false;
-  if (phaseMomentumEnabled) {
-    phaseMomentum::addLiquidSources();
-  }
   prepareRelativeDivergenceRhs();
   storeAlphaTransportRhs();
   extrapolateGasConvection();
@@ -1159,9 +1174,7 @@ inline void addExplicitSources(double)
   o_alphaExplicitDiffusion.copyFrom(o_alphaSource, nrs->meshV->Nlocal);
   platform->linAlg->axpby(nrs->meshV->Nlocal, -1.0,
       o_convectionEXT, 1.0, o_alphaExplicitDiffusion);
-  if (!phaseMomentumEnabled) {
-    evaluateMixtureForce();
-  }
+  evaluateMixtureForce();
   const dlong Nlocal = nrs->meshV->Nlocal;
   const dlong offset = nrs->fieldOffset;
 
@@ -1177,11 +1190,9 @@ inline void addExplicitSources(double)
         o_convectionEXT.slice((i + 1) * offset, offset), 1.0, source);
     nrs->scalar->o_explicitTerms(names[i + 1]).copyFrom(source, Nlocal);
   }
-  if (!phaseMomentumEnabled) {
-    auto fluidTerms = nrs->fluid->o_explicitTerms();
-    for (int i = 0; i < 3; ++i) {
-      fluidTerms.copyFrom(o_mixtureForce, Nlocal, i * offset, i * offset);
-    }
+  auto fluidTerms = nrs->fluid->o_explicitTerms();
+  for (int i = 0; i < 3; ++i) {
+    fluidTerms.copyFrom(o_mixtureForce, Nlocal, i * offset, i * offset);
   }
 }
 
