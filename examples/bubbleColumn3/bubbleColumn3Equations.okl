@@ -102,3 +102,63 @@
     }
   }
 }
+
+// K_VM = C_VM rho_l alpha per mixture volume. Work in phase-mass units.
+// Native BDF/EXT bases contain history/dt - material convection + gravity.
+// Their difference cancels common gravity and gives the VM history load.
+@kernel void virtualMass(const dlong N, const dfloat inverseTau,
+    const dfloat cvm, const dfloat rg, const dfloat rl,
+    @restrict const dfloat *alpha, @restrict dfloat *lg, @restrict dfloat *ll,
+    @restrict const dfloat *materialG, @restrict const dfloat *materialL,
+    @restrict dfloat *bg, @restrict dfloat *bl)
+{
+  for(dlong i=0;i<N;++i;@tile(p_blockSize,@outer,@inner)) {
+    const dfloat vg=cvm*rl/rg, vl=cvm*alpha[i]/(1-alpha[i]);
+    const dfloat difference=materialG[i]-materialL[i];
+    bg[i]+=vg*difference;
+    bl[i]-=vl*difference;
+    // Called for each component, but the diagonal is changed only once.
+    if(inverseTau>0) {lg[i]+=vg*inverseTau;ll[i]+=vl*inverseTau;}
+  }
+}
+@kernel void viscousMobility(const dlong N, const dlong O, const dfloat inverseTau,
+    const dfloat rg, const dfloat rl, @restrict const dfloat *alpha,
+    @restrict const dfloat *lg, @restrict const dfloat *ll,
+    @restrict const dfloat *invMass, @restrict const dfloat *diagG,
+    @restrict const dfloat *diagL, @restrict dfloat *bg,
+    @restrict dfloat *bl, @restrict dfloat *bm)
+{
+  for(dlong i=0;i<N;++i;@tile(p_blockSize,@outer,@inner)) {
+    dfloat dg=0,dl=0;
+    for(int c=0;c<3;++c) {dg+=diagG[i+c*O];dl+=diagL[i+c*O];}
+    const dfloat ag=inverseTau+invMass[i]*dg/3;
+    const dfloat al=inverseTau+invMass[i]*dl/3;
+    const dfloat det=ag*al+ag*ll[i]+al*lg[i];
+    bg[i]=((al+ll[i])/rg+lg[i]/rl)/det;
+    bl[i]=(ll[i]/rg+(ag+lg[i])/rl)/det;
+    bm[i]=alpha[i]*bg[i]+(1-alpha[i])*bl[i];
+  }
+}
+
+@kernel void couplingBalance(const dlong N, const dlong O, const dfloat cvm,
+    const dfloat rg, const dfloat rl, @restrict const dfloat *alpha,
+    @restrict const dfloat *mass, @restrict const dfloat *lg, @restrict const dfloat *ll,
+    @restrict const dfloat *ug, @restrict const dfloat *ul,
+    @restrict const dfloat *baseG, @restrict const dfloat *baseL,
+    @restrict dfloat *balance)
+{
+  for(dlong i=0;i<N;++i;@tile(p_blockSize,@outer,@inner)) {
+    const dfloat vg=cvm*rl/rg,vl=cvm*alpha[i]/(1-alpha[i]);
+    dfloat error=0,scale=0;
+    for(int c=0;c<3;++c) {
+      const dlong j=i+c*O;
+      const dfloat historyDifference=baseG[j]-baseL[j];
+      const dfloat slip=ul[j]-ug[j];
+      const dfloat fg=alpha[i]*rg*(mass[i]*lg[i]*slip+vg*historyDifference);
+      const dfloat fl=(1-alpha[i])*rl*(-mass[i]*ll[i]*slip-vl*historyDifference);
+      error=fmax(error,fabs(fg+fl));
+      scale=fmax(scale,fmax(fabs(fg),fabs(fl)));
+    }
+    balance[i]=(scale>0)?error/scale:0;
+  }
+}

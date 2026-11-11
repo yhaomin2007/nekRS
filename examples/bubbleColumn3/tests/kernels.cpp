@@ -76,5 +76,29 @@ int main() {
     double expected=0;for(int j=0;j<24;++j)if(map[j]==i&&(ids[j/4]==1||ids[j/4]==3))expected-=0.25*flux[i];
     assert(near(rhs[i],expected));
   }
-  puts("PASS: reconstruction, drag balance, finite zero-slip, phase mobilities, shared-pressure correction, hydrostatic limit, convection source, boundary flux");
+  // VM BDF/EXT sources and diagonal/off-diagonal terms share the same
+  // equal/opposite mixture-volume force, including zero gas fraction.
+  double baseG[3*N]={2,3,4,5,6,7,8,9,10},baseL[3*N]={-2,-3,-4,-5,-6,-7,-8,-9,-10};
+  double originalG[3*N],originalL[3*N];
+  for(int i=0;i<3*N;++i) {originalG[i]=baseG[i];originalL[i]=baseL[i];}
+  drag(N,O,1,1.2,998.2,1e-3,3e-3,a,ug,ul,lg,ll);
+  for(int c=0;c<3;++c) virtualMass(N,c==0?1/tau:0,.5,1.2,998.2,a,lg,ll,originalG+c*O,originalL+c*O,baseG+c*O,baseL+c*O);
+  for(int c=0;c<3;++c)for(int i=0;i<N;++i)
+    assert(near(a[i]*1.2*(baseG[i+c*O]-originalG[i+c*O])
+        +(1-a[i])*998.2*(baseL[i+c*O]-originalL[i+c*O]),0));
+  double inverseMass[N]={1,.5,.25},diagG[3*N],diagL[3*N];
+  for(int i=0;i<3*N;++i) {diagG[i]=.1*(i+1);diagL[i]=.2*(i+1);}
+  viscousMobility(N,O,1/tau,1.2,998.2,a,lg,ll,inverseMass,diagG,diagL,bg,bl,bm);
+  for(int i=0;i<N;++i) {
+    double dg=0,dl=0;
+    for(int c=0;c<3;++c) {dg+=diagG[i+c*O];dl+=diagL[i+c*O];}
+    const double ag=1/tau+inverseMass[i]*dg/3,al=1/tau+inverseMass[i]*dl/3;
+    assert(near((ag+lg[i])*bg[i]-lg[i]*bl[i],1/1.2));
+    assert(near(-ll[i]*bg[i]+(al+ll[i])*bl[i],1/998.2));
+    assert(std::isfinite(bm[i])&&bm[i]>0);
+  }
+  double mass[N]={1,2,4},balance[N];
+  couplingBalance(N,O,.5,1.2,998.2,a,mass,lg,ll,ug,ul,originalG,originalL,balance);
+  for(int i=0;i<N;++i)assert(balance[i]<1e-12);
+  puts("PASS: phase kernels, symmetric drag/VM BDF and convection loads, viscous local block and boundary flux");
 }

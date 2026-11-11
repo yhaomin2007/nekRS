@@ -102,13 +102,18 @@ bubbleDiameter = 3e-3
 muLiquid = 1e-3
 alphaMinimum = 0.0
 alphaMaximum = 0.99
-# Explicitly off in this initial two-phase projection baseline.
-virtualMassEnabled = 0
+# Symmetric material-acceleration virtual mass, K_VM = Cvm*rhoLiquid*alpha.
+virtualMassEnabled = 1
+virtualMassCoefficient = 0.5
 monitorInterval = 10
 pressureWarmStart = 1
 
-# Schur pressure uses the actual coupled phase Helmholtz response.
-pressureSolveMode = consistent
+# Bounded native-Poisson / full-phase outer corrections.
+pressureSolveMode = outer
+pressureOuterCorrections = 3
+pressureOuterRelaxation = 1.0
+# Experimental budget mode reports unmet continuity targets and continues.
+pressureOuterRequireConvergence = 0
 pressureSchurMaxIterations = 100
 pressureSchurRestart = 30
 pressureSchurTolerance = 1e-6

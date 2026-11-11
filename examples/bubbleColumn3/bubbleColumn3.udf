@@ -17,11 +17,14 @@ struct Parameters {
   dfloat dragEnabled=1,bubbleDiameter=3e-3;
   dfloat alphaMinimum=0,alphaMaximum=0.99;
   int virtualMassEnabled=0,monitorInterval=10;
+  dfloat virtualMassCoefficient=0.5;
+  int pressureOuterCorrections=3,pressureOuterRequireConvergence=0;
+  dfloat pressureOuterRelaxation=1;
   int dragCouplingMaxIterations=30;
   dfloat dragCouplingTolerance=1e-10;
   int pressureWarmStart=1;
   int pressureIncremental=1;
-  std::string pressureSolveMode="consistent";
+  std::string pressureSolveMode="outer";
   int pressureSchurMaxIterations=100,pressureSchurRestart=30;
   dfloat pressureSchurTolerance=1e-6,pressureSchurAbsoluteTolerance=1e-12;
 };
@@ -30,8 +33,8 @@ static const std::array<std::string,7> names={"alpha","ugx","ugy","ugz","ulx","u
 static deviceMemory<dfloat> ug,ul,lambdaG,lambdaL;
 static deviceMemory<dfloat> fields,cube,products,transportG,transportL,zeroAdvection;
 static occa::kernel interpolateKernel,productsKernel,projectKernel,alphaKernel;
-static occa::kernel reconstructKernel,initializeKernel,clipKernel,dragKernel,sourceKernel,dragLoadKernel;
-static deviceMemory<dfloat> predictorBase,phasePrevious,phaseDelta;
+static occa::kernel reconstructKernel,initializeKernel,clipKernel,dragKernel,sourceKernel,dragLoadKernel,virtualMassKernel;
+static deviceMemory<dfloat> predictorBase,phasePrevious,phaseDelta,materialBase,materialHistory;
 static int dragIterations=0;
 static dfloat dragChange=0;
 static int preparedStep=-1,completedStep=-1;
@@ -112,6 +115,13 @@ inline void beginStep(double time)
   // Native scalar::makeForcing below assembles alpha and shifts ALL histories
   // once, including those of the six deferred components.
   for(int is=1;is<7;++is) {
+    if(p.virtualMassEnabled) {
+      // Save material convection before native regularization changes o_EXT.
+      materialHistory.copyFrom(s->o_explicitTerms(names[is]),m->Nlocal,s->fieldOffsetScan[is],0);
+      launchKernel("scalar_t::sumMakef",m->Nlocal,m->o_LMM,1.0/nrs->dt[0],
+          s->o_coeffEXT,s->o_coeffBDF,s->fieldOffsetScan[is],s->fieldOffsetSum,
+          m->fieldOffset,s->o_transportCoeff(),s->o_S,zeroAdvection,materialHistory,materialBase);
+    }
     s->makeExplicit(is,time,nrs->tstep);
     launchKernel("scalar_t::sumMakef",m->Nlocal,m->o_LMM,1.0/nrs->dt[0],
         s->o_coeffEXT,s->o_coeffBDF,s->fieldOffsetScan[is],s->fieldOffsetSum,
@@ -119,6 +129,9 @@ inline void beginStep(double time)
     predictorBase.copyFrom(s->o_JwF,m->Nlocal,s->fieldOffsetScan[is],s->fieldOffsetScan[is]);
     s->compute[is]=0;
   }
+  if(p.virtualMassEnabled) for(int level=int(s->o_coeffEXT.size())-1;level>0;--level)
+    materialHistory.copyFrom(materialHistory,s->fieldOffsetSum,
+        level*s->fieldOffsetSum,(level-1)*s->fieldOffsetSum);
 }
 inline void postAlpha(double time,int)
 {
@@ -132,6 +145,16 @@ inline void postAlpha(double time,int)
   // mobility. Slip is lagged, coefficients remain fixed during phase solves.
   dragKernel(nrs->meshV->Nlocal,nrs->fieldOffset,p.dragEnabled,p.rhoGas,p.rhoLiquid,
       p.muLiquid,p.bubbleDiameter,nrs->scalar->o_solution("alpha"),ug,ul,lambdaG,lambdaL);
+  if(p.virtualMassEnabled) {
+    auto &s=nrs->scalar;
+    for(int c=0;c<3;++c)
+      virtualMassKernel(nrs->meshV->Nlocal,c==0?nrs->g0/nrs->dt[0]:0,
+          p.virtualMassCoefficient,p.rhoGas,p.rhoLiquid,s->o_solution("alpha"),lambdaG,lambdaL,
+          materialBase.slice(s->fieldOffsetScan[1+c],nrs->meshV->Nlocal),
+          materialBase.slice(s->fieldOffsetScan[4+c],nrs->meshV->Nlocal),
+          predictorBase.slice(s->fieldOffsetScan[1+c],nrs->meshV->Nlocal),
+          predictorBase.slice(s->fieldOffsetScan[4+c],nrs->meshV->Nlocal));
+  }
   nrs->scalar->compute.assign(7,0);nrs->scalar->compute[0]=1;
 }
 inline void validateLinearSolve(elliptic *solver,const std::string& field)
@@ -151,7 +174,7 @@ inline void solvePhasePredictors(double time,bool homogeneous=false,dfloat reque
   auto &s=nrs->scalar;auto m=nrs->meshV;const auto N=m->Nlocal,O=nrs->fieldOffset;
   s->compute.assign(7,1);s->compute[0]=0;
   packVelocities();
-  const int maxIterations=p.dragEnabled?p.dragCouplingMaxIterations:1;
+  const int maxIterations=(p.dragEnabled || p.virtualMassEnabled)?p.dragCouplingMaxIterations:1;
   const auto couplingTolerance=requestedTolerance>0?requestedTolerance:p.dragCouplingTolerance;
   dragChange=0;
   for(dragIterations=1;dragIterations<=maxIterations;++dragIterations) {
@@ -171,7 +194,7 @@ inline void solvePhasePredictors(double time,bool homogeneous=false,dfloat reque
     s->solve(time,dragIterations+(homogeneous?1:0));
     for(int is=1;is<7;++is) validateLinearSolve(s->ellipticSolver.at(is),names[is]);
     packVelocities();
-    if(!p.dragEnabled) break;
+    if(!p.dragEnabled && !p.virtualMassEnabled) break;
     phaseDelta.copyFrom(ug,3*O);phaseDelta.copyFrom(ul,3*O,3*O,0);
     const dfloat norm=platform->linAlg->weightedNorm2Many(N,6,O,m->o_LMM,phaseDelta,platform->comm.mpiComm());
     platform->linAlg->axpby(6*O,-1.0,phasePrevious,1.0,phaseDelta);
@@ -220,6 +243,10 @@ void UDF_Setup0(MPI_Comm,setupAide&)
   READ("alphaminimum",alphaMinimum);READ("alphamaximum",alphaMaximum);
   READ("virtualmassenabled",virtualMassEnabled);READ("monitorinterval",monitorInterval);
   READ("dragcouplingmaxiterations",dragCouplingMaxIterations);READ("dragcouplingtolerance",dragCouplingTolerance);
+  READ("virtualmasscoefficient",virtualMassCoefficient);
+  READ("pressureoutercorrections",pressureOuterCorrections);
+  READ("pressureouterrequireconvergence",pressureOuterRequireConvergence);
+  READ("pressureouterrelaxation",pressureOuterRelaxation);
   READ("pressurewarmstart",pressureWarmStart);
   READ("pressureincremental",pressureIncremental);
   READ("pressuresolvemode",pressureSolveMode);
@@ -237,16 +264,20 @@ void UDF_Setup0(MPI_Comm,setupAide&)
       && std::isfinite(p.initialPlumeHeight) && p.initialPlumeHeight>=0 && p.alphaMinimum>=0 && p.alphaMaximum<1
       && p.alphaMinimum<=p.alphaInlet && p.alphaInlet<=p.alphaMaximum
       && (p.dragEnabled==0 || p.dragEnabled==1) && p.monitorInterval>=0
-      && (p.pressureSolveMode=="consistent" || p.pressureSolveMode=="native")
+      && (p.pressureSolveMode=="consistent" || p.pressureSolveMode=="native" || p.pressureSolveMode=="outer")
       && p.pressureSchurMaxIterations>0 && p.pressureSchurRestart>0
       && std::isfinite(p.pressureSchurTolerance) && p.pressureSchurTolerance>0 && p.pressureSchurTolerance<1
       && std::isfinite(p.pressureSchurAbsoluteTolerance) && p.pressureSchurAbsoluteTolerance>=0
       && (p.pressureWarmStart==0 || p.pressureWarmStart==1)
       && (p.pressureIncremental==0 || p.pressureIncremental==1)
       && p.dragCouplingMaxIterations>0 && std::isfinite(p.dragCouplingTolerance) && p.dragCouplingTolerance>0)
-      || p.virtualMassEnabled!=0,
+      || (p.virtualMassEnabled!=0 && p.virtualMassEnabled!=1)
+      || !std::isfinite(p.virtualMassCoefficient) || p.virtualMassCoefficient<0
+      || p.pressureOuterCorrections<1
+      || (p.pressureOuterRequireConvergence!=0 && p.pressureOuterRequireConvergence!=1)
+      || !std::isfinite(p.pressureOuterRelaxation) || p.pressureOuterRelaxation<=0 || p.pressureOuterRelaxation>1,
       platform->comm.mpiComm(),EXIT_FAILURE,"%s",
-      "Invalid method3 parameters; pressureSolveMode must be consistent or native, alphaMaximum<1 and virtualMassEnabled=0 required.\n");
+      "Invalid method3 parameters; pressureSolveMode must be outer, consistent or native; check alpha bounds, VM coefficient and outer controls.\n");
   int N=0,C=0;
   platform->options.getArgs("POLYNOMIAL DEGREE",N);
   platform->options.getArgs("CUBATURE POLYNOMIAL DEGREE",C);
@@ -271,6 +302,10 @@ void UDF_LoadKernels(deviceKernelProperties& info)
   if(platform->options.compareArgs("REGISTER ONLY","TRUE")) {
     platform->kernelRequests.add("bubbleColumn3::transport","bubbleColumn3Transport.okl",ci);
     platform->kernelRequests.add("bubbleColumn3::equations","bubbleColumn3Equations.okl",info);
+    auto diagonalInfo=info;
+    diagonalInfo.define("p_poisson")=1; // stiffness diagonal only
+    platform->kernelRequests.add("bubbleColumn3::viscousDiagonal",
+        std::string(getenv("NEKRS_KERNEL_DIR"))+"/core/elliptic/ellipticBlockBuildDiagonalHex3D.okl",diagonalInfo);
   } else {
 #define LOAD(member,request,name) member=platform->kernelRequests.load(request,name)
     LOAD(interpolateKernel,"bubbleColumn3::transport","gasInterpolate");
@@ -283,6 +318,10 @@ void UDF_LoadKernels(deviceKernelProperties& info)
     LOAD(dragKernel,"bubbleColumn3::equations","drag");
     LOAD(sourceKernel,"bubbleColumn3::equations","phaseSource");
     LOAD(dragLoadKernel,"bubbleColumn3::equations","addDragLoad");
+    LOAD(couplingBalanceKernel,"bubbleColumn3::equations","couplingBalance");
+    LOAD(virtualMassKernel,"bubbleColumn3::equations","virtualMass");
+    LOAD(viscousMobilityKernel,"bubbleColumn3::equations","viscousMobility");
+    LOAD(viscousDiagonalKernel,"bubbleColumn3::viscousDiagonal","ellipticBlockBuildDiagonalHex3D");
     LOAD(mobilityKernel,"bubbleColumn3::equations","mobility");
     // Negative boundary flux is accumulated with CUDA-compatible atomicAdd.
     LOAD(surfaceKernel,"bubbleColumn3::equations","pressureSurface");
@@ -326,6 +365,12 @@ void UDF_Setup()
   // Our deferred assembly uses the same BDF/EXT histories as the native alpha.
   ug.resize(3*O);ul.resize(3*O);lambdaG.resize(O);lambdaL.resize(O);
   predictorBase.resize(s->fieldOffsetSum);phasePrevious.resize(6*O);phaseDelta.resize(6*O);
+  materialBase.resize(s->fieldOffsetSum);
+  platform->linAlg->fill(materialBase.size(),0.0,materialBase);
+  if(p.virtualMassEnabled) {
+    materialHistory.resize(s->o_coeffEXT.size()*s->fieldOffsetSum);
+    platform->linAlg->fill(materialHistory.size(),0.0,materialHistory);
+  }
   platform->linAlg->fill(6*O,0.0,phasePrevious);platform->linAlg->fill(6*O,0.0,phaseDelta);
   fields.resize(4*O);cube.resize(4*m->Nelements*m->cubNp);products.resize(cube.size());
   transportG.resize(4*O);transportL.resize(4*O);
@@ -348,7 +393,7 @@ void UDF_Setup()
   nrs->userConvergenceCheck=&singlePass;s->userImplicitLinearTerm=&implicitDrag;
   if(platform->comm.mpiRank()==0)
     printf("bubbleColumn3: seven scalars ALPHA UGX UGY UGZ ULX ULY ULZ; default fluid UM/P OFF; "
-        "user phase convection ON; alpha -> UG/UL predictors -> shared P -> both phase corrections -> reconstructed UM; VM OFF\n");
+        "user phase convection ON; alpha -> UG/UL predictors -> shared P -> both phase corrections -> reconstructed volume velocity; VM=%d Cvm=%g\n",p.virtualMassEnabled,p.virtualMassCoefficient);
 }
 
 void UDF_ExecuteStep(double time,int step)

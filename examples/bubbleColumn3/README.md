@@ -1,4 +1,4 @@
-# bubbleColumn3: consistent pressure and native phase Helmholtz solves
+# bubbleColumn3: bounded native pressure/phase corrections
 
 This example advances ALPHA, UGX, UGY, UGZ, ULX, ULY, ULZ with native scalar
 BDF/EXT/elliptic machinery. Native velocity storage contains only the reconstructed
@@ -9,18 +9,26 @@ pressure solver stay disabled. No NekRS core files are changed.
 
 | Operation | Native fluid solver | Method3 |
 |---|---|---|
-| Pressure linear solver | `elliptic::solve` | Flexible GCR with actual phase response and native `phasePressure` preconditioner |
+| Pressure linear solver | `elliptic::solve` | Native `phasePressure` Poisson solve per outer correction; Schur comparison is selectable |
 | Poisson preconditioner | native PGMRES/pMG/ASM/BoomerAMG | Same native machinery, configured by `[ELLIPTIC phasePressure]` |
-| Pressure RHS/coefficient | native single-fluid force/stress construction, inverse density | Predictor weak divergence/boundary flux. Local mobility betaM/tau is used by the preconditioner |
+| Pressure RHS/coefficient | native single-fluid force/stress construction, inverse density | Predictor weak divergence/boundary flux. Local inertia/viscosity/drag/VM mobility betaM/tau |
 | Pressure gradient for velocity | `core-wGradientVolumeHex3D` | Identical registered kernel, no nodal averaging/mass inversion |
 | Pressure force placement | Weak load added to momentum RHS before Helmholtz | Same placement, divided by each constant phase density since scalar transportCoeff=1 |
-| Final velocity solve | component native elliptic Helmholtz (or vector stress option) | Six component native scalar elliptic Helmholtz solves with coupled drag |
+| Final velocity solve | component native elliptic Helmholtz (or vector stress option) | Six component native scalar elliptic Helmholtz solves with coupled drag and VM |
 | Boundary lifting | native velocity elliptic Dirichlet masks; natural traction | Native scalar elliptic masks; supplied p=0 outlet has zero pressure traction |
 
-`pressureSolveMode=consistent` is the default. It solves the discrete pressure
-Schur equation using the actual coupled phase Helmholtz response. Set
-`pressureSolveMode=native` to compare against the previous single native
-Poisson solve using local mobility as the pressure operator.
+`pressureSolveMode=outer` is the default experimental mode. It performs at
+most three native Poisson corrections, each followed by full coupled phase
+Helmholtz solves. No phase solve is called by the pressure Krylov operator.
+The final post-boundary continuity residual determines whether the requested
+target was achieved. A fixed correction budget can finish above that target.
+The supplied PAR uses `pressureOuterRequireConvergence=0`, reports
+`converged=no budgetExhausted=yes`, and continues for assessment. Set it to 1
+to reject such steps. This mode needs GPU validation and does not establish
+that three corrections eliminate velocity stripes.
+
+`pressureSolveMode=consistent` selects the full phase-response Schur comparison.
+`pressureSolveMode=native` selects the one-Poisson comparison.
 
 For each phase k, the final normalized equation is
 
@@ -37,6 +45,30 @@ latest solved absolute pressure, fixed during the final coupled drag iterations.
 The pressure-free base is saved/restored; no pressure term enters EXT history
 and no BDF/EXT history is advanced twice.
 
+VM uses `K_VM = C_VM*rhoLiquid*alpha` per mixture volume, with the configurable
+default `C_VM=0.5`. Define `v_g=C_VM*rhoLiquid/rhoGas` and
+`v_l=C_VM*alpha/(1-alpha)`. The combined partner coefficients are
+`lambda_k=lambda_drag,k+v_k/tau`. VM adds
+`v_g*(materialBase_g-materialBase_l)` to the gas base and the opposite
+phase-normalized load to the liquid base. Material bases contain BDF history
+and EXT material convection, including common gravity which cancels in their
+difference. They have separate convection histories so that numerical
+regularization forces are excluded from VM acceleration.
+
+The local pressure block has diagonal entries
+`a_g+lambda_g, a_l+lambda_l` and off-diagonal entries
+`-lambda_g, -lambda_l`, where
+`a_k=1/tau+average_c(diag(K_nu,k,c)/assembledMass)`.
+The viscosity diagonals come from the native elliptic stiffness-diagonal
+kernel, assembled at shared nodes. The three-component average supplies an
+isotropic pressure approximation. Invert this block against
+`[1/rhoGas,1/rhoLiquid]` and volume-weight its two responses to obtain betaM.
+The full spatial viscosity remains in every phase Helmholtz solve.
+
+The pressure constraint concerns the volume velocity. The default NekRS
+velocity field holds that volume velocity. A density-weighted mixture velocity
+is a different derived field and is not the constrained velocity here.
+
 This matches the native PRESSURE-TO-VELOCITY mechanism for the supported
 constant-density component-Laplacian formulation and supplied boundaries. It
 is not the entire native single-fluid Navier-Stokes algorithm: the pressure
@@ -47,7 +79,18 @@ Native fluid's `grad(mu*divTarget)/3` is zero for its constant-viscosity,
 zero-divergence target baseline; this example does not claim individual phase
 velocities are divergence-free. It uses the stated scalar Laplacian phase model.
 
-## Timestep
+## Outer timestep
+
+1. Assemble phase BDF/EXT bases and separate VM material histories once.
+2. Advance alpha and freeze drag/VM coefficients at its updated value.
+3. Solve the coupled phases using the previous pressure, with a pressure-free
+   bootstrap on the first step.
+4. Build local mobility and solve the native Poisson equation for deltaP.
+5. Accumulate `p += pressureOuterRelaxation*deltaP`, solve both phase momenta
+   with that pressure, restore boundaries, and measure the weak continuity.
+6. Stop on the continuity target or the correction budget.
+
+## Schur comparison timestep
 
 1. Evaluate conservative alpha transport and material phase convection with
    GL cubature; prepare six BDF/EXT base RHSs before one native history shift.
@@ -76,7 +119,7 @@ because native elliptic assembles its input. Operator and RHS use the same
 is the volume-weighted mobility from the local coupled inertia/drag inverse.
 
 One Schur application costs a full pair of coupled phase solves. GCR vectors
-reside on the host, with device transfers and collective reductions. The
+reside on the device, with batched orthogonalization reductions. The
 pressure equation uses the full numerical phase response up to the accuracy
 of those solves. Equal-order pressure and fixed velocity boundaries can leave
 null modes. If the target continuity residual is unattainable, the case reports
@@ -92,7 +135,9 @@ Dirichlet and predictor normal-flux conditions at inlet/walls. Since outlet
 pressure is zero, the native natural pressure traction `-p_out*n` vanishes,
 matching the scalar zero-Neumann outlet. Other boundary maps are rejected.
 
-Densities are constant, drag is Schiller-Naumann, and virtual mass is disabled.
+Densities are constant and drag is Schiller-Naumann. The supplied test case
+enables virtual mass with `virtualMassCoefficient=0.5`. Set
+`virtualMassEnabled=0` for the drag-only comparison.
 The seven scalar transport coefficients must all be 1. Alpha diffusion/clipping
 and phase diffusion/HPFRT are controlled by the supplied PAR file. Native UM
 advection is disabled with equation=stokes; phase convection remains in the
@@ -114,7 +159,12 @@ output contains UM, pressure and seven scalar fields.
 
 ```
 [CASEDATA]
-pressureSolveMode = consistent
+pressureSolveMode = outer
+pressureOuterCorrections = 3
+pressureOuterRelaxation = 1.0
+pressureOuterRequireConvergence = 0
+virtualMassEnabled = 1
+virtualMassCoefficient = 0.5
 pressureWarmStart = 1
 pressureSchurMaxIterations = 100
 pressureSchurRestart = 30
@@ -156,6 +206,19 @@ absolute mode and on deltaP in increment mode. Consistent mode uses S for both
 forms and checks the residual against the final computed phase velocities.
 
 ## Logs and continuity
+
+`method3OuterPressure` reports the native Poisson iteration count and residual.
+`method3OuterContinuity` reports the actual post-BC weak residual on monitored
+steps. `method3Outer` reports correction count, final continuity target status,
+elapsed correction time, coupling iterations and force cancellation.
+`couplingForceBalance` is the maximum relative sum of the two computed
+mixture-volume drag/VM loads, including material history loads.
+`method3Momentum` recomputes each phase residual with native Ax, assembled
+RHS and final partner velocity, masking Dirichlet rows. It is printed on
+monitored steps. The final summary identifies whether this residual was
+measured. These diagnostics assess discrete equations and do not replace a
+time-step/grid sensitivity study.
+
 
 `method3Schur` reports outer iterations, phase evaluations, native Poisson
 preconditioner calls, physical weak residual before/after the update, target,

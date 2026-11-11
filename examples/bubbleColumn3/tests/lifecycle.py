@@ -77,11 +77,12 @@ struct Nrs{Scalar*scalar=::std::addressof(::scalar);Fluid*fluid=::std::addressof
 auto nrs=&nrsObject;
 struct Platform{Comm comm;LA*linAlg=&la;}platformObject;
 auto platform=&platformObject;
-struct Parameters{double rhoGas=1.2,rhoLiquid=998.2,muLiquid=1e-3,bubbleDiameter=3e-3,dragEnabled=1,alphaMinimum=0,alphaMaximum=.99,gravity[3]={0,0,-9.81},dragCouplingTolerance=1e-12;int dragCouplingMaxIterations=30;}p;
+struct Parameters{double rhoGas=1.2,rhoLiquid=998.2,muLiquid=1e-3,bubbleDiameter=3e-3,dragEnabled=1,alphaMinimum=0,alphaMaximum=.99,gravity[3]={0,0,-9.81},dragCouplingTolerance=1e-12;int dragCouplingMaxIterations=30,virtualMassEnabled=1;double virtualMassCoefficient=.5;}p;
 std::array<std::string,7>names={"alpha","ugx","ugy","ugz","ulx","uly","ulz"};
 Mem ug(12),ul(12),lambdaG(4),lambdaL(4),transportG(16),transportL(16),zeroAdvection(56),predictorBase(28),phasePrevious(24),phaseDelta(24);
+Mem materialBase(28),materialHistory(56);
 int preparedStep=-1,completedStep=-1,dragIterations=0;double dragChange=0;
-auto reconstructKernel=reconstruct;auto dragKernel=drag;auto sourceKernel=phaseSource;auto clipKernel=clipAlpha;auto dragLoadKernel=addDragLoad;
+auto reconstructKernel=reconstruct;auto dragKernel=drag;auto sourceKernel=phaseSource;auto clipKernel=clipAlpha;auto dragLoadKernel=addDragLoad;auto virtualMassKernel=virtualMass;
 void convection(Mem,Mem result){for(int i=0;i<result.size();++i)result[i]=0;}
 void launchKernel(const char*,int n,Mem mass,double idt,Mem ext,Mem bdf,int scan,int sum,int,Mem rho,Mem u,Mem,Mem source,Mem rhs){
  for(int i=0;i<n;++i){double f=0,h=0;for(int k=0;k<ext.size();++k)f+=ext[k]*source[i+scan+k*sum];for(int k=0;k<bdf.size();++k)h+=bdf[k]*u[i+scan+k*sum];rhs[i+scan]=mass[i]*(f+rho[i+scan]*idt*h);}
@@ -161,6 +162,41 @@ int main(){
   assert(scalar.historyShifts==1&&scalar.solutionShifts==1&&scalar.explicitCalls==6);
  }
  puts("PASS: pressure-only homogeneous phase response scales to small directions without history or inlet loads");
+
+ // Enable VM without drag. Its native BDF/EXT source includes material
+ // convection differences and must conserve the mixture-volume reaction.
+ p.dragEnabled=0;p.virtualMassEnabled=1;
+ for(int c=0;c<3;++c)for(int i=0;i<2;++i) {
+   predictorBase[4*(1+c)+i]=2.1+c;
+   predictorBase[4*(4+c)+i]=-.7-c;
+ }
+ const Mem originalBase=[&](){Mem v(28);v.copyFrom(predictorBase);return v;}();
+ materialBase.copyFrom(originalBase);
+ // Distinguish material acceleration from a numerical regularization load.
+ for(int c=0;c<3;++c)for(int i=0;i<2;++i) {
+   materialBase[4*(1+c)+i]+=100;
+   materialBase[4*(4+c)+i]-=40;
+ }
+ postAlpha(1e-5,1);
+ const double vg=p.virtualMassCoefficient*p.rhoLiquid/p.rhoGas;
+ const double vl=p.virtualMassCoefficient*.05/.95;
+ for(int c=0;c<3;++c)for(int i=0;i<2;++i) {
+   const double dg=predictorBase[4*(1+c)+i]-originalBase[4*(1+c)+i];
+   const double dl=predictorBase[4*(4+c)+i]-originalBase[4*(4+c)+i];
+   assert(std::abs(dg-vg*(materialBase[4*(1+c)+i]-materialBase[4*(4+c)+i]))<1e-10);
+   assert(std::abs(.05*p.rhoGas*dg+.95*p.rhoLiquid*dl)<1e-10);
+ }
+ solveNativePressureVelocities(1e-5,fixedPressure);
+ for(int c=0;c<3;++c)for(int i=0;i<2;++i) {
+   const double rhsG=predictorBase[4*(1+c)+i]+fixedPressure[4*c+i]/p.rhoGas;
+   const double rhsL=predictorBase[4*(4+c)+i]+fixedPressure[4*c+i]/p.rhoLiquid;
+   const double determinant=a*a*(1+vg+vl);
+   const double gas=((a+a*vl)*rhsG+a*vg*rhsL)/determinant;
+   const double liquid=(a*vl*rhsG+(a+a*vg)*rhsL)/determinant;
+   assert(std::abs(scalar.o_solution(names[1+c])[i]-gas)<1e-10);
+   assert(std::abs(scalar.o_solution(names[4+c])[i]-liquid)<1e-10);
+ }
+ puts("PASS: symmetric VM native BDF/EXT source and full coupled pressure response");
  // A new timestep is forbidden until the deferred step is marked completed.
  nrs->tstep=2;bool blocked=false;try{beginStep(1e-5);}catch(...){blocked=true;}assert(blocked);
  e.residual=1;blocked=false;try{validateLinearSolve(&e,"test");}catch(...){blocked=true;}assert(blocked);e.residual=0;
@@ -174,6 +210,7 @@ for ext_order in (2,3):
     if ext_order==3:
         source=source.replace('o_S{56},o_JwF{28},o_EXT{56},o_coeffEXT{2}',
                               'o_S{84},o_JwF{28},o_EXT{84},o_coeffEXT{3}')
+        source=source.replace('materialHistory(56)','materialHistory(84)')
         source=source.replace('scalar.o_coeffEXT[0]=2;scalar.o_coeffEXT[1]=-1;',
                               'scalar.o_coeffEXT[0]=3;scalar.o_coeffEXT[1]=-3;scalar.o_coeffEXT[2]=1;')
         source=source.replace('beginStep(0);assert',

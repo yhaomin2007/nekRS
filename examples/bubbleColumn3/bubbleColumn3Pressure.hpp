@@ -9,7 +9,7 @@ namespace bubbleColumn3 {
 // native fluid->solve() call to solve pressure again.
 static std::unique_ptr<elliptic> pressureSolver;
 static deviceMemory<dfloat> betaG,betaL,betaM,pressureDiffusion,pressureRhs,pressureGrad,pressureIncrement;
-static occa::kernel mobilityKernel,surfaceKernel;
+static occa::kernel mobilityKernel,surfaceKernel,viscousDiagonalKernel,viscousMobilityKernel,couplingBalanceKernel;
 
 inline void allocatePressureStorage()
 {
@@ -414,6 +414,130 @@ inline void solveConsistentPhasePressure(double time,int step,bool log,double be
   }
 }
 
+
+// Build a positive scalar approximation to the coupled inverse. The native
+// stiffness diagonal is assembled and divided by the assembled mass. Average
+// the three component diagonals to form one isotropic pressure coefficient.
+inline void outerPressureMobility(dfloat tau)
+{
+  auto m=nrs->meshV;auto &s=nrs->scalar;const auto O=nrs->fieldOffset;
+  static deviceMemory<dfloat> diagonalG,diagonalL;
+  diagonalG.resize(3*O);diagonalL.resize(3*O);
+  viscousDiagonalKernel(m->Nelements,3,O,O,m->o_ggeo,m->o_D,m->o_DT,
+      s->o_diff.slice(s->fieldOffsetScan[1],3*O),o_NULL,diagonalG);
+  viscousDiagonalKernel(m->Nelements,3,O,O,m->o_ggeo,m->o_D,m->o_DT,
+      s->o_diff.slice(s->fieldOffsetScan[4],3*O),o_NULL,diagonalL);
+  oogs::startFinish(diagonalG,3,O,ogsDfloat,ogsAdd,m->oogs);
+  oogs::startFinish(diagonalL,3,O,ogsDfloat,ogsAdd,m->oogs);
+  viscousMobilityKernel(m->Nlocal,O,1/tau,p.rhoGas,p.rhoLiquid,s->o_solution("alpha"),
+      lambdaG,lambdaL,m->o_invLMM,diagonalG,diagonalL,betaG,betaL,betaM);
+}
+
+// Recompute the coupled phase momentum residual with the final partner load.
+// The scalar solve's last RHS used the previous drag sweep partner.
+inline double phaseMomentumResidual(double time,bool print)
+{
+  auto m=nrs->meshV;auto &s=nrs->scalar;const auto N=m->Nlocal,O=nrs->fieldOffset;
+  deviceMemory<dfloat> diagonal(N),action(N),rhs(N);
+  double maximum=0;
+  for(int is=1;is<7;++is) {
+    const int c=(is-1)%3;
+    auto lambda=is<=3?lambdaG:lambdaL;
+    platform->linAlg->fill(N,nrs->g0/nrs->dt[0],diagonal);
+    platform->linAlg->axpby(N,1.0,lambda,1.0,diagonal);
+    s->ellipticSolver[is]->Ax(s->o_diff.slice(s->fieldOffsetScan[is],N),diagonal,
+        s->o_solution(names[is]),action);
+    rhs.copyFrom(s->o_JwF,N,0,s->fieldOffsetScan[is]);
+    dragLoadKernel(N,O,c,m->o_LMM,lambda,phaseDelta.slice(is<=3?3*O:0,3*O),rhs);
+    platform->linAlg->axpby(N,-1.0,rhs,1.0,action);
+    oogs::startFinish(action,1,0,ogsDfloat,ogsAdd,m->oogs);
+    oogs::startFinish(rhs,1,0,ogsDfloat,ogsAdd,m->oogs);
+    auto *solver=s->ellipticSolver[is];
+    if(solver->Nmasked()) {
+      platform->linAlg->mask<dfloat>(solver->Nmasked(),solver->o_maskIds(),action);
+      platform->linAlg->mask<dfloat>(solver->Nmasked(),solver->o_maskIds(),rhs);
+    }
+    const auto comm=platform->comm.mpiComm();
+    const double residual=platform->linAlg->weightedNorm2(N,m->ogs->o_invDegree,action,comm);
+    const double rhsNorm=platform->linAlg->weightedNorm2(N,m->ogs->o_invDegree,rhs,comm);
+    const double relative=residual/std::max(rhsNorm,std::numeric_limits<dfloat>::min());
+    maximum=std::max(maximum,relative);
+    nekrsCheck(!std::isfinite(relative),comm,EXIT_FAILURE,"%s","Nonfinite phase momentum residual.\n");
+    if(print && platform->comm.mpiRank()==0)
+      printf("method3Momentum time=%.8e field=%s residual=%.8e rhsNorm=%.8e relative=%.8e\n",
+          time,names[is].c_str(),residual,rhsNorm,relative);
+  }
+  return maximum;
+}
+
+// Bounded outer pressure/velocity corrections. Every pressure solve is native
+// Poisson. The actual post-BC residual determines convergence after each full
+// phase solve, with no phase solves inside the pressure Krylov iteration.
+inline void solveOuterPhasePressure(double time,int step,bool log,dfloat tau)
+{
+  auto m=nrs->meshV;const auto N=m->Nlocal,O=nrs->fieldOffset;
+  auto pressure=nrs->fluid->o_solution("pressure");
+  static deviceMemory<dfloat> increment,residual,balance;
+  increment.resize(O);residual.resize(O);balance.resize(O);
+  const auto comm=platform->comm.mpiComm();
+  const auto continuity=[&]() {
+    residual.copyFrom(pressureRhs,N);
+    oogs::startFinish(residual,1,0,ogsDfloat,ogsAdd,m->oogs);
+    if(pressureSolver->Nmasked()) platform->linAlg->mask<dfloat>(
+        pressureSolver->Nmasked(),pressureSolver->o_maskIds(),residual);
+    return tau*platform->linAlg->weightedNorm2(N,m->ogs->o_invDegree,residual,comm);
+  };
+  const double initial=continuity();
+  const double target=std::max(p.pressureSchurAbsoluteTolerance,p.pressureSchurTolerance*initial);
+  double final=initial;
+  int corrections=0,pressureIterations=0;
+  const double start=MPI_Wtime();
+  while(std::isfinite(final) && final>target && corrections<p.pressureOuterCorrections) {
+    platform->linAlg->fill(N,0.0,increment);
+    pressureSolver->solve(pressureDiffusion,o_NULL,pressureRhs,increment.slice(0,N));
+    validateLinearSolve(pressureSolver.get(),"outer phase pressure");
+    pressureIterations+=pressureSolver->Niter();
+    if(platform->comm.mpiRank()==0 && (log || corrections+1==p.pressureOuterCorrections))
+      printf("method3OuterPressure step=%d correction=%d iterations=%d initial=%.8e final=%.8e\n",
+          step,corrections+1,pressureSolver->Niter(),pressureSolver->initialResidual(),pressureSolver->finalResidual());
+    platform->linAlg->axpby(N,p.pressureOuterRelaxation,increment,1.0,pressure);
+    solveNativePressureVelocities(time,pressure,false,std::min(p.dragCouplingTolerance,dfloat(1e-12)));
+    nrs->scalar->applyDirichlet(time);reconstructMixture();
+    formPressureRhs(tau);
+    final=continuity();
+    ++corrections;
+    if(log && platform->comm.mpiRank()==0)
+      printf("method3OuterContinuity step=%d correction=%d weakL2=%.8e target=%.8e\n",step,corrections,final,target);
+  }
+  const bool converged=std::isfinite(final) && final<=target;
+  const bool diagnostics=log || !converged;
+  const double momentum=diagnostics?phaseMomentumResidual(time,log):0;
+  couplingBalanceKernel(N,O,p.virtualMassEnabled?p.virtualMassCoefficient:0,p.rhoGas,p.rhoLiquid,
+      nrs->scalar->o_solution("alpha"),m->o_LMM,lambdaG,lambdaL,ug,ul,
+      materialBase.slice(nrs->scalar->fieldOffsetScan[1],3*O),
+      materialBase.slice(nrs->scalar->fieldOffsetScan[4],3*O),balance);
+  const double forceBalance=platform->linAlg->max(N,balance,comm);
+  nekrsCheck(!std::isfinite(final) || !std::isfinite(forceBalance),comm,EXIT_FAILURE,
+      "%s","Nonfinite outer phase pressure residual or force balance.\n");
+  if(platform->comm.mpiRank()==0) {
+    printf("method3Outer step=%d corrections=%d pressureIterations=%d poissonResidual=%.8e weakL2(pre,post)=(%.8e,%.8e) "
+        "target=%.8e converged=%s budgetExhausted=%s momentumRel=%.8e momentumMeasured=%s "
+        "couplingForceBalance=%.8e dragIterations=%d dragChange=%.8e wallTime=%.6es\n",
+        step,corrections,pressureIterations,corrections?pressureSolver->finalResidual():0,initial,final,target,converged?"yes":"no",
+        converged?"no":"yes",momentum,diagnostics?"yes":"no",forceBalance,dragIterations,dragChange,MPI_Wtime()-start);
+    fflush(stdout);
+  }
+  nekrsCheck(!converged && p.pressureOuterRequireConvergence,comm,EXIT_FAILURE,
+      "Method3 outer budget exhausted: weakL2=%g target=%g corrections=%d\n",final,target,corrections);
+  if(log) {
+    const auto strong=divergenceNorm();
+    const auto cflG=phaseCFL(ug),cflL=phaseCFL(ul);
+    if(platform->comm.mpiRank()==0)
+      printf("method3 step=%d mode=outer divL2=%.8e phaseCFL(g,l)=(%.8e,%.8e)\n",
+          step,strong,cflG,cflL);
+  }
+}
+
 inline void solvePressureAndCorrect(double time,int step)
 {
   auto m=nrs->meshV; auto &s=nrs->scalar; const auto O=nrs->fieldOffset;
@@ -422,15 +546,16 @@ inline void solvePressureAndCorrect(double time,int step)
   // pressure in the predictor and solve only the increment. The predictor
   // and final solves reuse the same BDF/EXT base and frozen drag coefficients.
   const bool consistent=p.pressureSolveMode=="consistent";
+  const bool outer=p.pressureSolveMode=="outer";
   std::array<std::string,6> phaseTolerances;
-  if(consistent) for(int is=1;is<7;++is) {
+  if(consistent || outer) for(int is=1;is<7;++is) {
     auto &options=s->ellipticSolver[is]->options();
     phaseTolerances[is-1]=options.getArgs("SOLVER TOLERANCE");
     options.setArgs("SOLVER TOLERANCE","1e-11+relative");
   }
-  const dfloat dragTolerance=consistent?std::min(p.dragCouplingTolerance,dfloat(1e-12)):0;
+  const dfloat dragTolerance=(consistent || outer)?std::min(p.dragCouplingTolerance,dfloat(1e-12)):0;
   const bool havePreviousPressure=bool(pressureSolver);
-  const bool incremental=p.pressureIncremental && havePreviousPressure;
+  const bool incremental=(outer || p.pressureIncremental) && havePreviousPressure;
   if(incremental) {
     solveNativePressureVelocities(time,nrs->fluid->o_solution("pressure"),false,dragTolerance);
   } else {
@@ -443,17 +568,22 @@ inline void solvePressureAndCorrect(double time,int step)
   const dfloat tau=nrs->dt[0]/nrs->g0;
   nekrsCheck(!std::isfinite(tau) || tau<=0,platform->comm.mpiComm(),EXIT_FAILURE,
       "%s","Invalid phase pressure timestep coefficient.\n");
-  mobilityKernel(m->Nlocal,tau,p.rhoGas,p.rhoLiquid,
+  if(outer) outerPressureMobility(tau);
+  else mobilityKernel(m->Nlocal,tau,p.rhoGas,p.rhoLiquid,
       s->o_solution("alpha"),lambdaG,lambdaL,betaG,betaL,betaM);
+  if(outer && !havePreviousPressure)
+    platform->linAlg->fill(m->Nlocal,0.0,nrs->fluid->o_solution("pressure"));
   formPressureRhs(tau);
   platform->linAlg->axpby(m->Nlocal,1/tau,betaM,0.0,pressureDiffusion);
   if(!pressureSolver) setupPressure(); // normalized coefficient is now ready
-  if(consistent) {
+  if(outer) {
+    solveOuterPhasePressure(time,step,log,tau);
+  } else if(consistent) {
     solveConsistentPhasePressure(time,step,log,before,tau,incremental,havePreviousPressure);
   } else {
     solveNativePhasePressure(time,step,log,before,tau,incremental);
   }
-  if(consistent) for(int is=1;is<7;++is)
+  if(consistent || outer) for(int is=1;is<7;++is)
     s->ellipticSolver[is]->options().setArgs("SOLVER TOLERANCE",phaseTolerances[is-1]);
 }
 } // namespace bubbleColumn3
