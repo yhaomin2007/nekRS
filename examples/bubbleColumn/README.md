@@ -80,7 +80,13 @@ individual phase PDE residuals or prove stripe suppression.
 
 The inlet has prescribed alpha and UG, stationary UL, and the matching
 mass-weighted native UM. Initial UL is zero; a tanh plume initializes alpha
-and UG. Existing wall types are retained: UGX/UGY and all UL components
+and UG. After the phase initial fields are assigned, a separate initialization
+kernel reads all three components of both phase velocities and sets
+UM=(alpha*rhoG*UG+(1-alpha)*rhoL*UL)/(alpha*rhoG+(1-alpha)*rhoL).
+This runs only for a fresh start, before source/history initialization. Thus
+custom nonzero UL initial fields are included automatically. Restart keeps the
+checkpoint UM and time histories. No such UM reconstruction occurs during
+time stepping. Existing wall types are retained: UGX/UGY and all UL components
 Dirichlet zero, UGZ zero Neumann; native UM is no-slip. The algebraic
 correction preserves Dirichlet values. It does not independently enforce a
 strong zero-normal-gradient constraint on corrected UGZ; Neumann conditions

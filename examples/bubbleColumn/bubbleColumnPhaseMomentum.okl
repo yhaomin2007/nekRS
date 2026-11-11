@@ -1,3 +1,22 @@
+// Fresh-start mixture velocity from the actual two-phase initial fields.
+// UM remains independently advanced by the native fluid solver after setup.
+@kernel void phaseInitializeMixture(const dlong N, const dlong offset,
+    const dfloat rhoG, const dfloat rhoL,
+    @restrict const dfloat *alpha,
+    @restrict const dfloat *ug, @restrict const dfloat *ul,
+    @restrict dfloat *um)
+{
+  for (dlong n=0;n<N;++n;@tile(p_blockSize,@outer,@inner)) {
+    const dfloat gasMass=alpha[n]*rhoG;
+    const dfloat liquidMass=(1-alpha[n])*rhoL;
+    const dfloat rho=gasMass+liquidMass;
+    for (int c=0;c<3;++c) {
+      const dlong k=n+c*offset;
+      um[k]=(gasMass*ug[k]+liquidMass*ul[k])/rho;
+    }
+  }
+}
+
 // All phase forces below are per phase volume. VM couples MATERIAL accelerations.
 @kernel void liquidStress(const dlong N, const dlong offset, const dfloat mu,
                           @restrict const dfloat *alpha,

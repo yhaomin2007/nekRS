@@ -8,7 +8,7 @@ static const char *termFiles[]={"gpr","ggr","gdr","gvs","gvm","gcv"};
 static int interval=10;
 static bool masksReady=false;
 static double sourceTime=0;
-static occa::kernel stressKernel,predictorKernel,maskKernel,correctKernel,nonfiniteKernel,defectKernel;
+static occa::kernel stressKernel,predictorKernel,maskKernel,correctKernel,nonfiniteKernel,defectKernel,initializeMixtureKernel;
 static deviceMemory<dfloat> stress,divStress,convection,convectionEXT,rhs,terms;
 static deviceMemory<dfloat> freeG,freeL,deltaG,deltaL,before,after;
 static deviceMemory<dfloat> bad;
@@ -21,6 +21,7 @@ inline void registerKernels(deviceKernelProperties &info)
   if (platform->options.compareArgs("REGISTER ONLY","TRUE"))
     platform->kernelRequests.add(request,"bubbleColumnPhaseMomentum.okl",info);
   else {
+    initializeMixtureKernel=platform->kernelRequests.load(request,"phaseInitializeMixture");
     stressKernel=platform->kernelRequests.load(request,"liquidStress");
     predictorKernel=platform->kernelRequests.load(request,"phasePredictor");
     maskKernel=platform->kernelRequests.load(request,"phaseMask");
@@ -67,6 +68,16 @@ inline void allocate()
   for (auto *v:{&deltaG,&deltaL,&before,&after,&terms,&defectG,&defectL})
     platform->linAlg->fill(v->size(),0.0,*v);
   nekrsCheck(interval<0,comm,EXIT_FAILURE,"%s","diagnosticInterval must be nonnegative.\n");
+}
+
+// Fresh-start initialization only. Read the actual phase scalar fields;
+// never call this before a pressure solve during time stepping.
+inline void initializeMixture()
+{
+  reconstructGasVelocity();
+  reconstructLiquidVelocity();
+  initializeMixtureKernel(nrs->meshV->Nlocal,nrs->fieldOffset,
+      p.rhoGas,p.rhoLiquid,nrs->scalar->o_solution("alpha"),o_ug,o_ul,nrs->fluid->o_U);
 }
 
 inline void beginStep(double time)

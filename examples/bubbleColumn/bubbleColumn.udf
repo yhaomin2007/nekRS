@@ -80,6 +80,9 @@ void UDF_Setup()
         p.initialPlumeHeight,p.initialPlumeThickness,nrs->meshV->o_z,
         nrs->scalar->o_solution("alpha"),nrs->scalar->o_solution("ugx"),
         nrs->scalar->o_solution("ugy"),nrs->scalar->o_solution("ugz"),nrs->fluid->o_U);
+    // Replace the plume helper's stationary-liquid special case with the
+    // mass-weighted velocity of the actual initialized UG and UL fields.
+    bubbleColumn::phaseMomentum::initializeMixture();
   }
   bubbleColumn::initializeHistory();
   nrs->userSource=&bubbleColumn::phaseMomentum::beginStep;
