@@ -10,6 +10,14 @@ Inlet alpha and UG are uniform (alphaInlet and gasInletVelocity), with the exist
 
 UG reconstruction and pressure/drag/gravity/VM sources are not switched off at low alpha. Division by alpha/beta remains protected with alphaFloor; magnitude clipping is a separate optional control. The old low-alpha cutoff and smooth-mask par options no longer control this case.
 
+`alphaCompressionEnabled=1` retains `-div(alpha*UG)` in the alpha RHS.
+Set it to `0` to add back `+alpha*div(UG)` before time extrapolation. The
+correction uses the selected nodal or cubature spatial route and enters the
+mixture-divergence target with the same EXT weights. This diagnostic switch
+changes the alpha equation and its phase-volume conservation. At the discrete
+level it subtracts compression from the existing conservative operator, so the
+nodal route retains its product-aliasing error. The startup log reports the switch.
+
 ## Mixture divergence
 
 mixtureDivergenceEnabled=1 supplies a reduced target using alpha conservative transport and numerical diffusion only; 0 imposes zero divergence. divergenceRampEnabled and divergenceRampSteps retain the cosine startup ramp. Optional divergence filtering remains available.

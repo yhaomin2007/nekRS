@@ -14,6 +14,7 @@ using dfloat=double;using dlong=long;
 struct Mem {double *a;Mem slice(long i,long)const{return {a+i};}
 void copyFrom(Mem b,long n,long dst=0,long src=0){std::copy(b.a+src,b.a+src+n,a+dst);}};
 double alpha[6]={.1,.2,.4,.4,.25,.15},ug[24],flux[24],out[8],cub[8];
+double compression[8];Mem o_alphaCompressionRemoved{compression};
 Mem o_gasAdvector{ug},o_alphaConservativeFlux{flux},o_alphaSource{out},o_gasTransport{cub};
 struct Mesh {long Nlocal=6;} mesh;
 struct Scalar {Mem o_solution(const char*){return {alpha};}} scalar;
@@ -22,7 +23,7 @@ struct LA {void axmy(long n,double s,Mem a,Mem b){for(int i=0;i<n;++i)b.a[i]*=s*
 void scale(long n,double s,Mem a){for(int i=0;i<n;++i)a.a[i]*=s;}
 void axpby(long n,double s,Mem a,double t,Mem b){for(int i=0;i<n;++i)b.a[i]=s*a.a[i]+t*b.a[i];}} la;
 struct Platform {LA *linAlg;} obj{&la},*platform=&obj;
-struct Parameters {int alphaTransportForm;} p;
+struct Parameters {int alphaTransportForm;int alphaCompressionEnabled=1;} p;
 int nodalCalls,cubCalls;
 const double D[9]={-1.5,2,-.5,-.5,0,.5,.5,-2,1.5};
 namespace opSEM {void strongDivergence(Mesh*,long offset,Mem q,Mem result,bool avg){
@@ -31,7 +32,7 @@ assert(avg&&offset==8);++nodalCalls;
 for(int e=0;e<2;++e)for(int i=0;i<3;++i){double v=0;for(int j=0;j<3;++j)v+=D[3*i+j]*q.a[e*3+j];result.a[e*3+i]=v;}
 double shared=(result.a[2]+2.*result.a[3])/3.;result.a[2]=result.a[3]=shared;
 }}
-void evaluateGasCubatureTransport(bool conservative){assert(conservative);++cubCalls;for(int i=0;i<6;++i)cub[i]=9.+i;}
+void evaluateGasCubatureTransport(bool conservative){++cubCalls;for(int i=0;i<6;++i)cub[i]=conservative?9.+i:.03*(i+1);}
 '''
 main=r'''
 int main(){
@@ -44,8 +45,22 @@ double expected[6];for(int e=0;e<2;++e)for(int i=0;i<3;++i){expected[e*3+i]=0;fo
 double shared=(expected[2]+2.*expected[3])/3.;expected[2]=expected[3]=shared;
 for(int i=0;i<6;++i){assert(std::abs(out[i]-expected[i])<1e-14);for(int k=0;k<3;++k)assert(flux[k*8+i]==alpha[i]*ug[k*8+i]);}
 assert(out[6]==88.&&out[7]==88.&&flux[6]==123.);
-p.alphaTransportForm=2;evaluateAlphaTransport();assert(nodalCalls==1&&cubCalls==1);
+p.alphaCompressionEnabled=0;evaluateAlphaTransport();
+double divUg[6];for(int e=0;e<2;++e)for(int i=0;i<3;++i){divUg[e*3+i]=0;for(int j=0;j<3;++j)divUg[e*3+i]+=D[3*i+j]*ug[e*3+j];}
+shared=(divUg[2]+2.*divUg[3])/3.;divUg[2]=divUg[3]=shared;
+for(int i=0;i<6;++i)assert(std::abs(out[i]-expected[i]-alpha[i]*divUg[i])<1e-14);
+assert(out[6]==88.&&out[7]==88.);
+// Constant alpha remains constant under the nodal no-compression equation.
+for(int i=0;i<6;++i)alpha[i]=.2;
+evaluateAlphaTransport();for(int i=0;i<6;++i)assert(std::abs(out[i])<1e-14);
+p.alphaCompressionEnabled=1;
+
+p.alphaTransportForm=2;evaluateAlphaTransport();assert(nodalCalls==5&&cubCalls==1);
 for(int i=0;i<6;++i)assert(out[i]==-9.-i);assert(out[6]==88.&&out[7]==88.);
+p.alphaCompressionEnabled=0;evaluateAlphaTransport();assert(cubCalls==3);
+for(int i=0;i<6;++i){assert(std::abs(out[i]-(-9.-i+.03*(i+1)))<1e-14);assert(compression[i]==.03*(i+1));}
+assert(out[6]==88.&&out[7]==88.);
+
 }
 '''
 with tempfile.TemporaryDirectory() as directory:
@@ -53,5 +68,5 @@ with tempfile.TemporaryDirectory() as directory:
     subprocess.run(['g++','-std=c++11',str(path/'test.cpp'),'-o',str(path/'test')],check=True)
     subprocess.run([str(path/'test')],check=True)
 assert '"alphatransportform", p.alphaTransportForm' in (case/'bubbleColumn.udf').read_text()
-print('Actual selection: nodal alpha*frozenUG, assembled SEM divergence, negative RHS sign, cubature fallback and padded storage passed.')
+print('Actual selection: nodal alpha*frozenUG, assembled SEM divergence, negative RHS sign, cubature fallback, compression on/off and padded storage passed.')
 

@@ -118,6 +118,9 @@ gasTransportMethod = 1
 # 1: form alpha*UG at GLL nodes, then assembled SEM strong divergence.
 # 2: conservative cubature flux differentiation (existing default).
 alphaTransportForm = 2
+# 1: include alpha*div(UG), the original conservative equation.
+# 0: remove this term for a diagnostic advection-only comparison.
+alphaCompressionEnabled = 1
 # Target uses alpha conservative transport + numerical diffusion only.
 # HPFRT, explicit-filter/clipping rates and boundary BDF overrides are excluded.
 # 0 imposes div(U)=0; 1 enables the reconstructed target (optionally ramped).

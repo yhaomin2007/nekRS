@@ -15,12 +15,13 @@ struct Mem{double *a;operator double*()const{return a;}Mem slice(long o,long){re
 void copyFrom(Mem b,long n,long dst=0,long src=0){std::copy(b.a+src,b.a+src+n,a+dst);}};
 struct Mesh{long Nlocal=3,Nelements=1,cubNp=3;Mem o_cubInterpT{nullptr},o_cubD{nullptr},o_cubvgeo{nullptr},o_vgeo{nullptr};}mesh;
 double alpha[5]={.1,.2,.3,99,99},um[15],ug[15],flux[15],rhs[5],gas[5]={-.03,-.03,-.03,99,99},saved[5];
+double removed[5]={.01,.02,.03,99,99};Mem o_alphaCompressionRemoved{removed};
 double fields[20],cub[20],products[20],transport[20];
 Mem o_mixtureAdvectorUsed{um},o_gasAdvector{ug},o_alphaRelativeFlux{flux},o_alphaRelativeRhs{rhs},o_alphaSource{gas},o_alphaTransportOnly{saved};
 Mem o_gasTransportFields{fields},o_gasCubatureFields{cub},o_gasCubatureProducts{products},o_gasTransport{transport};
 struct Scalar{Mem o_solution(const char*){return {alpha};}}scalar;
 struct Nrs{Mesh *meshV=&mesh;Scalar *scalar;long fieldOffset=5;}nr{&mesh,&scalar},*nrs=&nr;
-struct Parameters{int mixtureDivergenceForm=2,alphaTransportForm=1;}p;
+struct Parameters{int mixtureDivergenceForm=2,alphaTransportForm=1,alphaCompressionEnabled=1;}p;
 struct LA{void axpby(long n,double a,Mem x,double b,Mem y){for(int i=0;i<n;++i)y.a[i]=a*x.a[i]+b*y.a[i];}
 void axmy(long n,double a,Mem x,Mem y){for(int i=0;i<n;++i)y.a[i]*=a*x.a[i];}}la;
 struct Platform{LA *linAlg=&la;}object,*platform=&object;
@@ -36,17 +37,19 @@ void alphaConservativeCubatureKernel(long,long,Mem,Mem,Mem in,Mem out){
 void gasProjectKernel(long,long,long,Mem,Mem,Mem in,Mem out){out.copyFrom(in,3);}
 '''+helper+k+r'''
 int main(){
-for(int form:{1,2}){
+for(int form:{1,2})for(int enabled:{1,0}){
+p.alphaCompressionEnabled=enabled;
 p.alphaTransportForm=form;std::fill(um,um+15,.1);std::fill(ug,ug+15,.3);std::fill(rhs,rhs+5,123.);
 prepareRelativeDivergenceRhs();
-for(int i=0;i<3;++i){assert(std::abs(rhs[i]+.02)<1e-14);assert(saved[i]==gas[i]);}
+for(int i=0;i<3;++i){assert(std::abs(rhs[i]+.02-(enabled?0:removed[i]))<1e-14);assert(saved[i]==gas[i]);}
 assert(rhs[3]==123.);double diffusion[5]={.01,.01,.01},out[5]={99,99,99,99,99};
 buildRelativeMixtureDivergence(3,10,2,rhs,diffusion,out);
-for(int i=0;i<3;++i)assert(std::abs(out[i]+.008)<1e-14);assert(out[3]==99.);
+for(int i=0;i<3;++i)assert(std::abs(out[i]+.008-(enabled?0:.8*removed[i]))<1e-14);assert(out[3]==99.);
 buildRelativeMixtureDivergence(3,10,10,rhs,diffusion,out);for(int i=0;i<3;++i)assert(out[i]==0.);
 }
-assert(semCalls==1&&cubCalls==1&&assemblies==1);
-p.alphaTransportForm=1;std::copy(um,um+15,ug);prepareRelativeDivergenceRhs();for(int i=0;i<3;++i)assert(rhs[i]==0.);
+assert(semCalls==2&&cubCalls==2&&assemblies==2);
+p.alphaTransportForm=1;std::copy(um,um+15,ug);prepareRelativeDivergenceRhs();for(int i=0;i<3;++i)assert(rhs[i]==removed[i]);
+p.alphaCompressionEnabled=1;prepareRelativeDivergenceRhs();for(int i=0;i<3;++i)assert(rhs[i]==0.);
 p.mixtureDivergenceForm=1;rhs[0]=123.;prepareRelativeDivergenceRhs();assert(rhs[0]==123.);
 }
 '''
@@ -54,4 +57,4 @@ with tempfile.TemporaryDirectory() as d:
  pth=Path(d);(pth/'check.cpp').write_text(cpp)
  subprocess.run(['g++','-std=c++17',str(pth/'check.cpp'),'-o',str(pth/'check')],check=True)
  subprocess.run([str(pth/'check')],check=True)
-print('Actual relative-flux helper/prefactor: SEM and cubature routing, UM-UG sign, alpha product, constant rhoL denominator, equal-density/velocity limits and padding passed.')
+print('Actual relative-flux helper/prefactor: SEM and cubature routing, UM-UG sign, alpha product, constant rhoL denominator, compression on/off, equal-density/velocity limits and padding passed.')

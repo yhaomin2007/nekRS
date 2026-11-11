@@ -52,6 +52,7 @@ struct Parameters {
   int gasTransportMethod = 1;
   int alphaCompressionMode = 1;
   int alphaTransportForm = 2;
+  int alphaCompressionEnabled = 1;
   dfloat alphaCompressionInletThickness = 0.0;
 
   int mixtureDivergenceMethod = 0;
@@ -94,6 +95,7 @@ static deviceMemory<dfloat> o_alphaRelativeRhs, o_alphaTransportOnly, o_alphaRel
 static deviceMemory<dfloat> o_alphaPostprocessRate;
 static deviceMemory<dfloat> o_alphaBeforePostprocess;
 static deviceMemory<dfloat> o_alphaConservativeFlux;
+static deviceMemory<dfloat> o_alphaCompressionRemoved;
 static deviceMemory<dfloat> o_ug;
 static deviceMemory<dfloat> o_ul;
 static deviceMemory<dfloat> o_ulPrevious;
@@ -411,6 +413,7 @@ inline void allocate()
   o_alphaBeforePostprocess.resize(offset);
   platform->linAlg->fill(offset, 0.0, o_alphaPostprocessRate);
   o_alphaConservativeFlux.resize(3 * offset);
+  o_alphaCompressionRemoved.resize(offset);
   o_ul.resize(3 * offset);
   o_ulPrevious.resize(3 * offset);
   o_gradUl.resize(9 * offset);
@@ -634,6 +637,19 @@ inline void evaluateAlphaTransport()
   } else {
     evaluateGasCubatureTransport(true);
     platform->linAlg->axpby(mesh->Nlocal, -1.0, o_gasTransport, 0.0, o_alphaSource);
+  }
+  if (!p.alphaCompressionEnabled) {
+    // Add back +alpha*div(UG) to remove compression from the negative RHS.
+    // Match the selected spatial route before applying the transport EXT.
+    if (p.alphaTransportForm == 1) {
+      opSEM::strongDivergence(mesh, offset, o_gasAdvector, o_alphaCompressionRemoved, true);
+      platform->linAlg->axmy(mesh->Nlocal, 1.0,
+          nrs->scalar->o_solution("alpha"), o_alphaCompressionRemoved);
+    } else {
+      evaluateGasCubatureTransport(false); // component zero is projected compression
+      o_alphaCompressionRemoved.copyFrom(o_gasTransport, mesh->Nlocal);
+    }
+    platform->linAlg->axpby(mesh->Nlocal, 1.0, o_alphaCompressionRemoved, 1.0, o_alphaSource);
   }
 }
 
@@ -1123,6 +1139,12 @@ inline void prepareRelativeDivergenceRhs()
         mesh->o_vgeo, o_gasCubatureProducts, o_gasTransport);
     o_alphaRelativeRhs.copyFrom(o_gasTransport, mesh->Nlocal);
     assembleDivergence(o_alphaRelativeRhs);
+  }
+  if (!p.alphaCompressionEnabled) {
+    // Relative-flux identity for the same modified alpha equation:
+    // rhoL*div(UM) = (rhoL-rhoG)*(div(alpha*(UM-UG)) + removedCompression + diffusion).
+    platform->linAlg->axpby(mesh->Nlocal, 1.0,
+        o_alphaCompressionRemoved, 1.0, o_alphaRelativeRhs);
   }
 }
 

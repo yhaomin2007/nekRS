@@ -48,7 +48,14 @@ def array(name,a):return 'double '+name+'[]={'+','.join(format(v,'.17g') for v i
 main='int main(){\n'+array('I',I.T)+array('D',D)+array('fields',fields)+array('vgeo',geo)+array('cg',cg)+array('expected',expected_nodal)
 main+=f'double cube[{4*cq**3}]={{}},products[{4*cq**3}]={{}},out[{4*nq**3}]={{}};\n'
 main+=f'gasInterpolate(1,{nq**3},{cq**3},I,fields,cube);alphaConservativeCubature(1,{cq**3},D,cg,cube,products);gasProject(1,{nq**3},{cq**3},I,vgeo,products,out);\n'
-main+=f'for(int i=0;i<{4*nq**3};++i)assert(std::abs(out[i]-expected[i])<1e-11);\n}}'
+main+=f'for(int i=0;i<{4*nq**3};++i)assert(std::abs(out[i]-expected[i])<1e-11);\n'
+# Removing the separately projected compression leaves the projected material advection.
+advective=ux*.04*rc+uy*.01
+advective_nodal=np.einsum('ai,bj,ck,abc->ijk',I,I,I,advective*weights)/mass
+main+=array('advective',advective_nodal)
+main+=f'double rhs[{nq**3}];for(int i=0;i<{nq**3};++i)rhs[i]=-out[i];\n'
+main+=f'gasCubatureProducts(1,{cq**3},D,cg,cube,products);gasProject(1,{nq**3},{cq**3},I,vgeo,products,out);\n'
+main+=f'for(int i=0;i<{nq**3};++i)assert(std::abs(rhs[i]+out[i]+advective[i])<1e-11);\n}}'
 with tempfile.TemporaryDirectory() as t:
  p=Path(t);(p/'test.cpp').write_text(pre+s+main)
  subprocess.run(['g++','-std=c++17','-O2',str(p/'test.cpp'),'-o',str(p/'test')],check=True,stderr=subprocess.PIPE)
