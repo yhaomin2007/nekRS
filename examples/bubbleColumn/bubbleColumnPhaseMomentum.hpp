@@ -12,6 +12,8 @@ static occa::kernel stressKernel,predictorKernel,maskKernel,correctKernel,nonfin
 static deviceMemory<dfloat> stress,divStress,convection,convectionEXT,rhs,terms;
 static deviceMemory<dfloat> freeG,freeL,deltaG,deltaL,before,after;
 static deviceMemory<dfloat> bad;
+static deviceMemory<dfloat> mixtureDivergence;
+static occa::kernel divergenceDifferenceKernel;
 static deviceMemory<dfloat> sourceAlpha,sourceRhsG,historyG,historyL,defectG,defectL;
 static ExplicitHistory convectionHistory;
 
@@ -28,6 +30,7 @@ inline void registerKernels(deviceKernelProperties &info)
     correctKernel=platform->kernelRequests.load(request,"phaseCorrect");
     nonfiniteKernel=platform->kernelRequests.load(request,"phaseNonfinite");
     defectKernel=platform->kernelRequests.load(request,"phaseMomentumDefect");
+    divergenceDifferenceKernel=platform->kernelRequests.load(request,"mixtureDivergenceDifference");
   }
 }
 inline bool due()
@@ -62,6 +65,7 @@ inline void allocate()
   deltaG.resize(3*offset); deltaL.resize(3*offset);
   before.resize(3*offset); after.resize(3*offset);
   bad.resize(offset);
+  mixtureDivergence.resize(3*offset);
   sourceAlpha.resize(offset); sourceRhsG.resize(3*offset);
   historyG.resize(3*offset); historyL.resize(3*offset);
   defectG.resize(3*offset); defectL.resize(3*offset);
@@ -135,7 +139,14 @@ inline void postScalar(double time,int tstep)
   postProcessAlpha(time,tstep);
   trace("ALPHA_UG_UL_DONE");
 }
-inline void preFluid(double,int) { trace("NATIVE_PRESSURE_UM_BEGIN"); }
+inline void preFluid(double,int)
+{
+  // Preserve exactly the imposed target BEFORE the native pressure/UM solve.
+  // Do not reconstruct it afterwards from updated alpha/phase velocities.
+  if (nrs->checkpointStep)
+    mixtureDivergence.copyFrom(nrs->fluid->o_div,nrs->meshV->Nlocal);
+  trace("NATIVE_PRESSURE_UM_BEGIN");
+}
 inline bool singlePass(int stage)
 {
   nekrsCheck(stage!=1,platform->comm.mpiComm(),EXIT_FAILURE,
@@ -213,6 +224,16 @@ inline void diagnostics(double time)
     fflush(stdout);
   }
   if (!nrs->checkpointStep) return;
+  const dlong N=nrs->meshV->Nlocal,offset=nrs->fieldOffset;
+  auto target=mixtureDivergence.slice(0,N);
+  auto actual=mixtureDivergence.slice(offset,N);
+  auto difference=mixtureDivergence.slice(2*offset,N);
+  // Full three-component divergence of the final native UM, assembled at CG nodes.
+  opSEM::strongDivergence(nrs->meshV,offset,nrs->fluid->o_U,actual,true);
+  divergenceDifferenceKernel(N,target,actual,difference);
+  nrs->writeToFile("divUm",time,nrs->meshV,
+      {{"scalar00",{target}},{"scalar01",{actual}},{"scalar02",{difference}}},
+      true,true); // include coordinates and preserve FP64 diagnostic precision
   writeVector("ug",time,o_ug); writeVector("ul",time,o_ul);
   writeVector("deltaUg",time,deltaG); writeVector("deltaUl",time,deltaL);
   writeVector("mixBefore",time,before); writeVector("mixAfter",time,after);

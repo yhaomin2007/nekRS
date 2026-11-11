@@ -1,3 +1,11 @@
+@kernel void mixtureDivergenceDifference(const dlong N,
+    @restrict const dfloat *target, @restrict const dfloat *actual,
+    @restrict dfloat *difference)
+{
+  for (dlong n=0;n<N;++n;@tile(p_blockSize,@outer,@inner))
+    difference[n]=fabs(actual[n]-target[n]);
+}
+
 // Fresh-start mixture velocity from the actual two-phase initial fields.
 // UM remains independently advanced by the native fluid solver after setup.
 @kernel void phaseInitializeMixture(const dlong N, const dlong offset,
