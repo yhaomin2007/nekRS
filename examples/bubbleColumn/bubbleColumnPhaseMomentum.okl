@@ -1,0 +1,135 @@
+// All phase forces below are per phase volume. VM couples MATERIAL accelerations.
+@kernel void liquidStress(const dlong N, const dlong offset, const dfloat mu,
+                          @restrict const dfloat *alpha,
+                          @restrict const dfloat *gradient,
+                          @restrict dfloat *stress)
+{
+  for (dlong n=0;n<N;++n;@tile(p_blockSize,@outer,@inner)) {
+    const dfloat trace=(2.0/3.0)*(gradient[n]+gradient[n+4*offset]+gradient[n+8*offset]);
+    for (int i=0;i<3;++i) for (int j=0;j<3;++j)
+      stress[n+(3*i+j)*offset]=(1-alpha[n])*mu*
+        (gradient[n+(3*i+j)*offset]+gradient[n+(3*j+i)*offset]-(i==j?trace:0));
+  }
+}
+
+@kernel void phasePredictor(const dlong N, const dlong offset,
+    const dfloat rhoG, const dfloat rhoL, const dfloat cvm, const dfloat floor,
+    const dfloat gx, const dfloat gy, const dfloat gz,
+    @restrict const dfloat *alpha, @restrict const dfloat *ug,
+    @restrict const dfloat *ul, @restrict const dfloat *pressure,
+    @restrict const dfloat *dragRate, @restrict const dfloat *gasStress,
+    @restrict const dfloat *liquidStress, @restrict const dfloat *gasConvection,
+    @restrict const dfloat *liquidConvection,
+    @restrict dfloat *gasRhs, @restrict dfloat *liquidRhs,
+    @restrict dfloat *terms)
+{
+  for (dlong n=0;n<N;++n;@tile(p_blockSize,@outer,@inner)) {
+    const dfloat a=alpha[n], beta=1-a;
+    const dfloat as=a>floor?a:floor, bs=beta>floor?beta:floor;
+    const dfloat ratio=a/bs, c=cvm*rhoL;
+    const dfloat K=dragRate[n]*(rhoG+c);
+    const dfloat det=rhoG*rhoL+c*rhoL+ratio*c*rhoG;
+    for (int i=0;i<3;++i) {
+      const dlong k=n+i*offset;
+      const dfloat g=i==0?gx:(i==1?gy:gz);
+      const dfloat drag=K*(ul[k]-ug[k]);
+      const dfloat vg=gasStress[k]/as, vl=liquidStress[k]/bs;
+      const dfloat fg=-pressure[k]+rhoG*g+drag+vg;
+      const dfloat fl=-pressure[k]+rhoL*g-ratio*drag+vl;
+      const dfloat ag=((rhoL+ratio*c)*fg+c*fl)/det;
+      const dfloat al=(ratio*c*fg+(rhoG+c)*fl)/det;
+      gasRhs[k]=ag-gasConvection[n+(i+1)*offset];
+      liquidRhs[k]=al-liquidConvection[k];
+      // Physical gas equation terms, accelerated by rhoG (not VM-effective rho).
+      terms[k]=-pressure[k]/rhoG;
+      terms[k+3*offset]=g;
+      terms[k+6*offset]=drag/rhoG;
+      terms[k+9*offset]=vg/rhoG;
+      terms[k+12*offset]=c*(al-ag)/rhoG;
+      terms[k+15*offset]=-gasConvection[n+(i+1)*offset];
+    }
+  }
+}
+
+@kernel void phaseMask(const dlong N, @restrict const dlong *ids,
+                      @restrict dfloat *free)
+{
+  for (dlong n=0;n<N;++n;@tile(p_blockSize,@outer,@inner)) free[ids[n]]=0;
+}
+
+@kernel void phaseNonfinite(const dlong N, const dlong offset,
+                           @restrict const dfloat *v, @restrict dfloat *bad)
+{
+  for (dlong n=0;n<N;++n;@tile(p_blockSize,@outer,@inner)) {
+    bad[n]=0;
+    for (int c=0;c<3;++c) {
+      const dfloat x=v[n+c*offset];
+      if ((x-x)!=0) bad[n]=1; // catches both infinity and NaN
+    }
+  }
+}
+
+// Residual of the frozen explicit physical momentum equations, evaluated with
+// final corrected BDF velocities and the newly solved pressure. Numerical
+// scalar diffusion/HPF and phase correction are deliberately not subtracted.
+@kernel void phaseMomentumDefect(const dlong N, const dlong offset,
+    const dfloat rhoG, const dfloat rhoL, const dfloat cvm,
+    const dfloat floor, const dfloat h,
+    @restrict const dfloat *sourceAlpha,
+    @restrict const dfloat *ug, @restrict const dfloat *ul,
+    @restrict const dfloat *historyG, @restrict const dfloat *historyL,
+    @restrict const dfloat *rhsG, @restrict const dfloat *rhsL,
+    @restrict const dfloat *sourcePressureAcceleration,
+    @restrict const dfloat *newGradP,
+    @restrict const dfloat *freeG, @restrict const dfloat *freeL,
+    @restrict dfloat *defectG, @restrict dfloat *defectL)
+{
+  for (dlong n=0;n<N;++n;@tile(p_blockSize,@outer,@inner)) {
+    const dfloat beta=1-sourceAlpha[n], bs=beta>floor?beta:floor;
+    const dfloat r=sourceAlpha[n]/bs, c=cvm*rhoL;
+    for (int i=0;i<3;++i) {
+      const dlong k=n+i*offset;
+      const dfloat eg=h*ug[k]-historyG[k]-rhsG[k];
+      const dfloat el=h*ul[k]-historyL[k]-rhsL[k];
+      const dfloat dp=newGradP[k]+rhoG*sourcePressureAcceleration[k];
+      defectG[k]=freeG[k]?((rhoG+c)*eg-c*el+dp)/rhoG:0;
+      defectL[k]=freeL[k]?((rhoL+r*c)*el-r*c*eg+dp)/rhoL:0;
+    }
+  }
+}
+
+// Cheap local approximation to the coupled momentum response. UM is read-only.
+// Dirichlet rows are removed from the block BEFORE normalizing the response.
+@kernel void phaseCorrect(const dlong N, const dlong offset,
+    const dfloat rhoG, const dfloat rhoL, const dfloat cvm,
+    const dfloat floor, const dfloat h,
+    @restrict const dfloat *alpha, @restrict const dfloat *um,
+    @restrict const dfloat *dragRate, @restrict const dfloat *freeG,
+    @restrict const dfloat *freeL,
+    @restrict dfloat *ug, @restrict dfloat *ul,
+    @restrict dfloat *deltaG, @restrict dfloat *deltaL,
+    @restrict dfloat *before, @restrict dfloat *after)
+{
+  for (dlong n=0;n<N;++n;@tile(p_blockSize,@outer,@inner)) {
+    const dfloat a=alpha[n], beta=1-a, bs=beta>floor?beta:floor;
+    const dfloat ratio=a/bs, c=cvm*rhoL;
+    const dfloat K=dragRate[n]*(rhoG+c), off=h*c+K;
+    const dfloat ag=h*(rhoG+c)+K, al=h*(rhoL+ratio*c)+ratio*K;
+    // Expanded positive determinant avoids catastrophic cancellation for stiff drag.
+    const dfloat det=h*h*(rhoG*rhoL+c*rhoL+ratio*c*rhoG)+h*K*(rhoL+ratio*rhoG);
+    const dfloat rho=a*rhoG+beta*rhoL, wg=a*rhoG/rho, wl=beta*rhoL/rho;
+    for (int i=0;i<3;++i) {
+      const dlong k=n+i*offset;
+      dfloat bg=0, bl=0;
+      if (freeG[k] && freeL[k]) { bg=(al+off)/det; bl=(ag+ratio*off)/det; }
+      else if (freeG[k]) bg=1/ag;
+      else if (freeL[k]) bl=1/al;
+      const dfloat r=um[k]-wg*ug[k]-wl*ul[k], b=wg*bg+wl*bl;
+      deltaG[k]=b>0?bg*r/b:0;
+      deltaL[k]=b>0?bl*r/b:0;
+      before[k]=r;
+      ug[k]+=deltaG[k]; ul[k]+=deltaL[k];
+      after[k]=um[k]-wg*ug[k]-wl*ul[k];
+    }
+  }
+}

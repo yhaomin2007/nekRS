@@ -51,10 +51,10 @@ with tempfile.TemporaryDirectory() as t:
  row=rows[0]
  for key,value in dict(lag_min=-2,lag_max=3,lag_mean=1,lag_rms=math.sqrt(36/6)).items():
   assert abs(float(row[key])-value)<1e-12,(key,row[key],value)
-# Check that the snapshot is taken at source entry and diagnostic precedes limiter.
+# The retained diagnostic utility is tested above; the new case has no UM limiter.
 source=host.split('inline void addExplicitSources(double)')[1]
 assert source.index('o_mixtureAdvectorUsed.copyFrom')<source.index('prepareGasAdvection()')
 udf=(r/'bubbleColumn.udf').read_text().split('void UDF_ExecuteStep')[1]
-assert udf.index('diagnoseDivergenceCoupling')<udf.index('clipMixtureVelocity()')
-assert '{"scalar04", divCouplingLag}' in udf
+assert 'clipMixtureVelocity()' not in udf
+assert 'phaseMomentum::correct()' in udf
 print('Coupling lag: actual kernel/callback, three components, sign, density clamp, padded strides, zero limits, fresh gradient, interval and weighted CSV passed.')

@@ -29,5 +29,7 @@ void udfDirichlet(bcData *bc)
   } else if (isField("scalar ugz")) {
     bc->sScalar = (bc->id == 1)
         ? bc->usrwrk[bc->idxVol] * p_UG_INLET : 0.0;
+  } else if (isField("scalar ulx") || isField("scalar uly") || isField("scalar ulz")) {
+    bc->sScalar = 0.0;
   }
 }

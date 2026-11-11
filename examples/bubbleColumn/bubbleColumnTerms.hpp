@@ -580,16 +580,9 @@ inline void reconstructLiquidVelocity()
 {
   const dlong Nlocal = nrs->meshV->Nlocal;
   const dlong offset = nrs->fieldOffset;
-  reconstructGasFlux();
-  buildLiquidVelocityKernel(Nlocal,
-                            offset,
-                            p.rhoLiquid,
-                            p.rhoGas,
-                            p.alphaFloor,
-                            nrs->scalar->o_solution("alpha"),
-                            nrs->fluid->o_U,
-                            o_qg,
-                            o_ul);
+  const char *names[] = {"ulx", "uly", "ulz"};
+  for (int c = 0; c < 3; ++c)
+    o_ul.copyFrom(nrs->scalar->o_solution(names[c]), Nlocal, c * offset, 0);
 }
 
 inline void evaluateGasCubatureTransport(bool conservativeAlpha = false)
@@ -681,15 +674,7 @@ inline void evaluatePointwiseTerms()
 
   reconstructGasFlux();
   reconstructGasVelocity();
-  buildLiquidVelocityKernel(mesh->Nlocal,
-                            offset,
-                            p.rhoLiquid,
-                            p.rhoGas,
-                            p.alphaFloor,
-                            alpha,
-                            nrs->fluid->o_U,
-                            o_qg,
-                            o_ul);
+  reconstructLiquidVelocity();
   // Use normalized gather-scatter assembly for every user-side SEM gradient
   // and divergence. This keeps user-side derivative and conservative
   // flux terms single-valued at shared CG nodes.
@@ -841,7 +826,7 @@ inline void disableNativeGasScalarAdvection()
   std::vector<dlong> flags(nrs->scalar->compute.begin(), nrs->scalar->compute.end());
   o_userAdvectionCompute.resize(flags.size());
   o_userAdvectionCompute.copyFrom(flags);
-  for (const char *name : {"alpha", "ugx", "ugy", "ugz"}) {
+  for (const char *name : {"alpha", "ugx", "ugy", "ugz", "ulx", "uly", "ulz"}) {
     flags[nrs->scalar->nameToIndex.at(name)] = 0;
   }
   nrs->scalar->o_compute.copyFrom(flags.data());

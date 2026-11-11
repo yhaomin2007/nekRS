@@ -181,7 +181,7 @@ with tempfile.TemporaryDirectory() as d:
 order=(case/'bubbleColumnOneThrough.hpp').read_text()
 udf=(case/'bubbleColumn.udf').read_text()
 assert '->solve(' not in order and 'compute =' not in order
-assert 'oneThrough::finishStep()' in udf and 'solveGas' not in udf
+assert 'phaseMomentum::correct()' in udf and 'solveGas' not in udf
 assert 'scalar->o_coeffEXT = o_scalarCoeffEXT' in terms
 assert 'coefficients[0] = 1.0' in terms
 assert 'gasPressureGradientFilter' not in terms

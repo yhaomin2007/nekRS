@@ -7,7 +7,7 @@ import numpy as np
 from numpy.polynomial.legendre import Legendre, legvander
 
 case=Path(__file__).resolve().parents[1]
-occa=case.parents[2]/'occa-cub-parser'
+occa=Path(os.environ.get('OCCA_DIR',case.parents[1]/'3rd_party/occa'))
 N=7;nq=N+1;np3=nq**3
 x=np.r_[-1.,Legendre.basis(N).deriv().roots(),1.]
 L=legvander(x,N);V=L.copy();V[:,2:]=L[:,2:]-L[:,:-2]

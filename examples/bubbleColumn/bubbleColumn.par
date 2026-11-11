@@ -2,17 +2,14 @@ userSections = CASEDATA
 
 [GENERAL]
 polynomialOrder = 7
-# Resolve degree-14 alpha*UG products before conservative differentiation.
 cubaturePolynomialOrder = 14
-# UG scalars require a new run or a converted UG restart.
-# startFrom = bubblecolumn0.f00036
 stopAt = numSteps
 numSteps = 100000
-#dt = initial=1.0e-5+targetCFL=0.01+max=1e-2
 dt = 1e-5
 timeStepper = tombo2
 checkpointInterval = 1000
-scalars = ALPHA, UGX, UGY, UGZ
+scalars = ALPHA, UGX, UGY, UGZ, ULX, ULY, ULZ
+# Fresh start, or a checkpoint with all seven scalars.
 
 [FLUID PRESSURE]
 initialGuess = previous
@@ -20,27 +17,26 @@ residualTol = 1e-6
 
 [FLUID VELOCITY]
 initialGuess = previous
-# Boundary IDs: 1=inlet, 2=outlet, 3=wall
 boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
 residualTol = 1e-6
 rho = 998.2
-viscosity = 1.0e-3
+viscosity = 1e-3
 regularization = hpfrt + nModes=1 + scalingCoeff=10.0
 
 [SCALAR ALPHA]
 initialGuess = previous
 boundaryTypeMap = udfDirichlet, zeroNeumann, zeroNeumann
 residualTol = 1e-6
-transportCoeff = 1.0
+transportCoeff = 1
 diffusionCoeff = 1e-5
-# NekRS native high-pass-filter relaxation. Use regularization = none to disable.
 regularization = hpfrt + nModes=1 + scalingCoeff=10.0
 
 [SCALAR UGX]
 initialGuess = previous
 boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
 residualTol = 1e-6
-transportCoeff = 1.0
+transportCoeff = 1
+# Additional numerical diffusivity; physical stress is supplied by the UDF.
 diffusionCoeff = 1e-5
 regularization = hpfrt + nModes=1 + scalingCoeff=10.0
 
@@ -48,117 +44,62 @@ regularization = hpfrt + nModes=1 + scalingCoeff=10.0
 initialGuess = previous
 boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
 residualTol = 1e-6
-transportCoeff = 1.0
-diffusionCoeff =1e-5
+transportCoeff = 1
+# Additional numerical diffusivity; physical stress is supplied by the UDF.
+diffusionCoeff = 1e-5
 regularization = hpfrt + nModes=1 + scalingCoeff=10.0
 
 [SCALAR UGZ]
 initialGuess = previous
-# Vertical sidewall: zero normal derivative for the axial gas velocity.
 boundaryTypeMap = udfDirichlet, zeroNeumann, zeroNeumann
 residualTol = 1e-6
-transportCoeff = 1.0
+transportCoeff = 1
+# Additional numerical diffusivity; physical stress is supplied by the UDF.
+diffusionCoeff = 1e-5
+regularization = hpfrt + nModes=1 + scalingCoeff=10.0
+
+[SCALAR ULX]
+initialGuess = previous
+boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
+residualTol = 1e-6
+transportCoeff = 1
+# Additional numerical diffusivity; physical stress is supplied by the UDF.
+diffusionCoeff = 1e-5
+regularization = hpfrt + nModes=1 + scalingCoeff=10.0
+
+[SCALAR ULY]
+initialGuess = previous
+boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
+residualTol = 1e-6
+transportCoeff = 1
+# Additional numerical diffusivity; physical stress is supplied by the UDF.
+diffusionCoeff = 1e-5
+regularization = hpfrt + nModes=1 + scalingCoeff=10.0
+
+[SCALAR ULZ]
+initialGuess = previous
+boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
+residualTol = 1e-6
+transportCoeff = 1
+# Additional numerical diffusivity; physical stress is supplied by the UDF.
 diffusionCoeff = 1e-5
 regularization = hpfrt + nModes=1 + scalingCoeff=10.0
 
 [CASEDATA]
 rhoLiquid = 998.2
 rhoGas = 1.2
-muLiquid = 1.0e-3
+muLiquid = 1e-3
 muGas = 1.8e-5
-# Fresh starts use an axial plume for alpha and UG; restart files take precedence.
-initialPlumeHeight = 0.05
-initialPlumeThickness = 0.01
 alphaInlet = 0.016667
 gasInletVelocity = 0.3
-# Initial UG plume peak (m/s), multiplied by the axial tanh profile.
-gasInitialVelocity = 0.3
-gravityX = 0.0
-gravityY = 0.0
+initialPlumeHeight = 0.05
+initialPlumeThickness = 0.01
 gravityZ = -9.81
-# Explicit filter of solved alpha each step, before clipping/properties/pressure.
-# Uses the user bubble-basis module; independent of native HPFRT regularization.
-# Strength 0 disables this filter. Modes: 1..N-1.
-alphaExplicitFilterModes = 1
-alphaExplicitFilterStrength = 0.05
-alphaFloor = 1e-6
-alphaClipEnabled = 1.0
-alphaMinimum = 0.0
-alphaMaximum = 1.0
-subtractAlphaDiffusion = 0.0
-subtractUgxDiffusion = 0.0
-subtractUgyDiffusion = 0.0
-subtractUgzDiffusion = 0.0
-zRampBottom = 0.9
-zRampTop = 0.95
-outletDampingFactor = 20.0
-gasVelocityClipEnabled = 0.0
-gasVelocityMaximum = 0.5
-mixtureVelocityClipEnabled = 0.0
-mixtureVelocityMaximum = 1.0
-gasMomentumCutoff = 1e-4
-gasMomentumFullyActive = 1e-3
-gasPressureEnabled = 1.0
-# UG always uses the raw assembled strong pressure gradient.
-# 0: latest completed pressure, grad(p^n); 1: EXT of raw gradient history,
-# with the same time-dependent EXT coefficients used by native UM convection.
-# No pressure spatial filter, temporal relaxation, weak selection or inlet mask.
-gasPressureGradientExtrapolation = 0
-dragEnabled = 1.0
-bubbleDiameter = 3.0e-3
-# Set to 0.0 to omit -div(tau_d)/rho_m from mixture momentum.
-driftStressEnabled = 1.0
-virtualMassEnabled = 1.0
+bubbleDiameter = 3e-3
 virtualMassCoefficient = 0.5
-# Native alpha/UG scalar convection is disabled; user gas transport is supplied directly.
-# Alpha uses selected conservative div(alpha*UG); UG uses cubature UG.grad(UG).
-# Full alpha/UG convection products use native UM EXT coefficients.
-# Scalar EXT1 only carries already-selected sources; diffusion stays implicit; full gas drag is explicit.
-gasTransportMethod = 1
-# 1: form alpha*UG at GLL nodes, then assembled SEM strong divergence.
-# 2: conservative cubature flux differentiation (existing default).
-alphaTransportForm = 2
-# 1: include alpha*div(UG), the original conservative equation.
-# 0: remove this term for a diagnostic advection-only comparison.
+# 0: latest strong grad(p); 1: native fluid EXT of strong gradient history.
+gasPressureGradientExtrapolation = 0
+# 0 removes alpha*div(UG) for diagnostics and changes phase conservation.
 alphaCompressionEnabled = 1
-# Target uses alpha conservative transport + numerical diffusion only.
-# HPFRT, explicit-filter/clipping rates and boundary BDF overrides are excluded.
-# 0 imposes div(U)=0; 1 enables the reconstructed target (optionally ramped).
-mixtureDivergenceEnabled = 1
-# Spatial inlet layer of thickness delta (mesh units): div(UM)=0 for z<=delta/2.
-# Cosine ramp to the full reconstructed target over delta/2 < z < delta.
-# Inlet is at z=0. Applied after filtering, extrapolation and ramp, each physical step.
-# 0 disables the inlet layer; raw divergence exports remain unchanged.
-divergenceInletThickness = 0.01
-# 1: previous (rhoL-rhoG)/rhoM * [alpha transport/diffusion + UM.grad(alpha)].
-# 2: (rhoL-rhoG)/rhoL * [div(alpha*(UM-UG)) + numerical diffusion].
-# Relative flux follows alphaTransportForm and the same UM EXT coefficients.
-mixtureDivergenceForm = 2
-# Raw method0/method1/difference statistics in log and comparison CSV.
-divergenceComparisonInterval = 10
-# User explicitFilterApply: Legendre bubble-basis tensor filter.
-# Modes: 1..N-1. Strength sets highest 1D mode attenuation: sigma_N=1-strength.
-# Lower selected modes receive parabolic attenuation; 0 leaves d unchanged.
-# Pressure uses the filtered/assembled target; comparison fields remain raw.
-divergenceFilterModes = 1
-divergenceFilterStrength = 0.25
-divergenceExtrapolationEnabled = 0.0
-divergenceRampEnabled = 1
-divergenceRampSteps = 1000
-stabilityMonitorEnabled = 1.0
-stabilityMonitorInterval = 10
-validationOutputInterval = 10
-
-# Fixed native order: ALPHA -> UGX/UGY/UGZ -> pressure -> UM.
-# Only convection and the independently enabled pressure gradient use EXT.
-# Other explicit sources keep their previous latest-sample treatment.
-# Rank-0 solve-order trace: first step plus every N steps.
-# 1 prints every step; 0 disables the trace.
-oneThroughLogInterval = 10
-
-
-# Read-only UG equation snapshots, extrema/CSV and vector files at checkpoints.
-# 1 enables; 0 disables snapshots and their diagnostic work.
-ugTermDiagnosticsEnabled = 1
-# First step + every N steps + every checkpoint; 0 means first/checkpoints only.
-ugTermDiagnosticsInterval = 10
+# First step, every N steps, and checkpoints; 0: first/checkpoints only.
+diagnosticInterval = 10

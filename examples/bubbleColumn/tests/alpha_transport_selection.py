@@ -67,6 +67,7 @@ with tempfile.TemporaryDirectory() as directory:
     path=Path(directory);(path/'test.cpp').write_text(cpp+'inline void evaluateAlphaTransport()'+body+main)
     subprocess.run(['g++','-std=c++11',str(path/'test.cpp'),'-o',str(path/'test')],check=True)
     subprocess.run([str(path/'test')],check=True)
-assert '"alphatransportform", p.alphaTransportForm' in (case/'bubbleColumn.udf').read_text()
+assert 'int alphaTransportForm = 2' in (case/'bubbleColumnTerms.hpp').read_text()
+assert 'alphatransportform' not in (case/'bubbleColumn.udf').read_text()
 print('Actual selection: nodal alpha*frozenUG, assembled SEM divergence, negative RHS sign, cubature fallback, compression on/off and padded storage passed.')
 

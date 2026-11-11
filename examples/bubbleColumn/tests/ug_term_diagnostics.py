@@ -171,7 +171,9 @@ assert post.index('captureSolved')<post.index('postProcessAlpha')<post.index('po
 begin=extract(order,'inline void beginStep(')
 assert begin.index('addExplicitSources')<begin.index('captureSource')
 udf=(case/'bubbleColumn.udf').read_text()
-assert 'ugTerms::registerKernels(kernelInfo)' in udf and 'ugTerms::writeCheckpoint(time)' in udf
+# Old diagnostic helpers remain testable, but the active seven-scalar case
+# exports the symmetric phase-equation terms through phaseMomentum.
+assert 'phaseMomentum::registerKernels(info)' in udf and 'phaseMomentum::diagnostics(time)' in udf
 header=(case/'bubbleColumnUGTerms.hpp').read_text()
 configure=extract(header,'inline void configure(')
 assert 'Nmasked' not in configure and 'ellipticSolver[' not in configure

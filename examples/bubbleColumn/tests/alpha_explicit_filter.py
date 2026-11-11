@@ -56,6 +56,7 @@ with tempfile.TemporaryDirectory() as directory:
     path=Path(directory);(path/'check.cpp').write_text(prefix+'inline void postProcessAlpha(double time, int)'+body+main)
     subprocess.run(['g++','-std=c++11',str(path/'check.cpp'),'-o',str(path/'check')],check=True)
     subprocess.run([str(path/'check')],check=True)
-assert 'nrs->postScalar = &bubbleColumn::postProcessAlpha' in (case/'bubbleColumn.udf').read_text()
+assert 'nrs->postScalar=&bubbleColumn::phaseMomentum::postScalar' in (case/'bubbleColumn.udf').read_text()
+assert 'postProcessAlpha(time,tstep)' in (case/'bubbleColumnPhaseMomentum.hpp').read_text()
 assert 'o_alphaBeforePostprocess' in source.split('inline void buildDivergenceFromAlphaRhs')[1].split('inline void buildDivergenceFromAlphaBdf')[0]
 print('Actual alpha postScalar: filter/assembly/BC/clip order, independent switches, total BDF correction and separate volume changes passed.')
