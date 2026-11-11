@@ -66,6 +66,26 @@ inline double divergenceNorm()
   return platform->linAlg->weightedNorm2(m->Nlocal,m->o_LMM,div,platform->comm.mpiComm());
 }
 
+// Keep element derivatives unaveraged so shared-node averaging cannot hide
+// opposing phase compression at an element interface. This is a diagnostic,
+// distinct from the assembled weak continuity used for pressure acceptance.
+inline void reportPhaseDivergence(int step)
+{
+  auto m=nrs->meshV;const auto O=nrs->fieldOffset;
+  const std::array<occa::memory,3> velocities={ug,ul,nrs->fluid->o_U};
+  const std::array<const char*,3> labels={"UG","UL","volume"};
+  for(int phase=0;phase<3;++phase) {
+    auto div=opSEM::strongDivergence(m,O,velocities[phase],false);
+    const auto comm=platform->comm.mpiComm();
+    const double norm=platform->linAlg->weightedNorm2(m->Nlocal,m->o_LMM,div,comm);
+    const auto range=platform->linAlg->minMax(m->Nlocal,{div},comm);
+    const double maximum=std::max(std::abs(range[0].first),std::abs(range[0].second));
+    if(platform->comm.mpiRank()==0)
+      printf("method3PhaseDivergence step=%d field=%s brokenL2=%.8e range=(%.8e,%.8e) dtMaxAbs=%.8e\n",
+          step,labels[phase],norm,range[0].first,range[0].second,nrs->dt[0]*maximum);
+  }
+}
+
 // Host copies below are for monitor-step diagnostics.
 inline std::vector<double> pressureHost(const occa::memory& a)
 {

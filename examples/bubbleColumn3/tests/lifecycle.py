@@ -56,6 +56,11 @@ struct LA{
  void fill(int n,double a,Mem x){for(int i=0;i<n;++i)x[i]=a;}
  void axpby(int n,double a,Mem x,double b,Mem y){for(int i=0;i<n;++i)y[i]=a*x[i]+b*y[i];}
  double weightedNorm2Many(int n,int fields,int stride,Mem w,Mem x,int){double sum=0;for(int c=0;c<fields;++c)for(int i=0;i<n;++i)sum+=w[i]*x[i+c*stride]*x[i+c*stride];return std::sqrt(sum);}
+ std::vector<std::pair<double,double>> minMax(int n,const std::vector<Mem>& fields,int){
+  std::vector<std::pair<double,double>> result;
+  for(auto field:fields){double lo=field[0],hi=lo;for(int i=1;i<n;++i){lo=std::min(lo,field[i]);hi=std::max(hi,field[i]);}result.push_back({lo,hi});}
+  return result;
+ }
 }la;
 struct Options{std::string getArgs(std::string){return "1e-8";}};
 struct elliptic{Options cfg;double residual=0;double initialResidual(){return 1;}double finalResidual(){return residual;}Options&options(){return cfg;}int Niter(){return 1;}};
@@ -77,7 +82,7 @@ struct Nrs{Scalar*scalar=::std::addressof(::scalar);Fluid*fluid=::std::addressof
 auto nrs=&nrsObject;
 struct Platform{Comm comm;LA*linAlg=&la;}platformObject;
 auto platform=&platformObject;
-struct Parameters{double rhoGas=1.2,rhoLiquid=998.2,muLiquid=1e-3,bubbleDiameter=3e-3,dragEnabled=1,alphaMinimum=0,alphaMaximum=.99,gravity[3]={0,0,-9.81},dragCouplingTolerance=1e-12;int dragCouplingMaxIterations=30,virtualMassEnabled=1;double virtualMassCoefficient=.5;}p;
+struct Parameters{double rhoGas=1.2,rhoLiquid=998.2,muLiquid=1e-3,bubbleDiameter=3e-3,dragEnabled=1,alphaMinimum=0,alphaMaximum=.99,gravity[3]={0,0,-9.81},dragCouplingTolerance=1e-12;int dragCouplingMaxIterations=30,virtualMassEnabled=1,monitorInterval=1;double virtualMassCoefficient=.5;}p;
 std::array<std::string,7>names={"alpha","ugx","ugy","ugz","ulx","uly","ulz"};
 Mem ug(12),ul(12),lambdaG(4),lambdaL(4),transportG(16),transportL(16),zeroAdvection(56),predictorBase(28),phasePrevious(24),phaseDelta(24);
 Mem materialBase(28),materialHistory(56);

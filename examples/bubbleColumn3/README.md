@@ -207,6 +207,17 @@ forms and checks the residual against the final computed phase velocities.
 
 ## Logs and continuity
 
+`method3AlphaClip` reports the raw alpha range before clipping and the
+mass-weighted L2 change made by clipping on monitored steps.
+`method3PhaseDivergence` reports gas, liquid and volume-velocity divergence
+using unaveraged element derivatives, their ranges and dt times their maximum
+absolute value. It is measured after the pressure/velocity update. Opposing
+element derivatives at shared nodes are retained by this diagnostic. This
+broken strong divergence is distinct from assembled weak continuity.
+These logs help distinguish phase compression and clipping from an unmet
+pressure-coupling target. They do not establish the origin of a stripe without
+the corresponding run data.
+
 `method3OuterPressure` reports the native Poisson iteration count and residual.
 `method3OuterContinuity` reports the actual post-BC weak residual on monitored
 steps. `method3Outer` reports correction count, final continuity target status,

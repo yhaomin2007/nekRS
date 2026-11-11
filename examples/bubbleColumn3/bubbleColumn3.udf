@@ -136,7 +136,23 @@ inline void beginStep(double time)
 inline void postAlpha(double time,int)
 {
   validateLinearSolve(nrs->scalar->ellipticSolver.at(0),"alpha");
+  const bool monitor=p.monitorInterval>0 && (nrs->tstep==1 || nrs->tstep%p.monitorInterval==0);
+  auto m=nrs->meshV;
+  const auto N=m->Nlocal;
+  deviceMemory<dfloat> clipChange;
+  std::vector<std::pair<dfloat,dfloat>> rawRange;
+  if(monitor) {
+    clipChange.resize(N);clipChange.copyFrom(nrs->scalar->o_solution("alpha"),N);
+    rawRange=platform->linAlg->minMax(N,{clipChange},platform->comm.mpiComm());
+  }
   clipKernel(nrs->meshV->Nlocal,p.alphaMinimum,p.alphaMaximum,nrs->scalar->o_solution("alpha"));
+  if(monitor) {
+    platform->linAlg->axpby(N,1.0,nrs->scalar->o_solution("alpha"),-1.0,clipChange);
+    const auto change=platform->linAlg->weightedNorm2Many(N,1,0,m->o_LMM,clipChange,platform->comm.mpiComm());
+    if(platform->comm.mpiRank()==0)
+      printf("method3AlphaClip step=%d rawRange=(%.8e,%.8e) changeL2=%.8e\n",
+          nrs->tstep,rawRange[0].first,rawRange[0].second,change);
+  }
   // Enforce inlet alpha again after clipping; restore six phase boundary values.
   nrs->scalar->compute.assign(7,1);
   nrs->scalar->applyDirichlet(time);
@@ -403,6 +419,8 @@ void UDF_ExecuteStep(double time,int step)
   nekrsCheck(step!=preparedStep || step==completedStep || !nrs->timeStepConverged,
       platform->comm.mpiComm(),EXIT_FAILURE,"%s","Method3 deferred solve out of order.\n");
   solvePressureAndCorrect(time,step);
+  if(p.monitorInterval>0 && (step==1 || step%p.monitorInterval==0))
+    reportPhaseDivergence(step);
   completedStep=step;
   if(nrs->checkpointStep) {
     const auto O=nrs->fieldOffset,N=nrs->meshV->Nlocal;
