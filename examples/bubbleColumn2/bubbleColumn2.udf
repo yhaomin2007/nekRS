@@ -1,6 +1,5 @@
 #include "bubbleColumn2Terms.hpp"
 #include "bubbleColumn2Cubature.hpp"
-#include "bubbleColumn2AfterFluid.hpp"
 
 #ifdef __okl__
 #include "bubbleColumn2.oudf"
@@ -33,9 +32,6 @@ void UDF_Setup0(MPI_Comm, setupAide &)
     platform->kernelInfo["headers"] += interpolationHeader;
   }
   auto &p = bubbleColumn2::p;
-  platform->par->extract("casedata", "gassolveafterfluid", p.gasSolveAfterFluid);
-  nekrsCheck(p.gasSolveAfterFluid < 0 || p.gasSolveAfterFluid > 1,
-      platform->comm.mpiComm(), EXIT_FAILURE, "%s", "gasSolveAfterFluid must be 0/1.\n");
   platform->par->extract("casedata", "rholiquid", p.rhoLiquid);
   platform->par->extract("casedata", "rhogas", p.rhoGas);
   platform->par->extract("casedata", "muliquid", p.muLiquid);
@@ -115,7 +111,6 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   platform->par->extract("casedata", "gashydrostaticdensity", p.gasHydrostaticDensity);
   platform->par->extract("casedata", "gaspressurecorrectorenabled", p.gasPressureCorrectorEnabled);
   platform->par->extract("casedata", "gaspressurecorrectorgradientmethod", p.gasPressureCorrectorGradientMethod);
-  if (p.gasSolveAfterFluid) p.gasPressureCorrectorEnabled = 0;
   nekrsCheck(p.gasPressureCorrectorEnabled < 0 || p.gasPressureCorrectorEnabled > 1
                  || p.gasPressureCorrectorGradientMethod < 0 || p.gasPressureCorrectorGradientMethod > 1,
              platform->comm.mpiComm(), EXIT_FAILURE,
@@ -295,7 +290,7 @@ void UDF_Setup()
              && (!bubbleColumn2::p.frozenGasVelocityEnabled || bubbleColumn2::p.frozenGasMixtureForcingEnabled));
   nrs->userSource = &bubbleColumn2::addExplicitSources;
   if (platform->comm.mpiRank() == 0)
-    printf("bubbleColumn2 UG: convection uses source-time fields; conservative cubature alpha and material UG transport; gas convection uses native fluid EXT; other scalar explicit terms use EXT1; UM divergence zero\n");
+    printf("bubbleColumn2 UG: scalars-first order; conservative cubature alpha and material UG transport; gas convection uses native fluid EXT; other scalar explicit terms use EXT1; UM divergence zero\n");
   if (platform->comm.mpiRank() == 0 && bubbleColumn2::p.coupledVirtualMassEnabled)
     printf("bubbleColumn2 COUPLED VM: local phase material-inertia elimination; transformed UG/UM pressure, drag and phase stresses; no lagged VM acceleration source; native BDF and UM pressure solve retained\n");
   if (platform->comm.mpiRank() == 0 && bubbleColumn2::p.virtualMassEnabled != 0.0
@@ -333,15 +328,12 @@ void UDF_Setup()
   nrs->scalar->userImplicitLinearTerm = &bubbleColumn2::implicitGasDrag;
   nrs->userProperties = &bubbleColumn2::updateProperties;
   nrs->userDivergence = &bubbleColumn2::enforceZeroDivergence;
-  bubbleColumn2::afterFluid::configure();
 }
 
 void UDF_ExecuteStep(double time, int tstep)
 {
-  if (bubbleColumn2::p.gasSolveAfterFluid && tstep > 0)
-    bubbleColumn2::afterFluid::solveGas(time, tstep);
-  else bubbleColumn2::correctGasPressure();
-  // Apply an emergency mixture limiter after the scheduled solves so
+  bubbleColumn2::correctGasPressure();
+  // Apply an emergency magnitude limiter immediately after the fluid solve so
   // the bounded volume velocity is used by diagnostics, output, and the next
   // timestep/CFL evaluation.
   bubbleColumn2::clipVolumeVelocity();
@@ -378,4 +370,3 @@ void UDF_ExecuteStep(double time, int tstep)
     bubbleColumn2::writeValidationChecks(time, tstep);
   }
 }
-

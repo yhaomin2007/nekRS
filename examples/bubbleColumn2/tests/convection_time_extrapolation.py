@@ -53,7 +53,7 @@ struct Scalar{
 }scalar;
 struct Fluid{Mem o_coeffEXT{3},rhs{9};Mem o_explicitTerms(){return rhs;}}fluid;
 struct Nrs{int tstep=0;long fieldOffset=3;Mesh* meshV=&mesh;Scalar* scalar=&::scalar;Fluid* fluid=&::fluid;}app;auto nrs=&app;
-struct Params{int frozenGasVelocityEnabled=0,gasSolveAfterFluid=0;}p;
+struct Params{int frozenGasVelocityEnabled=0;}p;
 Mem o_alphaSource(3),o_ugSource(9),o_mixtureForce(9),o_gasTransport(12);
 Mem o_nativeTransportAdvection(18);
 Mem o_scalarConvectionCurrent(12),o_scalarConvectionEXT(12),o_scalarConvectionHistory(36);

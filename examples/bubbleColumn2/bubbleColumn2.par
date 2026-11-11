@@ -69,13 +69,9 @@ alphaInlet = 0.016667
 gasInletVelocity = 0.3
 # Initial UG plume peak (m/s), multiplied by the axial tanh profile.
 gasInitialVelocity = 0.3
-# Solved-UG test: full mixture forces, one-through alpha -> P/UM -> UG.
+# Solved-UG test: full mixture forces, lagged pressure predictor + current-pressure UG corrector.
 # UG evolves normally; alpha transport/filter settings are unchanged.
 frozenGasVelocityEnabled = 0
-# Solve alpha -> native P/UM -> UG, using the latest pressure exactly once.
-gasSolveAfterFluid = 1
-# First step plus every 10 steps; 1=each step, 0=off.
-gasSolveOrderLogInterval = 10
 smoothGasVelocityProfileEnabled = 1
 # Master switch for user UM forces, independent of whether UG is frozen.
 # UG pressure, gravity, drag and viscosity remain active.
@@ -131,9 +127,9 @@ gasPressureInletRampEndZ = 0.02
 gasPressureGradientMethod = 0
 # 0 uses rhoLiquid; positive values set a fixed reference density (kg/m^3).
 gasHydrostaticDensity = 0.0
-# Legacy-order option only; gasSolveAfterFluid=1 automatically disables it.
+# Optional extra UG Helmholtz correction after native pressure/UM solve.
 # 0 restores the one-through algorithm; 1 replaces predictor pressure by latest pressure.
-gasPressureCorrectorEnabled = 0
+gasPressureCorrectorEnabled = 1
 # Target gradient of newly solved pressure: 0=strong, 1=weak (not hydrostatic).
 gasPressureCorrectorGradientMethod = 0
 # Exponential relaxation of the selected lagged pressure gradient used by UG:
