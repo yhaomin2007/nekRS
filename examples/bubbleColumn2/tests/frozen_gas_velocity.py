@@ -6,7 +6,7 @@ import re
 
 case = Path(__file__).resolve().parents[1]
 s = (case / 'bubbleColumn2Terms.hpp').read_text()
-udf = (case / 'bubbleColumn2.udf').read_text()
+udf = (case / 'bubbleColumn2Legacy.udf').read_text()
 
 def function(marker):
     start = s.index(marker)

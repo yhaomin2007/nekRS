@@ -58,6 +58,6 @@ with tempfile.TemporaryDirectory() as tmp:
 repo=case.parents[1]
 core=(repo/'src/app/nrs/nrs.cpp').read_text()
 assert 'if (userProperties) {\n    userProperties(timeNew);\n  } else {' in core
-udf=(case/'bubbleColumn2.udf').read_text()
+udf=(case/'bubbleColumn2Legacy.udf').read_text()
 assert 'nrs->userProperties = &bubbleColumn2::updateProperties;' in udf
 print('Properties callback AVM: actual callback compiles; one invocation after diffusion reset, all scalar enable combinations, repeated updates and fluid properties passed. AVM numerics are not mocked as validated.')

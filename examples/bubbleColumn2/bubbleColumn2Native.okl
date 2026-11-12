@@ -1,0 +1,36 @@
+// Native advection supplies UG.grad(alpha). Retain gas compression explicitly.
+@kernel void alphaCompression(const dlong N,const dlong O,
+    @ restrict const dfloat *alpha,@ restrict const dfloat *gradUg,
+    @ restrict dfloat *source)
+{
+  for(dlong n=0;n<N;++n;@tile(p_blockSize,@outer,@inner))
+    source[n]=-alpha[n]*(gradUg[n]+gradUg[n+4*O]+gradUg[n+8*O]);
+}
+// History of completed-state UL. EXT coefficients are exactly those used by
+// native scalar forcing; repeated source probes refresh, rather than shift.
+@kernel void liquidEXT(const dlong N,const dlong O,const int stages,
+    const int first,const int advance,@ restrict const dfloat *coeff,
+    @ restrict const dfloat *ul,@ restrict dfloat *history,
+    @ restrict dfloat *predicted)
+{
+  for(dlong n=0;n<N;++n;@tile(p_blockSize,@outer,@inner)) {
+    for(int c=0;c<3;++c){
+      const dlong id=n+c*O,S=3*O;
+      if(first)for(int j=0;j<stages;++j)history[id+j*S]=ul[id];
+      else if(advance)for(int j=stages-1;j>0;--j)history[id+j*S]=history[id+(j-1)*S];
+      history[id]=ul[id];predicted[id]=0;
+      for(int j=0;j<stages;++j)predicted[id]+=coeff[j]*history[id+j*S];
+    }
+  }
+}
+// Replace only lambda*UL by lambda*UL_EXT; Ki itself stays lagged.
+@kernel void replaceGasDragLoad(const dlong N,const dlong O,
+    @ restrict const dfloat *lambda,@ restrict const dfloat *ul,
+    @ restrict const dfloat *ulEXT,@ restrict dfloat *source,
+    @ restrict dfloat *load)
+{
+  for(dlong n=0;n<N;++n;@tile(p_blockSize,@outer,@inner))for(int c=0;c<3;++c){
+    const dlong id=n+c*O;load[id]=lambda[n]*ulEXT[id];
+    source[id]+=load[id]-lambda[n]*ul[id];
+  }
+}

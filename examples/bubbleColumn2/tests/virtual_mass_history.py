@@ -65,7 +65,7 @@ with tempfile.TemporaryDirectory() as t:
  subprocess.run([str(Path(t)/'vm')],check=True)
 assert '(p.coupledVirtualMassEnabled ? 0.0 : p.virtualMassEnabled) * virtualMassRampFactor(nrs->tstep),' in terms
 assert 'p.virtualMassTimeDerivativeOrder == 2 && virtualMassHistorySamples >= 1' in terms
-udf=(root/'bubbleColumn2.udf').read_text()
+udf=(root/'bubbleColumn2Legacy.udf').read_text()
 execute=udf[udf.index('void UDF_ExecuteStep'):]
 assert 'virtualMassStartStep' not in execute  # delayed sources must still collect history
 assert 'updateVirtualMassHistory();' in execute

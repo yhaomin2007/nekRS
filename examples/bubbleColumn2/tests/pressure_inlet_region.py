@@ -135,6 +135,6 @@ body=s.split('inline void evaluatePointwiseTerms()')[1].split('inline void ')[0]
 assert body.index('opSEM::strongGrad(')<body.index('prepareGasPressureForcing();')<body.index('buildEquationTermsKernel(')
 assert 'o_liquidAcceleration,\n                           o_gradP,' in body
 assert 'o_gradPFilterHistory.resize(3 * offset)' in s
-udf=(case/'bubbleColumn2.udf').read_text()
+udf=(case/'bubbleColumn2Legacy.udf').read_text()
 for key in ['gaspressureinletregionenabled','gaspressureinletzeroendz','gaspressureinletrampendz']:assert key in udf
 print('UG pressure: strong/weak modes, inlet recovery, temporal history, prescribed hydrostatic density/gravity, pressure independence, mask bypass, buoyancy sign and padding passed.')

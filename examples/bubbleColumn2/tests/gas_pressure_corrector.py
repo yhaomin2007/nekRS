@@ -207,7 +207,7 @@ with tempfile.TemporaryDirectory() as tmp:
     (path/'modern.cpp').write_text(modern)
     subprocess.run(['g++','-std=c++17','-Wall','-Wextra','-Werror','-I',str(case),str(path/'modern.cpp'),'-o',str(path/'modern')],check=True)
     subprocess.run([str(path/'modern')],check=True)
-udf=(case/'bubbleColumn2.udf').read_text()
+udf=(case/'bubbleColumn2Legacy.udf').read_text()
 execute=udf.split('void UDF_ExecuteStep')[1]
 assert execute.index('correctGasPressure();')<execute.index('updateVirtualMassHistory();')
 assert execute.index('correctGasPressure();')<execute.index('if (nrs->checkpointStep)')

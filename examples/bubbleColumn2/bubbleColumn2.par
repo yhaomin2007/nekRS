@@ -2,13 +2,8 @@ userSections = CASEDATA
 
 [GENERAL]
 polynomialOrder = 5
-# Resolve degree-10 alpha*UG products before conservative differentiation.
-cubaturePolynomialOrder = 10
-# UG scalars require a new run or a converted UG restart.
-# startFrom = bubblecolumn0.f00036
 stopAt = numSteps
 numSteps = 100000
-#dt = initial=1.0e-5+targetCFL=0.01+max=1e-2
 dt = 1e-5
 timeStepper = tombo2
 checkpointInterval = 1000
@@ -21,7 +16,6 @@ equation = navierStokes+variableViscosity
 residualTol = 1e-6
 
 [FLUID VELOCITY]
-# Boundary IDs: 1=inlet, 2=outlet, 3=wall
 boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
 residualTol = 1e-6
 rho = 998.2
@@ -33,7 +27,6 @@ boundaryTypeMap = udfDirichlet, zeroNeumann, zeroNeumann
 residualTol = 1e-6
 transportCoeff = 1.0
 diffusionCoeff = 1e-5
-# NekRS native high-pass-filter relaxation. Use regularization = none to disable.
 regularization = hpfrt + nModes=1 + scalingCoeff=10.0
 
 [SCALAR UGX]
@@ -60,123 +53,23 @@ regularization = hpfrt + nModes=1 + scalingCoeff=10.0
 [CASEDATA]
 rhoLiquid = 998.2
 rhoGas = 1.2
-muLiquid = 1.0e-3
+muLiquid = 1e-3
 muGas = 1.8e-5
-# Fresh starts use an axial plume for alpha and UG; restart files take precedence.
-initialPlumeHeight = 0.05
-initialPlumeThickness = 0.01
 alphaInlet = 0.016667
 gasInletVelocity = 0.3
-# Initial UG plume peak (m/s), multiplied by the axial tanh profile.
 gasInitialVelocity = 0.3
-# Solved-UG test: full mixture forces, lagged pressure predictor + current-pressure UG corrector.
-# UG evolves normally; alpha transport/filter settings are unchanged.
-frozenGasVelocityEnabled = 0
-smoothGasVelocityProfileEnabled = 1
-# Master switch for user UM forces, independent of whether UG is frozen.
-# UG pressure, gravity, drag and viscosity remain active.
-mixtureForcingEnabled = 1
-# Transport isolation: omit user mixture forces while UG is prescribed.
-# 1 reproduces the original frozen-UG test with coupled mixture sources.
-frozenGasMixtureForcingEnabled = 0
-frozenGasWallRampWidth = 0.005
-# Circular column along z; radius=0 infers radius from wall boundary ID 3.
-frozenGasRadius = 0.0
-frozenGasCenterX = 0.0
-frozenGasCenterY = 0.0
-gravityX = 0.0
-gravityY = 0.0
+initialPlumeHeight = 0.05
+initialPlumeThickness = 0.01
+gravityX = 0
+gravityY = 0
 gravityZ = -9.81
-# Explicit filter of solved alpha each step, before clipping/properties/pressure.
-# Uses the user bubble-basis module; independent of native HPFRT regularization.
-# Strength 0 disables this filter. Modes: 1..N-1.
-alphaExplicitFilterModes = 1
-alphaExplicitFilterStrength = 0.05
 alphaFloor = 1e-6
-alphaClipEnabled = 1.0
-alphaMinimum = 0.0
-alphaMaximum = 1.0
-subtractAlphaDiffusion = 0.0
-subtractUgxDiffusion = 0.0
-subtractUgyDiffusion = 0.0
-subtractUgzDiffusion = 0.0
-zRampBottom = 0.9
-zRampTop = 0.95
-outletDampingFactor = 20.0
-gasVelocityClipEnabled = 0.0
-gasVelocityMaximum = 0.5
-volumeVelocityClipEnabled = 0.0
-volumeVelocityMaximum = 1.0
-gasMomentumCutoff = 1e-4
-gasMomentumFullyActive = 1e-3
-gasPressureEnabled = 1.0
-# 1: suppress all UG pressure-gradient components at inlet nodes (boundary ID 1).
-# Includes shared inlet/wall corner nodes; 0 retains pressure forcing everywhere.
-gasPressureInletMaskEnabled = 0
-# UG-only pressure-source layer using absolute mesh z coordinates (m here).
-# When enabled: zero through zeroEndZ, C1 smoothstep to one at rampEndZ.
-# This is independent of the inlet-node mask above. Default 0 preserves baseline.
-gasPressureInletRegionEnabled = 0
-gasPressureInletZeroEndZ = 0.01
-gasPressureInletRampEndZ = 0.02
-# Pressure gradient used in the UG source:
-# 0 = assembled strong gradient, 1 = mass-normalized weak gradient matching
-# the volume pressure operator used by the native NekRS velocity RHS.
-# 2 = prescribed gradP=rhoRef*gravity; ignores local pressure fluctuations.
-# Method 2 bypasses inlet masks/region and temporal pressure filtering.
-gasPressureGradientMethod = 0
-# 0 uses rhoLiquid; positive values set a fixed reference density (kg/m^3).
-gasHydrostaticDensity = 0.0
-# Optional extra UG Helmholtz correction after native pressure/UM solve.
-# 0 restores the one-through algorithm; 1 replaces predictor pressure by latest pressure.
-gasPressureCorrectorEnabled = 1
-# Target gradient of newly solved pressure: 0=strong, 1=weak (not hydrostatic).
-gasPressureCorrectorGradientMethod = 0
-# Exponential relaxation of the selected lagged pressure gradient used by UG:
-# gradP_used^n = (1-weight)*gradP_used^(n-1) + weight*gradP_lagged^n.
-# Set enabled=0 or weight=1 to recover the unfiltered lagged gradient.
-gasPressureGradientFilterEnabled = 0
-gasPressureGradientFilterWeight = 0.2
-dragEnabled = 1.0
-bubbleDiameter = 3.0e-3
-# Set to 0.0 to omit kinematic drift-stress divergence from volume momentum.
-driftStressEnabled = 1.0
-# Test: UG retains semi-implicit VM inertia; explicit UG VM and full UM VM use fluid EXT.
-virtualMassEnabled = 1.0
-mixtureVirtualMassEnabled = 1
-coupledVirtualMassEnabled = 0
-explicitVirtualMassEnabled = 0
-virtualMassExtrapolationEnabled = 1
+alphaClipEnabled = 1
+bubbleDiameter = 3e-3
+# VM retained from the preceding configuration; this is not a stable-VM claim.
+virtualMassEnabled = 1
 virtualMassCoefficient = 0.5
-# As in method1, UG is retained through dilute/zero-alpha regions.
-gasVelocityLowAlphaCutoffEnabled = 0
-smoothGasVelocityMaskEnabled = 0.0
-# Alpha/UG convection and explicit liquid VM use fluid EXT; other scalar sources retain EXT1.
-# Native BDF order, fluid EXT and all force treatments are unchanged.
-# Alpha uses cubature div(alpha*UG); UG uses cubature UG.grad(UG).
-# Gas drag is an implicit reaction with lagged liquid velocity; mixture drag stays explicit.
-# 0 disables only mixture drag; implicit UG drag and virtual mass are retained.
-mixtureDragEnabled = 1.0
-# Optional linear ramp of mixture drag only, based on native timestep count.
-mixtureDragRampEnabled = 0.0
-mixtureDragRampStartStep = 0
-mixtureDragRampSteps = 10000
-# Disable drag in BOTH phase/mixture equations when alpha < this threshold.
-# 0 preserves the previous drag behavior.
-dragAlphaCutoff = 0.0
-# Limit |ug-um| ONLY in the lagged drag coefficient (m/s).
-dragSlipLimitEnabled = 0.0
-dragSlipMaximum = 1.0
-# Optional explicit two-phase stress correction in volume-mixture momentum.
-# All experimental VM modes retain physical phase stresses and baseline correction.
-mixtureViscousCorrectionEnabled = 0.0
-# Liquid acceleration time derivative: 1=backward first order; 2=variable-step backward second order.
-virtualMassTimeDerivativeOrder = 1
-# No VM through step 100; completed-step acceleration histories still update.
 virtualMassStartStep = 100
-# Linear ramp over the next 10000 steps; full VM from step 10100 onward.
 virtualMassRampStep = 10000
-# UM retains volume averaging and div(UM)=0; explicit VM uses base pressure mobility.
-stabilityMonitorEnabled = 1.0
+virtualMassTimeDerivativeOrder = 1
 stabilityMonitorInterval = 10
-validationOutputInterval = 10

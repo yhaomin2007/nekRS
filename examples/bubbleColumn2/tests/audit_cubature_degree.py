@@ -7,7 +7,7 @@ import numpy as np
 from numpy.polynomial.legendre import Legendre, leggauss
 
 root = Path(__file__).resolve().parents[1]
-par = (root/'bubbleColumn2.par').read_text()
+par = (root/'bubbleColumn2Legacy.par').read_text()
 p = int(re.search(r'^polynomialOrder\s*=\s*(\d+)',par,re.M).group(1))
 cub = int(re.search(r'^cubaturePolynomialOrder\s*=\s*(\d+)',par,re.M).group(1))
 assert cub == 2*p

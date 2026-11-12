@@ -5,7 +5,7 @@
 #define UDF_Setup method2BaseSetup
 #define UDF_ExecuteStep method2BaseExecuteStep
 #define udfDirichlet method2UnusedInletBoundary
-#include "../bubbleColumn2/bubbleColumn2.udf"
+#include "../bubbleColumn2/bubbleColumn2Legacy.udf"
 #undef UDF_Setup0
 #undef UDF_LoadKernels
 #undef UDF_Setup

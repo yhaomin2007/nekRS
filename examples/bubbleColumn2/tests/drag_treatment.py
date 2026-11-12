@@ -6,7 +6,7 @@ import tempfile
 
 root = Path(__file__).resolve().parents[1]
 terms = (root / 'bubbleColumn2Terms.hpp').read_text()
-udf = (root / 'bubbleColumn2.udf').read_text()
+udf = (root / 'bubbleColumn2Legacy.udf').read_text()
 for obsolete in ('frozenDragEnabled', 'mixtureImplicitDragEnabled',
                  'implicitMixtureDrag', 'o_mixtureDragDiagonal',
                  'o_mixtureDragRate', 'addMixtureStressAndSplitDrag',

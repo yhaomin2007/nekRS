@@ -5,7 +5,7 @@ import tempfile
 
 case=Path(__file__).resolve().parents[1]
 terms=(case/'bubbleColumn2Terms.hpp').read_text()
-udf=(case/'bubbleColumn2.udf').read_text()
+udf=(case/'bubbleColumn2Legacy.udf').read_text()
 params=terms[terms.index('struct Parameters {'):terms.index('\nstatic Parameters p;')]
 start=udf.index('  nekrsCheck(p.coupledVirtualMassEnabled\n')
 end=udf.index('  platform->par->extract("casedata", "stabilitymonitorenabled"',start)

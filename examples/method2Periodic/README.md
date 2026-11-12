@@ -1,9 +1,12 @@
 # Method2 periodic verification cases
 
-These three cases reuse the **current sibling `bubbleColumn2` implementation**,
+These three cases retain the **archived `bubbleColumn2Legacy.udf` implementation**,
 including conservative alpha cubature, UG material convection, native fluid EXT
 coefficients for those operators, implicit UG drag, explicit UM drag and the UG
-current-pressure corrector. They do not alter bubbleColumn2 or NekRS core.
+current-pressure corrector. They do not alter the simplified active bubbleColumn2 case or NekRS core.
+They intentionally retain the previous transport/corrector algorithm to keep
+these existing verification baselines fixed. They do not validate the new
+native scalar transport path; see `bubbleColumn2/tests/README.md` for its checks.
 VM, clipping, HPFRT/AVM, explicit filters, inlet masks and outlet enhancement are
 off. All four scalars and UM/P are solved. Use FP64 for these verification runs.
 

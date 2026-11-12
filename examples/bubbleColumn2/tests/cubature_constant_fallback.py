@@ -71,7 +71,7 @@ with tempfile.TemporaryDirectory() as directory:
         # Exercise the actual UDF insertion with real OCCA JSON and header
         # assembly. A missing .asArray() silently stores a string that OCCA
         # does not emit; manually concatenating the header missed this bug.
-        udf=(case/'bubbleColumn2.udf').read_text()
+        udf=(case/'bubbleColumn2Legacy.udf').read_text()
         insertion=udf.split('  if (!interpolationHeader.empty()) {',1)[1].split('\n  }',1)[0]
         occa_root=parser.parents[1]
         routing='''#include <occa.hpp>

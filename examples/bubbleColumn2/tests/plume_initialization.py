@@ -44,7 +44,7 @@ with tempfile.TemporaryDirectory() as directory:
     subprocess.run(["g++", "-std=c++17", "-Wall", "-Wextra", "-Werror",
                     str(path / "check.cpp"), "-o", str(path / "check")], check=True)
     subprocess.run([str(path / "check")], check=True)
-udf = (root / "bubbleColumn2.udf").read_text()
+udf = (root / "bubbleColumn2Legacy.udf").read_text()
 assert "initialconditionmode" not in udf
 assert "initializeUniform" not in udf+source
 assert "p.initialPlumeThickness," in udf

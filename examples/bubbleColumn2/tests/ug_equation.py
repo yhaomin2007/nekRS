@@ -104,7 +104,7 @@ with tempfile.TemporaryDirectory() as t:
  subprocess.run(['g++','-std=c++17','-Wall','-Wextra','-Werror','-Wno-unknown-pragmas','-Wno-unused-parameter',str(f),'-o',str(Path(t)/'ug')],check=True)
  subprocess.run([str(Path(t)/'ug')],check=True)
 terms=(root/'bubbleColumn2Terms.hpp').read_text()
-par=(root/'bubbleColumn2.par').read_text();bc=(root/'bubbleColumn2Boundary.oudf').read_text()
+par=(root/'bubbleColumn2Legacy.par').read_text();bc=(root/'bubbleColumn2Boundary.oudf').read_text()
 assert 'scalars = ALPHA, UGX, UGY, UGZ' in par
 assert 'scalar ugz' in bc and '? bc->usrwrk[bc->idxVol] * p_UG_INLET : 0.0' in bc
 assert 'o_solution("qgx")' not in terms and 'o_solution("ugx")' in terms

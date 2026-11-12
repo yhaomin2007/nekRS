@@ -56,5 +56,5 @@ with tempfile.TemporaryDirectory() as directory:
     path=Path(directory);(path/'check.cpp').write_text(prefix+'inline void postProcessAlpha(double time, int)'+body+main)
     subprocess.run(['g++','-std=c++11',str(path/'check.cpp'),'-o',str(path/'check')],check=True)
     subprocess.run([str(path/'check')],check=True)
-assert 'nrs->postScalar = &bubbleColumn2::postProcessAlpha' in (case/'bubbleColumn2.udf').read_text()
+assert 'nrs->postScalar = &bubbleColumn2::postProcessAlpha' in (case/'bubbleColumn2Legacy.udf').read_text()
 print('Actual alpha postScalar: filter/assembly/BC/clip order, independent switches, separate filter/clipping volume changes passed.')

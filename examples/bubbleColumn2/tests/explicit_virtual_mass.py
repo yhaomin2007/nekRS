@@ -144,7 +144,7 @@ with tempfile.TemporaryDirectory() as tmp:
  subprocess.run(['g++','-std=c++17','-Wall','-Wextra','-Werror',str(f),'-o',str(f.with_suffix(''))],check=True)
  subprocess.run([str(f.with_suffix(''))],check=True)
 # Compile the actual mode guards, including incompatible paired-force switches.
-udf=(case/'bubbleColumn2.udf').read_text();par=(case/'bubbleColumn2.par').read_text()
+udf=(case/'bubbleColumn2Legacy.udf').read_text();par=(case/'bubbleColumn2Legacy.par').read_text()
 a=udf.index('  nekrsCheck(p.explicitVirtualMassEnabled < 0')
 b=udf.index('  nekrsCheck(p.coupledVirtualMassEnabled < 0',a)
 guard=udf[a:b]

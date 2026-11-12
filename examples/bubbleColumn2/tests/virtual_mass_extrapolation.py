@@ -173,10 +173,10 @@ with tempfile.TemporaryDirectory() as tmp:
  p=Path(tmp)/'check.cpp';p.write_text(cpp)
  subprocess.run(['g++','-std=c++17','-Wall','-Wextra','-Werror','-Wno-unknown-pragmas','-Wno-unused-parameter',str(p),'-o',str(p.with_suffix(''))],check=True)
  subprocess.run([str(p.with_suffix(''))],check=True)
-par=(case/'bubbleColumn2.par').read_text()
+par=(case/'bubbleColumn2Legacy.par').read_text()
 for key,value in [('virtualMassExtrapolationEnabled','1'),('explicitVirtualMassEnabled','0'),('coupledVirtualMassEnabled','0'),('mixtureVirtualMassEnabled','1'),('polynomialOrder','5'),('cubaturePolynomialOrder','10')]:
  assert re.search(r'^'+key+r'\s*=\s*'+value+r'\s*$',par,re.M)
-udf=(case/'bubbleColumn2.udf').read_text();a=udf.index('  nekrsCheck(p.virtualMassExtrapolationEnabled <');b=udf.index('  nekrsCheck(p.explicitVirtualMassEnabled <',a)
+udf=(case/'bubbleColumn2Legacy.udf').read_text();a=udf.index('  nekrsCheck(p.virtualMassExtrapolationEnabled <');b=udf.index('  nekrsCheck(p.explicitVirtualMassEnabled <',a)
 guard=udf[a:b]
 controls=r'''
 #include <cassert>
