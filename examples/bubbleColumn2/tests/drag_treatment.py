@@ -6,7 +6,7 @@ import tempfile
 
 root = Path(__file__).resolve().parents[1]
 terms = (root / 'bubbleColumn2Terms.hpp').read_text()
-udf = (root / 'bubbleColumn2Legacy.udf').read_text()
+udf = (root / 'bubbleColumn2.udf').read_text()
 for obsolete in ('frozenDragEnabled', 'mixtureImplicitDragEnabled',
                  'implicitMixtureDrag', 'o_mixtureDragDiagonal',
                  'o_mixtureDragRate', 'addMixtureStressAndSplitDrag',
@@ -14,15 +14,7 @@ for obsolete in ('frozenDragEnabled', 'mixtureImplicitDragEnabled',
                  'mixtureDragRampStartTime', 'mixtureDragRampDuration'):
     assert obsolete not in terms + udf
 assert 'userImplicitLinearTerm = &bubbleColumn2::implicitGasDrag' in udf
-def function(source, marker):
-    start = source.index(marker)
-    end = source.index('{', start) + 1
-    depth = 1
-    while depth:
-        depth += (source[end] == '{') - (source[end] == '}')
-        end += 1
-    return source[start:end]
-helper = function(terms, 'inline void freezeDragHistory()')
+helper = terms.split('inline void freezeDragHistory()')[1].split('inline void addExplicitSources')[0]
 okl = (root / 'bubbleColumn2Equations.okl').read_text()
 kernel = okl.split('@kernel void buildEquationTerms')[1].split('@kernel')[0]
 kernel = 'void buildEquationTerms' + kernel
@@ -33,7 +25,7 @@ values = dict(N=1, offset=2, rhoLiquid=1000, rhoGas=1, muLiquid=.001,
               muGas=.00001, alphaFloor=1e-6, gasPressureEnabled=0,
               dragEnabled=1, mixtureDragEnabled=1,
               dragAlphaCutoff=0, dragSlipLimitEnabled=0, dragSlipMaximum=1,
-              bubbleDiameter=.003, virtualMassEnabled=0, virtualMassCoefficient=0, mixtureVirtualMassEnabled=1,explicitVirtualMassEnabled=0,
+              bubbleDiameter=.003, virtualMassEnabled=0, virtualMassCoefficient=0,
               gravityX=0, gravityY=0, gravityZ=0)
 arrays = []
 call = []
@@ -71,7 +63,7 @@ struct Fluid{long fieldOffsetSum=6;Memory o_coeffEXT{3},o_EXT{18};} fluid;
 struct Nrs{int tstep=0;long fieldOffset=2;Mesh* meshV=&mesh;Scalar* scalar=&::scalar;Fluid* fluid=&::fluid;} nrsStore;auto nrs=&nrsStore;
 Memory o_gasDragSource{6},o_mixtureDragSource{6},o_previousGasDragSource{6},o_previousMixtureDragSource{6};
 '''
-cpp += helper + kernel
+cpp += 'inline void freezeDragHistory()' + helper + kernel
 cpp += '\nint main(){\n' + setup + r'''
  alpha[0]=.05; uv[0]=.2; ug[0]=1; ul[0]=(.2-.05)/.95;
 '''

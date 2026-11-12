@@ -1,105 +1,226 @@
-#include "bubbleColumn2Native.hpp"
+#include "bubbleColumn2Terms.hpp"
 #include "bubbleColumn2Cubature.hpp"
+
 #ifdef __okl__
 #include "bubbleColumn2.oudf"
 #endif
 
-void UDF_Setup0(MPI_Comm,setupAide &)
+void UDF_LoadKernels(deviceKernelProperties& kernelInfo)
 {
-  platform->options.setArgs("LOWMACH","FALSE");
-  platform->options.setArgs("FLUID PRESSURE ELLIPTIC COEFF FIELD","TRUE");
-  int N=0;platform->options.getArgs("POLYNOMIAL DEGREE",N);
-  // Same default formula as v26 parseGeneral.hpp; it is not a case parameter.
-  const int cubN=std::round(1.5*(N+1)-1)-1;
-  int requested=-1;platform->par->extract("general","cubaturepolynomialorder",requested);
-  nekrsCheck(requested!=-1,platform->comm.mpiComm(),EXIT_FAILURE,"%s",
-      "Method2 selects native cubature order automatically: remove cubaturePolynomialOrder from .par.\n");
-  platform->options.setArgs("ADVECTION TYPE","CUBATURE");
-  platform->options.setArgs("OVERINTEGRATION","TRUE");
-  platform->options.setArgs("CUBATURE POLYNOMIAL DEGREE",std::to_string(cubN));
-  const auto missing=bubbleColumn2::missingCubatureInterpolationHeader(N,cubN);
-  if(!missing.empty()){
-    platform->kernelInfo["headers"].asArray();platform->kernelInfo["headers"]+=missing;
+  kernelInfo.define("p_ALPHA_INLET") = bubbleColumn2::p.alphaInlet;
+  kernelInfo.define("p_UG_INLET") = bubbleColumn2::p.ugInlet;
+  bubbleColumn2::registerKernels(kernelInfo);
+}
+
+void UDF_Setup0(MPI_Comm, setupAide &)
+{
+  // The native velocity is the phase-volume average
+  //   u_v = (1-alpha) u_l + alpha u_g.
+  // For incompressible phases without phase change, div(u_v)=0 exactly.
+  // NekRS uses 1/rho in its pressure operator, so the property callback stores
+  // rho_p = 1 / ((1-alpha)/rho_l + alpha/rho_g).
+  platform->options.setArgs("LOWMACH", "FALSE");
+  platform->options.setArgs("FLUID PRESSURE ELLIPTIC COEFF FIELD", "TRUE");
+  // Core registrations copy platform->kernelInfo after setup0. OCCA emits
+  // literal headers after its includes, so this supplies only missing c_I.
+  int N = 0, cubN = 0;
+  platform->options.getArgs("POLYNOMIAL DEGREE", N);
+  platform->options.getArgs("CUBATURE POLYNOMIAL DEGREE", cubN);
+  const auto interpolationHeader = bubbleColumn2::missingCubatureInterpolationHeader(N, cubN);
+  if (!interpolationHeader.empty()) {
+    platform->kernelInfo["headers"].asArray();
+    platform->kernelInfo["headers"] += interpolationHeader;
   }
-  auto &p=bubbleColumn2::p;
-#define READ(KEY,FIELD) platform->par->extract("casedata",KEY,p.FIELD)
-  READ("rholiquid",rhoLiquid);READ("rhogas",rhoGas);READ("muliquid",muLiquid);READ("mugas",muGas);
-  READ("alphainlet",alphaInlet);READ("gasinletvelocity",ugInlet);READ("gasinitialvelocity",ugInitial);
-  READ("initialplumeheight",initialPlumeHeight);READ("initialplumethickness",initialPlumeThickness);
-  READ("gravityx",gravity[0]);READ("gravityy",gravity[1]);READ("gravityz",gravity[2]);
-  READ("alphafloor",alphaFloor);READ("alphaclipenabled",alphaClippingEnabled);
-  READ("bubblediameter",bubbleDiameter);READ("virtualmassenabled",virtualMassEnabled);
-  READ("virtualmasscoefficient",virtualMassCoefficient);READ("virtualmassstartstep",virtualMassStartStep);
-  READ("virtualmassrampstep",virtualMassRampStep);READ("virtualmasstimederivativeorder",virtualMassTimeDerivativeOrder);
-  READ("stabilitymonitorinterval",stabilityMonitorInterval);
-#undef READ
-  for(dfloat value:{p.rhoLiquid,p.rhoGas,p.muLiquid,p.muGas,p.bubbleDiameter,p.alphaFloor,
-      p.alphaInlet,p.initialPlumeThickness,p.initialPlumeHeight,p.virtualMassCoefficient,
-      p.gravity[0],p.gravity[1],p.gravity[2]})
-    nekrsCheck(!std::isfinite(value),platform->comm.mpiComm(),EXIT_FAILURE,"%s","Nonfinite method2 parameter.\n");
-  nekrsCheck(!(p.rhoLiquid>0 && p.rhoGas>0 && p.muLiquid>0 && p.muGas>0 && p.bubbleDiameter>0
-      && p.alphaFloor>0 && p.alphaFloor<1 && p.alphaInlet>=0 && p.alphaInlet<=1
-      && p.initialPlumeThickness>0 && p.initialPlumeHeight>=0 && p.virtualMassCoefficient>=0)
-      || !std::isfinite(p.ugInlet) || !std::isfinite(p.ugInitial)
-      || (p.virtualMassEnabled!=0 && p.virtualMassEnabled!=1)
-      || (p.alphaClippingEnabled!=0 && p.alphaClippingEnabled!=1)
-      || p.virtualMassStartStep<0 || p.virtualMassRampStep<0 || p.stabilityMonitorInterval<1
-      || (p.virtualMassTimeDerivativeOrder!=1 && p.virtualMassTimeDerivativeOrder!=2),
-      platform->comm.mpiComm(),EXIT_FAILURE,"%s","Invalid simplified method2 phase/VM/initial parameters.\n");
+  auto &p = bubbleColumn2::p;
+  platform->par->extract("casedata", "rholiquid", p.rhoLiquid);
+  platform->par->extract("casedata", "rhogas", p.rhoGas);
+  platform->par->extract("casedata", "muliquid", p.muLiquid);
+  platform->par->extract("casedata", "mugas", p.muGas);
+  platform->par->extract("casedata", "alphainlet", p.alphaInlet);
+  platform->par->extract("casedata", "gasinletvelocity", p.ugInlet);
+  p.ugInitial = p.ugInlet;
+  platform->par->extract("casedata", "uginitial", p.ugInitial);
+  platform->par->extract("casedata", "gasinitialvelocity", p.ugInitial);
+  platform->par->extract("casedata", "initialplumeheight", p.initialPlumeHeight);
+  platform->par->extract("casedata", "initialplumethickness", p.initialPlumeThickness);
+  nekrsCheck(!(std::isfinite(p.initialPlumeHeight) && p.initialPlumeHeight >= 0.0
+               && std::isfinite(p.initialPlumeThickness) && p.initialPlumeThickness > 0.0
+               && std::isfinite(p.alphaInlet) && p.alphaInlet >= 0.0 && p.alphaInlet <= 1.0
+               && std::isfinite(p.ugInlet) && std::isfinite(p.ugInitial) && std::isfinite(p.rhoLiquid) && p.rhoLiquid > 0.0
+               && std::isfinite(p.rhoGas) && p.rhoGas > 0.0),
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "%s", "Plume initialization requires valid height/thickness, alphaInlet, "
+             "gasInitialVelocity and positive phase densities.\n");
+  platform->par->extract("casedata", "gravityx", p.gravity[0]);
+  platform->par->extract("casedata", "gravityy", p.gravity[1]);
+  platform->par->extract("casedata", "gravityz", p.gravity[2]);
+  platform->par->extract("casedata", "alphafloor", p.alphaFloor);
+  // Retain the old spelling as an alias; the documented key takes precedence.
+  platform->par->extract("casedata", "alphaclippenabled", p.alphaClippingEnabled);
+  platform->par->extract("casedata", "alphaclipenabled", p.alphaClippingEnabled);
+  platform->par->extract("casedata", "alphaexplicitfiltermodes", p.alphaExplicitFilterModes);
+  platform->par->extract("casedata", "alphaexplicitfilterstrength", p.alphaExplicitFilterStrength);
+  platform->par->extract("casedata", "gasvelocitylowalphacutoffenabled", p.gasVelocityLowAlphaCutoffEnabled);
+  platform->par->extract("casedata", "alphaminimum", p.alphaMinimum);
+  platform->par->extract("casedata", "alphamaximum", p.alphaMaximum);
+  platform->par->extract(
+      "casedata", "subtractalphadiffusion", p.subtractAlphaDiffusion);
+  platform->par->extract("casedata", "subtractugxdiffusion", p.subtractUgDiffusion[0]);
+  platform->par->extract("casedata", "subtractugydiffusion", p.subtractUgDiffusion[1]);
+  platform->par->extract("casedata", "subtractugzdiffusion", p.subtractUgDiffusion[2]);
+  platform->par->extract("casedata", "zrampbottom", p.zRampBottom);
+  platform->par->extract("casedata", "zramptop", p.zRampTop);
+  platform->par->extract("casedata", "outletdampingfactor", p.outletDampingFactor);
+  platform->par->extract("casedata",
+                         "smoothgasvelocitymaskenabled",
+                         p.smoothGasVelocityMaskEnabled);
+  platform->par->extract("casedata", "gasvelocityclipenabled", p.gasVelocityClipEnabled);
+  platform->par->extract("casedata", "gasvelocitymaximum", p.gasVelocityMaximum);
+  platform->par->extract(
+      "casedata", "volumevelocityclipenabled", p.volumeVelocityClipEnabled);
+  platform->par->extract(
+      "casedata", "volumevelocitymaximum", p.volumeVelocityMaximum);
+  platform->par->extract("casedata", "gasmomentumcutoff", p.gasMomentumCutoff);
+  platform->par->extract(
+      "casedata", "gasmomentumfullyactive", p.gasMomentumFullyActive);
+  platform->par->extract("casedata", "gaspressureenabled", p.gasPressureEnabled);
+  platform->par->extract("casedata", "gaspressureinletmaskenabled", p.gasPressureInletMaskEnabled);
+  platform->par->extract(
+      "casedata", "gaspressuregradientmethod", p.gasPressureGradientMethod);
+  platform->par->extract("casedata",
+                         "gaspressuregradientfilterenabled",
+                         p.gasPressureGradientFilterEnabled);
+  platform->par->extract("casedata",
+                         "gaspressuregradientfilterweight",
+                         p.gasPressureGradientFilterWeight);
+  platform->par->extract("casedata", "dragenabled", p.dragEnabled);
+  platform->par->extract("casedata", "mixturedragrampenabled", p.mixtureDragRampEnabled);
+  platform->par->extract("casedata", "mixturedragrampstartstep", p.mixtureDragRampStartStep);
+  platform->par->extract("casedata", "mixturedragrampsteps", p.mixtureDragRampSteps);
+  nekrsCheck(p.mixtureDragRampEnabled != 0.0
+                 && (p.mixtureDragRampStartStep < 0 || p.mixtureDragRampSteps <= 0),
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "Mixture drag ramp requires startStep >= 0 and rampSteps > 0 "
+             "(startStep=%d, rampSteps=%d)\n",
+             p.mixtureDragRampStartStep, p.mixtureDragRampSteps);
+  platform->par->extract("casedata", "mixturedragenabled", p.mixtureDragEnabled);
+  platform->par->extract("casedata", "dragalphacutoff", p.dragAlphaCutoff);
+  platform->par->extract("casedata", "dragsliplimitenabled", p.dragSlipLimitEnabled);
+  platform->par->extract("casedata", "dragslipmaximum", p.dragSlipMaximum);
+  nekrsCheck(p.dragSlipLimitEnabled != 0.0
+                 && !(std::isfinite(p.dragSlipMaximum) && p.dragSlipMaximum > 0.0),
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "dragSlipMaximum must be finite and positive, got %g\n", p.dragSlipMaximum);
+  nekrsCheck(!(p.dragAlphaCutoff >= 0.0 && p.dragAlphaCutoff <= 1.0),
+             platform->comm.mpiComm(), EXIT_FAILURE, "dragAlphaCutoff must be in [0,1], got %g\n", p.dragAlphaCutoff);
+  platform->par->extract("casedata", "bubblediameter", p.bubbleDiameter);
+  platform->par->extract("casedata", "driftstressenabled", p.driftStressEnabled);
+  platform->par->extract("casedata", "mixtureviscouscorrectionenabled",
+                         p.mixtureViscousCorrectionEnabled);
+  platform->par->extract("casedata", "virtualmassenabled", p.virtualMassEnabled);
+  platform->par->extract("casedata", "virtualmasscoefficient", p.virtualMassCoefficient);
+  platform->par->extract("casedata", "virtualmasstimederivativeorder", p.virtualMassTimeDerivativeOrder);
+  platform->par->extract("casedata", "virtualmassstartstep", p.virtualMassStartStep);
+  platform->par->extract("casedata", "virtualmassrampstep", p.virtualMassRampStep);
+  nekrsCheck(!(std::isfinite(p.rhoGas) && p.rhoGas > 0.0
+                 && std::isfinite(p.rhoLiquid) && p.rhoLiquid > 0.0
+                 && std::isfinite(p.virtualMassCoefficient) && p.virtualMassCoefficient >= 0.0
+                 && std::isfinite(p.virtualMassEnabled) && p.virtualMassEnabled >= 0.0),
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "%s", "UG added inertia requires positive finite densities and nonnegative finite VM controls.\n");
+  nekrsCheck((p.virtualMassTimeDerivativeOrder != 1 && p.virtualMassTimeDerivativeOrder != 2)
+               || p.virtualMassStartStep < 0 || p.virtualMassRampStep < 0,
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "virtualMassTimeDerivativeOrder must be 1 or 2; virtualMassStartStep and virtualMassRampStep must be >= 0 (order=%d start=%d ramp=%d)\n",
+             p.virtualMassTimeDerivativeOrder, p.virtualMassStartStep, p.virtualMassRampStep);
+  platform->par->extract("casedata", "stabilitymonitorenabled", p.stabilityMonitorEnabled);
+  platform->par->extract("casedata", "stabilitymonitorinterval", p.stabilityMonitorInterval);
+  platform->par->extract(
+      "casedata", "validationoutputinterval", p.validationOutputInterval);
 }
-void UDF_LoadKernels(deviceKernelProperties &info)
-{
-  info.define("p_ALPHA_INLET")=bubbleColumn2::p.alphaInlet;
-  info.define("p_UG_INLET")=bubbleColumn2::p.ugInlet;
-  bubbleColumn2::registerKernels(info);
-}
+
 void UDF_Setup()
 {
-  using namespace bubbleColumn2;
-  nekrsCheck(nrs->scalar->NSfields!=4 || nrs->scalar->anyCvodeSolver || nrs->scalar->Nsubsteps
-      || nrs->advectionSubcycingSteps || nrs->geom || nrs->neknek,
-      platform->comm.mpiComm(),EXIT_FAILURE,"%s","Method2 requires four fixed-mesh native scalars, no subcycling/NekNek.\n");
-  for(int i=0;i<4;++i){
-    nekrsCheck(nrs->scalar->nameToIndex.at(names[i])!=i || !nrs->scalar->compute[i],
-        platform->comm.mpiComm(),EXIT_FAILURE,"%s","Expected active ALPHA,UGX,UGY,UGZ.\n");
-    auto range=platform->linAlg->minMax(nrs->meshV->Nlocal,{nrs->scalar->o_transportCoeff(names[i])},platform->comm.mpiComm());
-    nekrsCheck(std::abs(range[0].first-1)>1e-12 || std::abs(range[0].second-1)>1e-12,
-        platform->comm.mpiComm(),EXIT_FAILURE,"%s","Scalar transportCoeff must be 1.\n");
+  nekrsCheck(nrs->scalar->NSfields != 4 || nrs->scalar->anyCvodeSolver,
+             platform->comm.mpiComm(), EXIT_FAILURE,
+             "%s", "bubbleColumn2 requires ALPHA,UGX,UGY,UGZ with native scalar solvers.\n");
+  const char *names[4] = {"alpha", "ugx", "ugy", "ugz"};
+  for (int i = 0; i < 4; ++i) {
+    auto it = nrs->scalar->nameToIndex.find(names[i]);
+    nekrsCheck(it == nrs->scalar->nameToIndex.end() || it->second != i,
+               platform->comm.mpiComm(), EXIT_FAILURE,
+               "Expected scalar %s at index %d\n", names[i], i);
+    auto range = platform->linAlg->minMax(nrs->meshV->Nlocal,
+        {nrs->scalar->o_transportCoeff(names[i])}, platform->comm.mpiComm());
+    nekrsCheck(std::abs(range[0].first - 1.0) > 1e-12 || std::abs(range[0].second - 1.0) > 1e-12,
+               platform->comm.mpiComm(), EXIT_FAILURE,
+               "Scalar %s requires transportCoeff=1 for the normalized UG equations\n", names[i]);
   }
-  nekrsCheck(nrs->scalar->vFieldOffset!=nrs->fieldOffset,
-      platform->comm.mpiComm(),EXIT_FAILURE,"%s","Method2 requires a shared scalar/velocity mesh layout.\n");
-  allocate();
-  if(platform->options.getArgs("RESTART FILE NAME").empty())
-    initializePlumeKernel(nrs->meshV->Nlocal,nrs->fieldOffset,p.alphaInlet,p.ugInitial,
-        p.initialPlumeHeight,p.initialPlumeThickness,nrs->meshV->o_z,
-        nrs->scalar->o_solution("alpha"),nrs->scalar->o_solution("ugx"),
-        nrs->scalar->o_solution("ugy"),nrs->scalar->o_solution("ugz"),nrs->fluid->o_U);
-  initializeHistory();
-  nrs->userSource=&addExplicitSources;nrs->userProperties=&updateProperties;
-  nrs->postScalar=&postProcessAlpha;nrs->userDivergence=&enforceZeroDivergence;
-  nrs->scalar->userImplicitLinearTerm=&implicitGasDrag;
-  if(platform->comm.mpiRank()==0){
-    int cubN=0;platform->options.getArgs("CUBATURE POLYNOMIAL DEGREE",cubN);
-    printf("METHOD2 SIMPLE: alpha/UG -> native P/UM; NO UG pressure correction.\n");
-    printf("METHOD2 SIMPLE: native UG-advection and native source EXT; automatic cubature order=%d.\n",cubN);
-    printf("METHOD2 SIMPLE: UG drag=lambda(lagged)*UL_EXT-lambda*UG; full UM drag uses native EXT.\n");
-    printf("METHOD2 SIMPLE: uniform inlet (wall-rim precedence), no extra alpha filter, no outlet ramp; VM enabled=%g.\n",p.virtualMassEnabled);
+  bubbleColumn2::allocate();
+  if (platform->options.getArgs("RESTART FILE NAME").empty()) {
+    const auto &p = bubbleColumn2::p;
+    bubbleColumn2::initializePlumeKernel(
+        nrs->meshV->Nlocal, nrs->fieldOffset,
+        p.alphaInlet, p.ugInitial, p.initialPlumeHeight, p.initialPlumeThickness,
+        nrs->meshV->o_z,
+        nrs->scalar->o_solution("alpha"), nrs->scalar->o_solution("ugx"),
+        nrs->scalar->o_solution("ugy"), nrs->scalar->o_solution("ugz"), nrs->fluid->o_U);
   }
+  bubbleColumn2::initializeHistory();
+  nrs->userSource = &bubbleColumn2::addExplicitSources;
+  if (platform->comm.mpiRank() == 0)
+    printf("bubbleColumn2 UG: scalars-first order; conservative cubature alpha and material UG transport; scalar EXT1; UM divergence zero\n");
+  if (platform->comm.mpiRank() == 0 && bubbleColumn2::p.virtualMassEnabled != 0.0)
+    printf("bubbleColumn2 virtual mass: implicit gas material inertia, lagged liquid acceleration order=%d, startStep=%d rampStep=%d; UM VM explicit; history collected during delay\n",
+           bubbleColumn2::p.virtualMassTimeDerivativeOrder, bubbleColumn2::p.virtualMassStartStep,
+           bubbleColumn2::p.virtualMassRampStep);
+  if (platform->comm.mpiRank() == 0)
+    printf("bubbleColumn2 drag: UG implicit reaction with lagged liquid velocity; mixture explicit; "
+           "drag excluded from EXT extrapolation\n");
+  if (bubbleColumn2::p.mixtureDragRampEnabled != 0.0 && platform->comm.mpiRank() == 0)
+    printf("bubbleColumn2 mixture drag ramp: startStep=%d rampSteps=%d; "
+           "linear step ramp; explicit mixture drag excluded from EXT extrapolation\n",
+           bubbleColumn2::p.mixtureDragRampStartStep, bubbleColumn2::p.mixtureDragRampSteps);
+  nrs->postScalar = &bubbleColumn2::postProcessAlpha;
+  nrs->scalar->userImplicitLinearTerm = &bubbleColumn2::implicitGasDrag;
+  nrs->userProperties = &bubbleColumn2::updateProperties;
+  nrs->userDivergence = &bubbleColumn2::enforceZeroDivergence;
 }
-void UDF_ExecuteStep(double time,int step)
+
+void UDF_ExecuteStep(double time, int tstep)
 {
-  using namespace bubbleColumn2;
-  reconstructLiquidVelocity();
-  if(step>0 && p.virtualMassEnabled!=0)updateVirtualMassHistory();
-  if(step>0 && step%p.stabilityMonitorInterval==0){
-    const auto range=platform->linAlg->minMax(nrs->meshV->Nlocal,{nrs->scalar->o_solution("alpha")},platform->comm.mpiComm());
-    const dfloat cfl=computeGasCfl();
-    if(platform->comm.mpiRank()==0)printf("METHOD2 SIMPLE step=%d alphaMin/Max=(%.8e,%.8e) UG_CFL=%.8e\n",step,range[0].first,range[0].second,cfl);
+  // Apply an emergency magnitude limiter immediately after the fluid solve so
+  // the bounded volume velocity is used by diagnostics, output, and the next
+  // timestep/CFL evaluation.
+  bubbleColumn2::clipVolumeVelocity();
+  if (tstep > 0 && bubbleColumn2::p.virtualMassEnabled != 0.0) {
+    bubbleColumn2::updateVirtualMassHistory();
   }
-  if(nrs->checkpointStep){
-    writeVector("ug",time,o_ug);writeVector("ul",time,o_ul);
-    opSEM::strongGrad(nrs->meshV,nrs->fieldOffset,nrs->fluid->o_P,o_gradP);
-    writeVector("gps",time,o_gradP);writeVector("gpp",time,o_pressureSample);
-    nrs->copyToNek(time,step);nek::userchk();
+  if (tstep > 0) {
+    bubbleColumn2::printStabilityMonitors(time, tstep);
+  }
+  if (nrs->checkpointStep) {
+    // Write reconstructed phase velocities as separate vector fields without
+    // replacing the transported UG checkpoint variables used for restart.
+    bubbleColumn2::reconstructGasVelocity();
+    bubbleColumn2::reconstructLiquidVelocity();
+    const dlong offset = nrs->fieldOffset;
+    std::vector<deviceMemory<dfloat>> gasVelocity = {
+        bubbleColumn2::o_ug.slice(0 * offset, nrs->meshV->Nlocal),
+        bubbleColumn2::o_ug.slice(1 * offset, nrs->meshV->Nlocal),
+        bubbleColumn2::o_ug.slice(2 * offset, nrs->meshV->Nlocal)};
+    nrs->writeToFile(
+        "ug", time, nrs->meshV, {{"velocity", gasVelocity}});
+    std::vector<deviceMemory<dfloat>> liquidVelocity = {
+        bubbleColumn2::o_ul.slice(0 * offset, nrs->meshV->Nlocal),
+        bubbleColumn2::o_ul.slice(1 * offset, nrs->meshV->Nlocal),
+        bubbleColumn2::o_ul.slice(2 * offset, nrs->meshV->Nlocal)};
+    nrs->writeToFile(
+        "ul", time, nrs->meshV, {{"velocity", liquidVelocity}});
+    nrs->copyToNek(time, tstep);
+    nek::userchk();
+  }
+  if (tstep > 0) {
+    bubbleColumn2::writeValidationChecks(time, tstep);
   }
 }

@@ -7,9 +7,7 @@
 #include <vector>
 
 #include "opSEM.hpp"
-#include "avm.hpp"
 #include "explicitFilter.hpp"
-#include "bubbleColumn2Elliptic.hpp"
 
 namespace bubbleColumn2
 {
@@ -21,13 +19,6 @@ struct Parameters {
   dfloat alphaInlet;
   dfloat ugInlet;
   dfloat ugInitial = 0.0;
-  int frozenGasVelocityEnabled = 0;
-  int smoothGasVelocityProfileEnabled = 0;
-  int mixtureForcingEnabled = 1;
-  int frozenGasMixtureForcingEnabled = 0;
-  dfloat frozenGasWallRampWidth = 0.005;
-  dfloat frozenGasRadius = 0.0; // 0: infer from wall boundary ID 3
-  dfloat frozenGasCenterX = 0.0, frozenGasCenterY = 0.0;
   dfloat initialPlumeHeight = 0.05;
   dfloat initialPlumeThickness = 0.01;
   dfloat gravity[3];
@@ -52,13 +43,7 @@ struct Parameters {
   dfloat gasMomentumFullyActive;
   dfloat gasPressureEnabled;
   int gasPressureInletMaskEnabled = 0;
-  int gasPressureInletRegionEnabled = 0;
-  dfloat gasPressureInletZeroEndZ = 0.01;
-  dfloat gasPressureInletRampEndZ = 0.02;
   int gasPressureGradientMethod = 0;
-  dfloat gasHydrostaticDensity = 0.0; // 0 uses rhoLiquid
-  int gasPressureCorrectorEnabled = 0;
-  int gasPressureCorrectorGradientMethod = 0; // 0 strong, 1 weak; never hydrostatic
   dfloat gasPressureGradientFilterEnabled = 0.0;
   dfloat gasPressureGradientFilterWeight = 0.2;
   dfloat dragEnabled;
@@ -73,10 +58,6 @@ struct Parameters {
   dfloat driftStressEnabled;
   dfloat mixtureViscousCorrectionEnabled = 0.0;
   dfloat virtualMassEnabled;
-  int mixtureVirtualMassEnabled = 1;
-  int coupledVirtualMassEnabled = 0;
-  int explicitVirtualMassEnabled = 0;
-  int virtualMassExtrapolationEnabled = 0;
   dfloat virtualMassCoefficient;
   int virtualMassTimeDerivativeOrder = 2;
   int virtualMassStartStep = 0;
@@ -95,13 +76,6 @@ static occa::kernel gasInterpolateKernel, gasCubatureProductsKernel;
 static occa::kernel gasProjectKernel, alphaConservativeCubatureKernel;
 static deviceMemory<dfloat> o_gasAdvector;
 static deviceMemory<dfloat> o_scalarCoeffEXT;
-static deviceMemory<dfloat> o_scalarConvectionCurrent, o_scalarConvectionEXT;
-static deviceMemory<dfloat> o_scalarConvectionHistory;
-static occa::kernel extrapolateScalarConvectionKernel;
-static int scalarConvectionHistoryStep = -1;
-static deviceMemory<dfloat> o_gasVirtualMassHistory;
-static occa::kernel extrapolateGasVirtualMassKernel;
-static int gasVirtualMassHistoryStep = -1;
 
 static deviceMemory<dfloat> o_nativeTransportAdvection;
 static deviceMemory<dfloat> o_gradUv;
@@ -109,7 +83,6 @@ static deviceMemory<dfloat> o_exactMixtureStress, o_baseNativeStress;
 static deviceMemory<dfloat> o_divExactMixtureStress, o_divBaseNativeStress;
 static occa::kernel buildMixtureStressCorrectionKernel, addMixtureStressCorrectionKernel;
 static deviceMemory<dfloat> o_ug;
-static deviceMemory<dfloat> o_frozenUg;
 static deviceMemory<dfloat> o_ul;
 static deviceMemory<dfloat> o_ulPrevious;
 static deviceMemory<dfloat> o_ugPrevious;
@@ -121,18 +94,6 @@ static deviceMemory<dfloat> o_virtualMassRelativeAcceleration, o_liquidAccelerat
 static deviceMemory<dfloat> o_qg;
 static deviceMemory<dfloat> o_gradUg;
 static deviceMemory<dfloat> o_gradP;
-// Snapshot the selected predictor gradient before later callbacks overwrite it.
-static deviceMemory<dfloat> o_ugPredictorPressureGradient;
-static deviceMemory<dfloat> o_ugPressureUsed, o_ugCorrectorDiff, o_ugCorrectorLambda;
-static deviceMemory<dfloat> o_ugCorrectorDelta, o_ugCorrectorRhs;
-static int ugPressureSourceStep = -1, ugPressureCorrectedStep = -1;
-static int ugOperatorStep[3] = {-1, -1, -1};
-static dfloat ugPressureSourceScale = 0.0;
-static deviceMemory<dfloat> o_coupledVMCoefficients, o_liquidStress;
-static deviceMemory<dfloat> o_divLiquidStress, o_coupledMixtureStress;
-static deviceMemory<dfloat> o_ugCorrectorPressureResponse;
-static occa::kernel configureCoupledVirtualMassKernel, addCoupledVMStressKernel;
-static deviceMemory<dfloat> o_gradPFilterHistory, o_gasPressureRegionWeight;
 static deviceMemory<dfloat> o_gradPStrong, o_gradPWeak;
 static deviceMemory<dfloat> o_gasPressureInletMask, o_inletVelocityWeight;
 static bool pressureGradientFilterInitialized = false;
@@ -153,7 +114,6 @@ static deviceMemory<dfloat> o_ugSource;
 static deviceMemory<dfloat> o_dragLambda;
 static deviceMemory<dfloat> o_mixtureDragSource;
 static deviceMemory<dfloat> o_previousMixtureDragSource;
-static deviceMemory<dfloat> o_mixtureVirtualMassSource, o_previousMixtureVirtualMassSource;
 static deviceMemory<dfloat> o_mixtureInterphaseAcceleration;
 static deviceMemory<dfloat> o_mixtureForce;
 static deviceMemory<dfloat> o_monitorMagnitude;
@@ -252,12 +212,6 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
     updateVirtualMassHistoryKernel =
         platform->kernelRequests.load(request, "updateVirtualMassHistory");
     buildEquationTermsKernel = platform->kernelRequests.load(request, "buildEquationTerms");
-    extrapolateScalarConvectionKernel =
-        platform->kernelRequests.load(request, "extrapolateScalarConvection");
-    extrapolateGasVirtualMassKernel =
-        platform->kernelRequests.load(request, "extrapolateGasVirtualMass");
-    configureCoupledVirtualMassKernel = platform->kernelRequests.load(request, "configureCoupledVirtualMass");
-    addCoupledVMStressKernel = platform->kernelRequests.load(request, "addCoupledVMStress");
     buildMixtureForceKernel = platform->kernelRequests.load(request, "buildMixtureForce");
     buildGasPressureAccelerationMonitorKernel =
         platform->kernelRequests.load(request, "buildGasPressureAccelerationMonitor");
@@ -266,24 +220,6 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
     buildOutletRampFactorKernel =
         platform->kernelRequests.load(request, "buildOutletRampFactor");
   }
-}
-
-// Fixed-mesh UG pressure-source weight. z coordinates are in mesh units.
-inline dfloat gasPressureInletRampWeight(dfloat z)
-{
-  if (!p.gasPressureInletRegionEnabled) return 1.0;
-  dfloat t = (z - p.gasPressureInletZeroEndZ)
-      / (p.gasPressureInletRampEndZ - p.gasPressureInletZeroEndZ);
-  t = std::max(dfloat(0), std::min(dfloat(1), t));
-  return t * t * (3.0 - 2.0 * t);
-}
-
-// Axis-aligned circular column: C1 transition from zero at r=R to a
-// uniform core at r<=R-width. Independent of alpha and axial position.
-inline dfloat frozenGasWallWeight(dfloat r, dfloat radius, dfloat width)
-{
-  const dfloat s = std::max(dfloat(0), std::min(dfloat(1), (radius-r)/width));
-  return s*s*(3-2*s);
 }
 
 inline void allocate()
@@ -297,19 +233,9 @@ inline void allocate()
              platform->comm.mpiComm(), EXIT_FAILURE,
              "%s", "Gas transport requires a fixed mesh.\n");
   nekrsCheck(p.gasPressureInletMaskEnabled < 0 || p.gasPressureInletMaskEnabled > 1
-                 || p.gasPressureGradientMethod < 0 || p.gasPressureGradientMethod > 2,
+                 || p.gasPressureGradientMethod < 0 || p.gasPressureGradientMethod > 1,
              platform->comm.mpiComm(), EXIT_FAILURE,
-             "%s", "Gas pressure mask must be 0/1; gradient method must be 0, 1 or 2.\n");
-  nekrsCheck(!std::isfinite(p.gasHydrostaticDensity) || p.gasHydrostaticDensity < 0.0,
-             platform->comm.mpiComm(), EXIT_FAILURE,
-             "%s", "gasHydrostaticDensity must be finite and nonnegative (0 uses rhoLiquid).\n");
-  nekrsCheck(p.gasPressureInletRegionEnabled < 0 || p.gasPressureInletRegionEnabled > 1
-                 || (p.gasPressureInletRegionEnabled
-                     && (!std::isfinite(p.gasPressureInletZeroEndZ)
-                         || !std::isfinite(p.gasPressureInletRampEndZ)
-                         || p.gasPressureInletRampEndZ <= p.gasPressureInletZeroEndZ)),
-             platform->comm.mpiComm(), EXIT_FAILURE,
-             "%s", "Gas pressure inlet region requires enabled=0/1 and finite rampEndZ > zeroEndZ.\n");
+             "%s", "Gas pressure mask/gradient method must be 0 or 1.\n");
   nekrsCheck(!std::isfinite(p.gasPressureGradientFilterWeight)
                  || p.gasPressureGradientFilterWeight <= 0 || p.gasPressureGradientFilterWeight > 1,
              platform->comm.mpiComm(), EXIT_FAILURE,
@@ -322,11 +248,6 @@ inline void allocate()
   const dlong cubOffset = nrs->meshV->Nelements * nrs->meshV->cubNp;
   o_gasTransportFields.resize(4 * offset);
   o_gasTransport.resize(4 * offset);
-  o_scalarConvectionCurrent.resize(4 * offset);
-  o_scalarConvectionEXT.resize(4 * offset);
-  o_scalarConvectionHistory.resize(nrs->fluid->o_coeffEXT.size() * 4 * offset);
-  if (p.virtualMassExtrapolationEnabled)
-    o_gasVirtualMassHistory.resize(nrs->fluid->o_coeffEXT.size() * 3 * offset);
   o_gasCubatureFields.resize(4 * cubOffset);
   o_gasCubatureProducts.resize(4 * cubOffset);
   o_gasAdvector.resize(3 * offset);
@@ -393,27 +314,9 @@ inline void allocate()
   o_gradUl.resize(9 * offset);
   o_virtualMassRelativeAcceleration.resize(3 * offset);
   o_liquidAcceleration.resize(3 * offset);
-  o_mixtureVirtualMassSource.resize(3 * offset);
-  o_previousMixtureVirtualMassSource.resize(3 * offset);
   o_qg.resize(3 * offset);
   o_gradUg.resize(9 * offset);
   o_gradP.resize(3 * offset);
-  o_ugPredictorPressureGradient.resize(3 * offset);
-  if (p.coupledVirtualMassEnabled) {
-    o_coupledVMCoefficients.resize(4 * offset);
-    o_liquidStress.resize(9 * offset);
-    o_divLiquidStress.resize(3 * offset);
-    o_coupledMixtureStress.resize(3 * offset);
-    o_ugCorrectorPressureResponse.resize(offset);
-  }
-  if (p.gasPressureCorrectorEnabled) {
-    o_ugPressureUsed.resize(3 * offset);
-    o_ugCorrectorDiff.resize(3 * offset);
-    o_ugCorrectorLambda.resize(3 * offset);
-    o_ugCorrectorDelta.resize(nrs->meshV->Nlocal);
-    o_ugCorrectorRhs.resize(nrs->meshV->Nlocal);
-  }
-  o_gradPFilterHistory.resize(3 * offset);
   {
     auto mesh = nrs->meshV;
     std::vector<dfloat> weight(offset, 1.0);
@@ -431,39 +334,6 @@ inline void allocate()
     // Wall precedence at shared inlet/wall nodes, including remote copies.
     oogs::startFinish(o_inletVelocityWeight, 1, 0,
                       ogsDfloat, ogsMin, mesh->oogs);
-    if (p.frozenGasVelocityEnabled || p.smoothGasVelocityProfileEnabled) {
-      std::vector<dfloat> x(mesh->Nlocal), y(mesh->Nlocal);
-      mesh->o_x.copyTo(x.data(), mesh->Nlocal);
-      mesh->o_y.copyTo(y.data(), mesh->Nlocal);
-      o_inletVelocityWeight.copyTo(weight, offset);
-      double localRadius = 0.0, radius = p.frozenGasRadius;
-      for (dlong n = 0; n < mesh->Nlocal; ++n) {
-        if (weight[n] == 0.0)
-          localRadius = std::max(localRadius, double(std::hypot(
-              x[n]-p.frozenGasCenterX, y[n]-p.frozenGasCenterY)));
-      }
-      if (radius == 0.0)
-        MPI_Allreduce(&localRadius, &radius, 1, MPI_DOUBLE, MPI_MAX,
-                      platform->comm.mpiComm());
-      nekrsCheck(!std::isfinite(radius) || radius <= 0.0
-                     || p.frozenGasWallRampWidth > radius,
-                 platform->comm.mpiComm(), EXIT_FAILURE,
-                 "%s", "Frozen UG requires a circular wall (ID 3), positive radius and wall ramp width <= radius.\n");
-      p.frozenGasRadius = radius;
-      std::vector<dfloat> ug(3*offset, 0.0);
-      for (dlong n = 0; n < mesh->Nlocal; ++n) {
-        weight[n] *= frozenGasWallWeight(std::hypot(x[n]-p.frozenGasCenterX,
-            y[n]-p.frozenGasCenterY), radius, p.frozenGasWallRampWidth);
-      }
-      o_inletVelocityWeight.copyFrom(weight.data(), offset);
-      oogs::startFinish(o_inletVelocityWeight, 1, 0,
-                        ogsDfloat, ogsMin, mesh->oogs);
-      o_inletVelocityWeight.copyTo(weight, offset);
-      for (dlong n = 0; n < mesh->Nlocal; ++n)
-        ug[2*offset+n] = p.ugInlet*weight[n];
-      o_frozenUg.resize(3*offset);
-      o_frozenUg.copyFrom(ug.data(), 3*offset);
-    }
     // This case reserves boundary usrwrk for the nodal inlet velocity weight.
     platform->app->bc->o_usrwrk = o_inletVelocityWeight;
   }
@@ -488,14 +358,6 @@ inline void allocate()
   }
   o_gradPStrong.resize(3 * offset);
   o_gradPWeak.resize(3 * offset);
-  if (p.gasPressureInletRegionEnabled) {
-    const dlong Nlocal = nrs->meshV->Nlocal;
-    std::vector<dfloat> z(Nlocal), weight(offset, 1.0);
-    nrs->meshV->o_z.copyTo(z.data(), Nlocal);
-    for (dlong n = 0; n < Nlocal; ++n) weight[n] = gasPressureInletRampWeight(z[n]);
-    o_gasPressureRegionWeight.resize(offset);
-    o_gasPressureRegionWeight.copyFrom(weight.data(), offset);
-  }
   o_rhoM.resize(offset);
   o_rhoPressure.resize(offset);
   o_muM.resize(offset);
@@ -564,15 +426,9 @@ inline void allocate()
 
 inline void reconstructGasVelocity()
 {
-  if (p.frozenGasVelocityEnabled) {
-    const char *names[3] = {"ugx", "ugy", "ugz"};
-    for (int i = 0; i < 3; ++i)
-      nrs->scalar->o_solution(names[i]).copyFrom(o_frozenUg,
-          nrs->meshV->Nlocal, 0, i*nrs->fieldOffset);
-  }
   reconstructGasVelocityKernel(nrs->meshV->Nlocal,
                                nrs->fieldOffset,
-                               p.frozenGasVelocityEnabled ? 0 : p.gasVelocityLowAlphaCutoffEnabled,
+                               p.gasVelocityLowAlphaCutoffEnabled,
                                p.alphaFloor,
                                nrs->scalar->o_solution("alpha"),
                                nrs->scalar->o_solution("ugx"),
@@ -635,68 +491,10 @@ inline void evaluateGasCubatureTransport(bool conservativeAlpha = false)
 inline void prepareGasAdvection()
 {
   const dlong offset = nrs->fieldOffset;
-  // Evaluate each nonlinear gas-convection operator at one time level.
-  // The case applies fluid EXT coefficients to complete operator histories;
-  // predicting the gas advector here would introduce a second extrapolation.
+  // Evaluate nonlinear convection at one time level. Native sumMakef applies
+  // EXT to its history; predicting the advector here would extrapolate twice.
   reconstructGasVelocity();
   o_gasAdvector.copyFrom(o_ug, 3 * offset);
-}
-
-// Form the UG-only pressure source from the selected lagged gradient.
-// Spatial attenuation never changes raw gradients or temporal filter history.
-inline void prepareGasPressureForcing()
-{
-  auto mesh = nrs->meshV;
-  const dlong offset = nrs->fieldOffset;
-  if (p.gasPressureGradientMethod == 2) {
-    // Prescribed physical hydrostatic gradient, independent of local pressure
-    // and alpha. Bypass temporal filtering and inlet attenuation in this mode.
-    const dfloat rhoRef = p.gasHydrostaticDensity > 0.0
-        ? p.gasHydrostaticDensity : p.rhoLiquid;
-    for (int i = 0; i < 3; ++i) {
-      auto component = o_gradP.slice(i * offset, offset);
-      platform->linAlg->fill(mesh->Nlocal, rhoRef * p.gravity[i], component);
-    }
-    return;
-  }
-  const auto &o_selectedGradP =
-      (p.gasPressureGradientMethod == 1) ? o_gradPWeak : o_gradPStrong;
-
-  if (p.gasPressureGradientFilterEnabled == 0.0) {
-    o_gradP.copyFrom(o_selectedGradP, 3 * offset);
-  } else {
-    // At source assembly, o_P contains the pressure from the most recently
-    // completed physical step. Advance the exponential history only once per
-    // timestep because this routine can be called more than once in that step.
-    const int tstep = nrs->tstep;
-    if (!pressureGradientFilterInitialized) {
-      o_gradPFilterHistory.copyFrom(o_selectedGradP, 3 * offset);
-      pressureGradientFilterInitialized = true;
-      pressureGradientFilterStep = tstep;
-    } else if (tstep != pressureGradientFilterStep) {
-      for (int i = 0; i < 3; ++i) {
-        const auto laggedGradient =
-            o_selectedGradP.slice(i * offset, offset);
-        auto filteredGradient = o_gradPFilterHistory.slice(i * offset, offset);
-        platform->linAlg->axpby(mesh->Nlocal,
-                                p.gasPressureGradientFilterWeight,
-                                laggedGradient,
-                                1.0 - p.gasPressureGradientFilterWeight,
-                                filteredGradient);
-      }
-      pressureGradientFilterStep = tstep;
-    }
-    o_gradP.copyFrom(o_gradPFilterHistory, 3 * offset);
-  }
-
-  if (p.gasPressureInletMaskEnabled) {
-    platform->linAlg->axmyMany(mesh->Nlocal, 3, offset, 0, 1.0,
-                               o_gasPressureInletMask, o_gradP);
-  }
-  if (p.gasPressureInletRegionEnabled) {
-    platform->linAlg->axmyMany(mesh->Nlocal, 3, offset, 0, 1.0,
-                               o_gasPressureRegionWeight, o_gradP);
-  }
 }
 
 inline void evaluatePointwiseTerms()
@@ -744,7 +542,40 @@ inline void evaluatePointwiseTerms()
   platform->linAlg->axmyMany(
       mesh->Nlocal, mesh->dim, offset, 0, -1.0, mesh->o_invLMM, o_gradPWeak);
 
-  prepareGasPressureForcing();
+  const auto &o_selectedGradP =
+      (p.gasPressureGradientMethod == 1) ? o_gradPWeak : o_gradPStrong;
+
+  if (p.gasPressureGradientFilterEnabled == 0.0) {
+    o_gradP.copyFrom(o_selectedGradP, 3 * offset);
+  } else {
+    // At source assembly, o_P contains the pressure from the most recently
+    // completed physical step. Advance the exponential history only once per
+    // timestep because this routine can be called more than once in that step.
+    const int tstep = nrs->tstep;
+    if (!pressureGradientFilterInitialized) {
+      o_gradP.copyFrom(o_selectedGradP, 3 * offset);
+      pressureGradientFilterInitialized = true;
+      pressureGradientFilterStep = tstep;
+    } else if (tstep != pressureGradientFilterStep) {
+      for (int i = 0; i < 3; ++i) {
+        const auto laggedGradient =
+            o_selectedGradP.slice(i * offset, offset);
+        auto filteredGradient = o_gradP.slice(i * offset, offset);
+        platform->linAlg->axpby(mesh->Nlocal,
+                                p.gasPressureGradientFilterWeight,
+                                laggedGradient,
+                                1.0 - p.gasPressureGradientFilterWeight,
+                                filteredGradient);
+      }
+      pressureGradientFilterStep = tstep;
+    }
+  }
+
+  if (p.gasPressureInletMaskEnabled) {
+    platform->linAlg->axmyMany(mesh->Nlocal, 3, offset, 0, 1.0,
+                               o_gasPressureInletMask, o_gradP);
+  }
+
 
   buildEquationTermsKernel(mesh->Nlocal,
                            offset,
@@ -760,10 +591,8 @@ inline void evaluatePointwiseTerms()
                            p.dragSlipLimitEnabled,
                            p.dragSlipMaximum,
                            p.bubbleDiameter,
-                           (p.coupledVirtualMassEnabled ? 0.0 : p.virtualMassEnabled) * virtualMassRampFactor(nrs->tstep),
+                           p.virtualMassEnabled * virtualMassRampFactor(nrs->tstep),
                            p.virtualMassCoefficient,
-                           p.mixtureVirtualMassEnabled,
-                           p.explicitVirtualMassEnabled,
                            p.gravity[0],
                            p.gravity[1],
                            p.gravity[2],
@@ -785,18 +614,6 @@ inline void evaluatePointwiseTerms()
                            o_dragLambda,
                            o_mixtureInterphaseAcceleration,
                            o_mixtureDragSource);
-
-  if (p.coupledVirtualMassEnabled) {
-    configureCoupledVirtualMassKernel(mesh->Nlocal, offset,
-        p.rhoGas, p.rhoLiquid, p.muLiquid, p.muGas, p.alphaFloor,
-        p.virtualMassEnabled * virtualMassRampFactor(nrs->tstep)
-          * p.virtualMassCoefficient * p.rhoLiquid,
-        p.gravity[0], p.gravity[1], p.gravity[2], alpha, o_ul,
-        o_gradP, o_gradUl, o_gradUv, o_dragLambda, o_ugSource,
-        o_mixtureDragSource, o_mixtureInterphaseAcceleration,
-        o_rhoPressure, o_muM, o_coupledVMCoefficients,
-        o_liquidStress, o_baseNativeStress);
-  }
 
   evaluateGasCubatureTransport(true);
   platform->linAlg->axpby(mesh->Nlocal, -1.0, o_gasTransport, 0.0, o_alphaSource);
@@ -825,24 +642,11 @@ inline void evaluatePointwiseTerms()
     auto stressRow = o_gasStress.slice(3 * i * offset, 3 * offset);
     auto stressDivergence = o_divGasStress.slice(i * offset, offset);
     opSEM::strongDivergence(mesh, offset, stressRow, stressDivergence);
-    if (p.coupledVirtualMassEnabled) {
-      auto liquidRow = o_liquidStress.slice(3 * i * offset, 3 * offset);
-      auto liquidDiv = o_divLiquidStress.slice(i * offset, offset);
-      opSEM::strongDivergence(mesh, offset, liquidRow, liquidDiv);
-      auto baseRow = o_baseNativeStress.slice(3 * i * offset, 3 * offset);
-      auto baseDiv = o_divBaseNativeStress.slice(i * offset, offset);
-      opSEM::strongDivergence(mesh, offset, baseRow, baseDiv);
-    } else {
-      addGasStressKernel(mesh->Nlocal, p.alphaFloor,
-        p.rhoGas + (p.explicitVirtualMassEnabled ? 0.0 : p.virtualMassEnabled) * virtualMassRampFactor(nrs->tstep)
+    addGasStressKernel(mesh->Nlocal, p.alphaFloor,
+        p.rhoGas + p.virtualMassEnabled * virtualMassRampFactor(nrs->tstep)
                    * p.virtualMassCoefficient * p.rhoLiquid,
         alpha, stressDivergence, o_ugSource.slice(i * offset, offset));
-    }
   }
-  if (p.coupledVirtualMassEnabled)
-    addCoupledVMStressKernel(mesh->Nlocal, offset, p.alphaFloor, alpha,
-        o_coupledVMCoefficients, o_rhoPressure, o_divGasStress,
-        o_divLiquidStress, o_divBaseNativeStress, o_ugSource, o_coupledMixtureStress);
 }
 
 inline void evaluateNativeAlphaAdvection(deviceMemory<dfloat> &o_advection,
@@ -935,16 +739,7 @@ inline void initializeHistory()
   std::vector<dfloat> coefficients(nEXT, 0.0);
   coefficients[0] = 1.0;
   o_scalarCoeffEXT.copyFrom(coefficients.data(), nEXT);
-  // Keep non-convective scalar sources and native-advection cancellation
-  // under EXT1. Gas convection is extrapolated separately with fluid EXT.
   nrs->scalar->o_coeffEXT = o_scalarCoeffEXT;
-  scalarConvectionHistoryStep = -1;
-  gasVirtualMassHistoryStep = -1;
-  if (p.virtualMassExtrapolationEnabled)
-    platform->linAlg->fill(o_gasVirtualMassHistory.size(), 0.0, o_gasVirtualMassHistory);
-  platform->linAlg->fill(o_scalarConvectionHistory.size(), 0.0, o_scalarConvectionHistory);
-  platform->linAlg->fill(o_scalarConvectionCurrent.size(), 0.0, o_scalarConvectionCurrent);
-  platform->linAlg->fill(o_scalarConvectionEXT.size(), 0.0, o_scalarConvectionEXT);
   prepareGasAdvection();
 
   const dlong offset = nrs->fieldOffset;
@@ -957,18 +752,12 @@ inline void initializeHistory()
   o_ugPrevious2.copyFrom(o_ug, 3 * offset);
   virtualMassHistorySamples = 0;
   virtualMassPreviousDt = 0.0;
-  platform->linAlg->fill(3 * offset, 0.0, o_mixtureVirtualMassSource);
-  platform->linAlg->fill(3 * offset, 0.0, o_previousMixtureVirtualMassSource);
   platform->linAlg->fill(3 * offset, 0.0, o_virtualMassRelativeAcceleration);
   platform->linAlg->fill(3 * offset, 0.0, o_liquidAcceleration);
 }
 
 inline void postProcessGasVelocity()
 {
-  if (p.frozenGasVelocityEnabled) {
-    reconstructGasVelocity();
-    return; // Prescribed test velocity is independent of clipping/alpha masks.
-  }
   const dlong Nlocal = nrs->meshV->Nlocal;
   const dlong offset = nrs->fieldOffset;
   if ((!p.gasVelocityLowAlphaCutoffEnabled || p.smoothGasVelocityMaskEnabled == 0.0)
@@ -1128,15 +917,6 @@ inline void evaluateMixtureForce()
 {
   const dlong offset = nrs->fieldOffset;
   auto mesh = nrs->meshV;
-  if (!p.mixtureForcingEnabled
-      || (p.frozenGasVelocityEnabled && !p.frozenGasMixtureForcingEnabled)) {
-    // The summed phase-momentum forcing assumes both phase velocities evolve.
-    // With UG prescribed, its drag contribution alone feeds back positively
-    // on UM. Use an unforced native UM solve for the transport isolation test.
-    platform->linAlg->fill(3 * offset, 0.0, o_mixtureForce);
-    platform->linAlg->fill(3 * offset, 0.0, o_mixtureDragSource);
-    return;
-  }
   if (p.driftStressEnabled != 0.0) {
     for (int i = 0; i < 3; ++i) {
       auto row = o_driftStress.slice(3 * i * offset, 3 * offset);
@@ -1155,14 +935,6 @@ inline void evaluateMixtureForce()
                           o_divDriftStress,
                           o_mixtureInterphaseAcceleration,
                           o_mixtureForce);
-  if (p.coupledVirtualMassEnabled) {
-    for (int i = 0; i < 3; ++i) {
-      auto force = o_mixtureForce.slice(i * offset, offset);
-      platform->linAlg->axpby(mesh->Nlocal, 1.0,
-          o_coupledMixtureStress.slice(i * offset, offset), 1.0, force);
-    }
-    return; // Coupled stress already includes the native-baseline correction.
-  }
   buildMixtureStressCorrectionKernel(mesh->Nlocal, offset,
       p.rhoLiquid, p.rhoGas, p.muLiquid, p.muGas,
       nrs->scalar->o_solution("alpha"), o_rhoPressure, o_gradUl, o_gradUg,
@@ -1176,10 +948,7 @@ inline void evaluateMixtureForce()
     opSEM::strongDivergence(mesh, offset, row, div);
   }
   addMixtureStressCorrectionKernel(mesh->Nlocal, offset,
-      // Preserve the physical phase-stress/baseline correction already active
-      // in the coupled-VM case when moving VM back to explicit source form.
-      (p.explicitVirtualMassEnabled || p.virtualMassExtrapolationEnabled)
-        ? 1.0 : p.mixtureViscousCorrectionEnabled, o_rhoPressure,
+      p.mixtureViscousCorrectionEnabled, o_rhoPressure,
       o_divExactMixtureStress, o_divBaseNativeStress, o_mixtureForce);
 }
 
@@ -1271,32 +1040,6 @@ inline void rampMixtureDrag(int step)
   }
 }
 
-inline void captureGasPressureSource()
-{
-  o_ugPredictorPressureGradient.copyFrom(o_gradP, 3 * nrs->fieldOffset);
-  if (p.gasPressureCorrectorEnabled) {
-    // EXT1: this is the pressure acceleration actually entering this step's
-    // predictor. Later properties/monitor callbacks may overwrite o_gradP.
-    const dfloat rhoEff = p.rhoGas + (p.explicitVirtualMassEnabled ? 0.0 : p.virtualMassEnabled)
-        * virtualMassRampFactor(nrs->tstep) * p.virtualMassCoefficient * p.rhoLiquid;
-    ugPressureSourceScale = -p.gasPressureEnabled / rhoEff;
-    if (p.coupledVirtualMassEnabled)
-      o_ugCorrectorPressureResponse.copyFrom(
-          o_coupledVMCoefficients.slice(2*nrs->fieldOffset, nrs->fieldOffset),
-          nrs->meshV->Nlocal);
-    for (int i = 0; i < 3; ++i) {
-      auto used = o_ugPressureUsed.slice(i*nrs->fieldOffset, nrs->fieldOffset);
-      if (p.coupledVirtualMassEnabled) {
-        auto gradient = o_gradP.slice(i*nrs->fieldOffset, nrs->fieldOffset);
-        platform->linAlg->axmyz(nrs->meshV->Nlocal, -p.gasPressureEnabled,
-            o_ugCorrectorPressureResponse, gradient, used);
-      } else platform->linAlg->axpby(nrs->meshV->Nlocal, ugPressureSourceScale,
-          o_gradP.slice(i*nrs->fieldOffset, nrs->fieldOffset), 0.0, used);
-    }
-    ugPressureSourceStep = nrs->tstep;
-  }
-}
-
 // All EXT history slots must contain the SAME drag contribution for this step.
 // Native makeForcing shifts the modified histories afterward, so every old
 // slot contains o_previous* at the next source call. Non-drag terms are untouched.
@@ -1317,96 +1060,32 @@ inline void freezeDragHistory()
   o_previousMixtureDragSource.copyFrom(o_mixtureDragSource);
 }
 
-// UM normally uses native fluid EXT. For fully explicit VM, replace only
-// its contribution in older source slots so EXT applies exactly the last
-// completed-step VM load. Drag, gravity, drift and stresses keep their paths.
-inline void freezeExplicitVirtualMassHistory()
-{
-  if (!p.explicitVirtualMassEnabled || nrs->tstep == 0) return;
-  const dlong N = nrs->meshV->Nlocal, offset = nrs->fieldOffset;
-  if (!p.mixtureForcingEnabled
-      || (p.frozenGasVelocityEnabled && !p.frozenGasMixtureForcingEnabled)) {
-    platform->linAlg->fill(3 * offset, 0.0, o_mixtureVirtualMassSource);
-  } else {
-    // Capture before the independent mixture-drag ramp changes its buffer.
-    for (int i = 0; i < 3; ++i) {
-      auto vm = o_mixtureVirtualMassSource.slice(i * offset, offset);
-      platform->linAlg->axpbyz(N, 1.0,
-          o_mixtureInterphaseAcceleration.slice(i * offset, offset), -1.0,
-          o_mixtureDragSource.slice(i * offset, offset), vm);
-    }
-  }
-  for (int stage = 1; stage < nrs->fluid->o_coeffEXT.size(); ++stage) {
-    for (int i = 0; i < 3; ++i) {
-      const dlong dst = stage * nrs->fluid->fieldOffsetSum + i * offset;
-      platform->linAlg->axpby(N, -1.0, o_previousMixtureVirtualMassSource, 1.0,
-          nrs->fluid->o_EXT, i * offset, dst);
-      platform->linAlg->axpby(N, 1.0, o_mixtureVirtualMassSource, 1.0,
-          nrs->fluid->o_EXT, i * offset, dst);
-    }
-  }
-  o_previousMixtureVirtualMassSource.copyFrom(o_mixtureVirtualMassSource);
-}
-
-inline void applyGasVirtualMassExtrapolation()
-{
-  if (!p.virtualMassExtrapolationEnabled) return;
-  const dfloat added = p.virtualMassEnabled * virtualMassRampFactor(nrs->tstep)
-      * p.virtualMassCoefficient * p.rhoLiquid;
-  extrapolateGasVirtualMassKernel(nrs->meshV->Nlocal, nrs->fieldOffset,
-      static_cast<int>(nrs->fluid->o_coeffEXT.size()), static_cast<int>(nrs->tstep > 0),
-      static_cast<int>(gasVirtualMassHistoryStep < 0),
-      static_cast<int>(gasVirtualMassHistoryStep != nrs->tstep),
-      added / (p.rhoGas + added), nrs->fluid->o_coeffEXT,
-      o_liquidAcceleration, o_gasVirtualMassHistory, o_ugSource);
-  if (nrs->tstep > 0) gasVirtualMassHistoryStep = nrs->tstep;
-}
-
 inline void addExplicitSources(double)
 {
   prepareGasAdvection();
   evaluatePointwiseTerms();
-  applyGasVirtualMassExtrapolation();
-  captureGasPressureSource();
   subtractScalarDiffusion();
   evaluateMixtureForce();
-  freezeExplicitVirtualMassHistory();
   rampMixtureDrag(nrs->tstep);
   freezeDragHistory();
   captureAlphaAdvectionDiagnostics();
   const dlong Nlocal = nrs->meshV->Nlocal;
   const dlong offset = nrs->fieldOffset;
 
-  // Preserve full conservative div(alpha*UG) before material UG evaluation
-  // overwrites transport component zero with its non-conservative diagnostic.
-  o_scalarConvectionCurrent.copyFrom(o_gasTransport, Nlocal);
-  evaluateGasCubatureTransport(false);
-  for (int i = 0; i < 3; ++i)
-    o_scalarConvectionCurrent.copyFrom(o_gasTransport, Nlocal,
-        (i + 1) * offset, (i + 1) * offset);
-  extrapolateScalarConvectionKernel(Nlocal, offset,
-      static_cast<int>(nrs->fluid->o_coeffEXT.size()), static_cast<int>(nrs->tstep > 0),
-      static_cast<int>(scalarConvectionHistoryStep < 0),
-      static_cast<int>(scalarConvectionHistoryStep != nrs->tstep),
-      nrs->fluid->o_coeffEXT, o_scalarConvectionCurrent,
-      o_scalarConvectionHistory, o_scalarConvectionEXT);
-  if (nrs->tstep > 0) scalarConvectionHistoryStep = nrs->tstep;
-
-  // Replace only alpha's current convection; retain any diffusion counterterm.
+  // Copy only entries written by the pointwise kernels. Avoid whole-view
+  // copies because scalar and fluid fields may have different padded extents.
   nrs->scalar->o_explicitTerms("alpha").copyFrom(o_alphaSource, Nlocal);
-  platform->linAlg->axpby(Nlocal, 1.0, o_scalarConvectionCurrent, 1.0,
-      nrs->scalar->o_explicitTerms("alpha"));
-  platform->linAlg->axpby(Nlocal, -1.0, o_scalarConvectionEXT, 1.0,
-      nrs->scalar->o_explicitTerms("alpha"));
+  // Gas momentum remains material-velocity form: subtract UG.grad(UG),
+  // not div(UG tensor UG). Alpha has already received -div(alpha*UG).
+  evaluateGasCubatureTransport(false);
   const char *names[4] = {"alpha", "ugx", "ugy", "ugz"};
   for (int i = 0; i < 3; ++i) {
     auto source = o_ugSource.slice(i * offset, offset);
     platform->linAlg->axpby(Nlocal, -1.0,
-        o_scalarConvectionEXT.slice((i + 1) * offset, offset), 1.0, source);
+        o_gasTransport.slice((i + 1) * offset, offset), 1.0, source);
     nrs->scalar->o_explicitTerms(names[i + 1]).copyFrom(source, Nlocal);
   }
   for (int i = 0; i < 4; ++i) {
-    if (p.frozenGasVelocityEnabled && i > 0) continue;
     evaluateNativeAlphaAdvection(o_nativeTransportAdvection, true, names[i], true);
     const int index = nrs->scalar->nameToIndex.at(names[i]);
     platform->linAlg->axpby(Nlocal, 1.0,
@@ -1422,152 +1101,8 @@ inline void addExplicitSources(double)
 
 inline occa::memory implicitGasDrag(double, int scalarIndex)
 {
-  if (p.frozenGasVelocityEnabled) return o_NULL;
-  if (p.gasPressureCorrectorEnabled && scalarIndex >= 1 && scalarIndex <= 3) {
-    // Called by scalar_t::solve while the predictor coefficients are live.
-    // Snapshot each component before post-scalar properties can rebuild them.
-    const char *names[3] = {"ugx", "ugy", "ugz"};
-    const int i = scalarIndex - 1;
-    const dlong N = nrs->meshV->Nlocal, offset = nrs->fieldOffset;
-    auto diff = o_ugCorrectorDiff.slice(i*offset, offset);
-    diff.copyFrom(nrs->scalar->o_diffusionCoeff(names[i]), N);
-    auto lambda = o_ugCorrectorLambda.slice(i*offset, offset);
-    platform->linAlg->axpby(N, *nrs->scalar->g0 / nrs->scalar->dt[0],
-        nrs->scalar->o_transportCoeff(names[i]), 0.0, lambda);
-    platform->linAlg->axpby(N, 1.0, o_dragLambda, 1.0, lambda);
-    ugOperatorStep[i] = nrs->tstep;
-  }
   if (scalarIndex >= 1 && scalarIndex <= 3) return o_dragLambda;
   return o_NULL;
-}
-
-// One extra solve per UG component, after native UM/P. No physical history
-// is advanced here. Coefficients and old pressure load belong to the predictor.
-inline void correctGasPressure()
-{
-  if (!p.gasPressureCorrectorEnabled || nrs->tstep <= 0
-      || ugPressureCorrectedStep == nrs->tstep) return;
-  auto mesh = nrs->meshV;
-  const dlong N = mesh->Nlocal, offset = nrs->fieldOffset;
-  nekrsCheck(ugPressureSourceStep != nrs->tstep
-                 || ugOperatorStep[0] != nrs->tstep
-                 || ugOperatorStep[1] != nrs->tstep
-                 || ugOperatorStep[2] != nrs->tstep,
-             platform->comm.mpiComm(), EXIT_FAILURE,
-             "%s", "UG pressure corrector is missing this step's predictor snapshots.\n");
-
-  if (p.gasPressureCorrectorGradientMethod == 0) {
-    opSEM::strongGrad(mesh, offset, nrs->fluid->o_P, o_gradP);
-  } else {
-    launchKernel("core-wGradientVolumeHex3D", mesh->Nelements,
-                 mesh->o_vgeo, mesh->o_D, offset, nrs->fluid->o_P, o_gradP);
-    oogs::startFinish(o_gradP, mesh->dim, offset, ogsDfloat, ogsAdd, mesh->oogs);
-    platform->linAlg->axmyMany(N, mesh->dim, offset, 0, -1.0, mesh->o_invLMM, o_gradP);
-  }
-  // Same spatial pressure-source treatment, but no temporal filtering: the
-  // target is the newly solved pressure, not another lagged pressure estimate.
-  if (p.gasPressureInletMaskEnabled)
-    platform->linAlg->axmyMany(N, 3, offset, 0, 1.0, o_gasPressureInletMask, o_gradP);
-  if (p.gasPressureInletRegionEnabled)
-    platform->linAlg->axmyMany(N, 3, offset, 0, 1.0, o_gasPressureRegionWeight, o_gradP);
-
-  const char *names[3] = {"ugx", "ugy", "ugz"};
-  for (int i = 0; i < 3; ++i) {
-    auto oldAcceleration = o_ugPressureUsed.slice(i*offset, offset);
-    auto newGradient = o_gradP.slice(i*offset, offset);
-    if (p.coupledVirtualMassEnabled) {
-      platform->linAlg->axmyz(N, -p.gasPressureEnabled,
-          o_ugCorrectorPressureResponse, newGradient, o_ugCorrectorRhs);
-      platform->linAlg->axpby(N, -1.0, oldAcceleration, 1.0, o_ugCorrectorRhs);
-    } else platform->linAlg->axpbyz(N, ugPressureSourceScale, newGradient,
-                                  -1.0, oldAcceleration, o_ugCorrectorRhs);
-    // Elliptic::solve gathers element loads internally. Multiply by the
-    // element-local mass once; do not pre-assemble this RHS a second time.
-    platform->linAlg->axmy(N, 1.0, mesh->o_LMM, o_ugCorrectorRhs);
-    platform->linAlg->fill(N, 0.0, o_ugCorrectorDelta);
-    auto solver = nrs->scalar->ellipticSolver.at(i+1);
-    const int predictorIters = solver->Niter();
-    const dfloat predictorRes0 = solver->initialResidual();
-    const dfloat predictorGuessRes = solver->initialGuessResidual();
-    const dfloat predictorRes = solver->finalResidual();
-    // Reuse exactly the scalar operator/boundary mask. Zero initial delta
-    // gives homogeneous Dirichlet corrections; zero Neumann load is natural.
-    solveGasPressureCorrection(solver, o_ugCorrectorDiff.slice(i*offset, offset),
-                  o_ugCorrectorLambda.slice(i*offset, offset),
-                  o_ugCorrectorRhs, o_ugCorrectorDelta, 0);
-    auto ug = nrs->scalar->o_solution(names[i]);
-    platform->linAlg->axpby(N, 1.0, o_ugCorrectorDelta, 1.0, ug);
-    if (platform->verbose() || (p.stabilityMonitorInterval > 0
-        && nrs->tstep % p.stabilityMonitorInterval == 0)) {
-      const dfloat maxDelta = platform->linAlg->amax(N, o_ugCorrectorDelta,
-                                                    platform->comm.mpiComm());
-      if (platform->comm.mpiRank() == 0)
-        printf("UG pressure corrector step=%d scalar=%s iter=%d residual=%.8e maxDelta=%.8e\n",
-               nrs->tstep, names[i], solver->Niter(), solver->finalResidual(), maxDelta);
-    }
-    // Keep the native timestep solver report about the predictor solve.
-    solver->Niter(predictorIters);
-    solver->initialResidual(predictorRes0);
-    solver->initialGuessResidual(predictorGuessRes);
-    solver->finalResidual(predictorRes);
-  }
-  ugPressureCorrectedStep = nrs->tstep;
-  reconstructLiquidVelocity(); // Refresh UG, alpha*UG and UL; leave alpha/UM/P.
-}
-
-// Diagnostics only: do not overwrite the live gradients or pressure/corrector state.
-// Both files use the vector "velocity" slot so VisIt can display their components.
-inline void writeGasPressureGradients(double time)
-{
-  auto mesh = nrs->meshV;
-  const dlong offset = nrs->fieldOffset;
-  deviceMemory<dfloat> o_currentStrongGradient;
-  o_currentStrongGradient.resize(3 * offset);
-  opSEM::strongGrad(mesh, offset, nrs->fluid->o_P, o_currentStrongGradient);
-  std::vector<deviceMemory<dfloat>> current = {
-      o_currentStrongGradient.slice(0 * offset, mesh->Nlocal),
-      o_currentStrongGradient.slice(1 * offset, mesh->Nlocal),
-      o_currentStrongGradient.slice(2 * offset, mesh->Nlocal)};
-  std::vector<deviceMemory<dfloat>> predictor = {
-      o_ugPredictorPressureGradient.slice(0 * offset, mesh->Nlocal),
-      o_ugPredictorPressureGradient.slice(1 * offset, mesh->Nlocal),
-      o_ugPredictorPressureGradient.slice(2 * offset, mesh->Nlocal)};
-  nrs->writeToFile("gps", time, mesh, {{"velocity", current}});
-  nrs->writeToFile("gpp", time, mesh, {{"velocity", predictor}});
-}
-
-// Add native AVM using the actual gas transport speed. Baseline diffusion
-// (including the outlet ramp) has just been rebuilt by evaluatePointwiseTerms.
-inline void applyGasVelocityAVM()
-{
-  const char *names[4] = {"alpha", "ugx", "ugy", "ugz"};
-  for (const auto name : names) {
-    if (p.frozenGasVelocityEnabled && std::string(name) != "alpha") continue;
-    const auto sid = scalarDigitStr(nrs->scalar->nameToIndex.at(name));
-    const std::string prefix = "SCALAR" + sid + " ";
-    if (!platform->options.compareArgs(prefix + "REGULARIZATION METHOD",
-                                       "AVM_AVERAGED_MODAL_DECAY")) continue;
-    nekrsCheck(nrs->meshV->N < 5, platform->comm.mpiComm(), EXIT_FAILURE,
-               "%s", "AVM requires polynomialOrder >= 5!\n");
-    dfloat width = 1.0, decay = 2.0, scaling = 1.0, noise = 0.0;
-    platform->options.getArgs(prefix + "REGULARIZATION AVM ACTIVATION WIDTH", width);
-    platform->options.getArgs(prefix + "REGULARIZATION AVM DECAY THRESHOLD", decay);
-    platform->options.getArgs(prefix + "REGULARIZATION AVM SCALING COEFF", scaling);
-    platform->options.getArgs(prefix + "REGULARIZATION AVM ABSOLUTE TOL", noise);
-    const bool c0 = platform->options.compareArgs(prefix + "REGULARIZATION AVM C0", "TRUE");
-    // Native scalar setup initializes avm::setup when any scalar selects AVM.
-    auto o_eps = avm::viscosity(nrs->fieldOffset, o_ug,
-        nrs->scalar->o_solution(name), noise, scaling, decay, width, c0);
-    auto o_diff = nrs->scalar->o_diffusionCoeff(name);
-    platform->linAlg->axpby(nrs->meshV->Nlocal, 1.0, o_eps, 1.0, o_diff);
-    if (platform->verbose()) {
-      auto range = platform->linAlg->minMax(nrs->meshV->Nlocal,
-          {o_eps}, platform->comm.mpiComm());
-      if (platform->comm.mpiRank() == 0)
-        printf("bubbleColumn2 AVM scalar=%s velocity=UG min/max(nuAVM)=(%.8e,%.8e)\n",
-               name, range[0].first, range[0].second);
-    }
-  }
 }
 
 inline void updateProperties(double)
@@ -1580,8 +1115,6 @@ inline void updateProperties(double)
   nrs->fluid->o_prop.slice(0 * nrs->fieldOffset, nrs->fieldOffset).copyFrom(o_muM);
   nrs->fluid->o_prop.slice(1 * nrs->fieldOffset, nrs->fieldOffset)
       .copyFrom(o_rhoPressure);
-  // userProperties owns AVM application; add to the current baseline once.
-  applyGasVelocityAVM();
 }
 
 inline void enforceZeroDivergence(double)
@@ -1928,7 +1461,7 @@ inline void printDragLocations(double time, int tstep)
     o_ul.copyTo(ul, N, c*offset, c*N);
     nrs->fluid->o_U.slice(c*offset, N).copyTo(um.data()+c*N);
   }
-  const double inertiaRatio = p.coupledVirtualMassEnabled ? 1.0 : (p.rhoGas + (p.explicitVirtualMassEnabled ? 0.0 : p.virtualMassEnabled) * virtualMassRampFactor(nrs->tstep)
+  const double inertiaRatio = (p.rhoGas + p.virtualMassEnabled * virtualMassRampFactor(nrs->tstep)
       * p.virtualMassCoefficient * p.rhoLiquid) / p.rhoGas;
   dlong indices[2] = {0, 0};
   double maxima[2] = {-1.0, -1.0};
@@ -2017,12 +1550,8 @@ inline void printStabilityMonitors(double time, int tstep)
       platform->linAlg->amax(Nlocal, nrs->fluid->o_div, comm);
 
   vectorMagnitudeKernel(Nlocal, 3, offset, o_gradP, o_monitorMagnitude);
-  if (p.coupledVirtualMassEnabled) {
-    auto response = o_coupledVMCoefficients.slice(2*offset, offset);
-    platform->linAlg->axmy(Nlocal, 1.0, response, o_monitorMagnitude);
-  }
   buildGasPressureAccelerationMonitorKernel(Nlocal,
-                                            p.coupledVirtualMassEnabled ? 1.0 : p.rhoGas + (p.explicitVirtualMassEnabled ? 0.0 : p.virtualMassEnabled) * virtualMassRampFactor(nrs->tstep)
+                                            p.rhoGas + p.virtualMassEnabled * virtualMassRampFactor(nrs->tstep)
                                                        * p.virtualMassCoefficient * p.rhoLiquid,
                                             p.gasMomentumCutoff,
                                             nrs->scalar->o_solution("alpha"),
@@ -2086,7 +1615,7 @@ inline void printStabilityMonitors(double time, int tstep)
     printf("bubbleColumn2 stability step=%d time=%.8e max|divTarget|=%.8e "
            "min(alpha)=%.8e max(alpha)=%.8e mean(alpha)=%.8e "
            "max|qg|=%.8e max|qg-alpha*ug|=%.8e "
-           "maxActive|aPressureG|=%.8e maxInactive|aPressureG|=%.8e "
+           "maxActive|gradP|/rhoEff=%.8e maxInactive|gradP|/rhoEff=%.8e "
            "max|ug|=%.8e CFL(ug)=%.8e max|tauDrift|=%.8e "
            "max(lambdaD*dt)=%.8e "
            "inletArea=%.8e inletMean(alpha)=%.8e "

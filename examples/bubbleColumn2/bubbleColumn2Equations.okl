@@ -1,155 +1,3 @@
-// Invert the coupled phase material-inertia block before time discretization.
-// coef rows: gas response to gas/liquid force, gas/liquid pressure mobility.
-// The legacy pointwise kernel has just supplied VM-free drag and gas stress.
-@kernel void configureCoupledVirtualMass(
-    const dlong N, const dlong offset,
-    const dfloat rhoGas, const dfloat rhoLiquid,
-    const dfloat muLiquid, const dfloat muGas, const dfloat alphaFloor,
-    const dfloat addedDensity,
-    const dfloat gx, const dfloat gy, const dfloat gz,
-    @ restrict const dfloat *alpha, @ restrict const dfloat *ul,
-    @ restrict const dfloat *gradP, @ restrict const dfloat *gradUl,
-    @ restrict const dfloat *gradUm,
-    @ restrict dfloat *dragLambda, @ restrict dfloat *gasSource,
-    @ restrict dfloat *mixtureDrag, @ restrict dfloat *mixtureInterphase,
-    @ restrict dfloat *rhoPressure, @ restrict dfloat *muMixture,
-    @ restrict dfloat *coef, @ restrict dfloat *liquidStress,
-    @ restrict dfloat *baseStress)
-{
-  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
-    const dfloat a = alpha[n] < 0 ? 0 : (alpha[n] > 1 ? 1 : alpha[n]);
-    const dfloat b = 1-a;
-    const dfloat bs = b > alphaFloor ? b : alphaFloor;
-    const dfloat k = addedDensity;
-    // Denominator multiplied by beta avoids alpha/beta overflow.
-    const dfloat den = bs*rhoGas*rhoLiquid + k*(bs*rhoLiquid+a*rhoGas);
-    const dfloat Ggg = (bs*rhoLiquid+a*k)/den;
-    const dfloat Ggl = bs*k/den;
-    const dfloat Bg = (bs*rhoLiquid+k)/den;
-    const dfloat Bl = (bs*rhoGas+k)/den;
-    const dfloat mobility = a*Bg+b*Bl;
-    const dfloat dragScale = bs*rhoGas*rhoLiquid/den;
-    coef[n] = Ggg;
-    coef[n+offset] = Ggl;
-    coef[n+2*offset] = Bg;
-    coef[n+3*offset] = Bl;
-    rhoPressure[n] = 1/mobility;
-    // Preserve the existing native implicit regularization; its baseline
-    // physical stress is subtracted explicitly by addCoupledVMStress.
-    const dfloat muBase = rhoPressure[n]*(b*muLiquid/rhoLiquid+a*muGas/rhoGas);
-    muMixture[n] = muBase;
-    dragLambda[n] *= dragScale;
-    for (int i=0;i<3;++i) {
-      const dlong id=n+i*offset;
-      const dfloat gravity=i==0?gx:(i==1?gy:gz);
-      gasSource[id] = -Bg*gradP[id]+gravity+dragLambda[n]*ul[id];
-      mixtureDrag[id] *= dragScale;
-      mixtureInterphase[id] = mixtureDrag[id]; // No lagged VM acceleration.
-    }
-    const dfloat divL=gradUl[n]+gradUl[n+4*offset]+gradUl[n+8*offset];
-    const dfloat divM=gradUm[n]+gradUm[n+4*offset]+gradUm[n+8*offset];
-    for (int i=0;i<3;++i) for (int j=0;j<3;++j) {
-      const int ij=3*i+j,ji=3*j+i;
-      const dfloat diag=i==j?2.0/3.0:0.0;
-      liquidStress[n+ij*offset]=b*muLiquid*(gradUl[n+ij*offset]+gradUl[n+ji*offset]-diag*divL);
-      baseStress[n+ij*offset]=muBase*(gradUm[n+ij*offset]+gradUm[n+ji*offset]-diag*divM);
-    }
-  }
-}
-
-@kernel void addCoupledVMStress(
-    const dlong N, const dlong offset, const dfloat alphaFloor,
-    @ restrict const dfloat *alpha, @ restrict const dfloat *coef,
-    @ restrict const dfloat *rhoPressure,
-    @ restrict const dfloat *divGas, @ restrict const dfloat *divLiquid,
-    @ restrict const dfloat *divBase,
-    @ restrict dfloat *gasSource, @ restrict dfloat *mixtureStress)
-{
-  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
-    const dfloat a=alpha[n]<0?0:(alpha[n]>1?1:alpha[n]);
-    const dfloat as=a>alphaFloor?a:alphaFloor;
-    const dfloat bs=1-a>alphaFloor?1-a:alphaFloor;
-    for (int i=0;i<3;++i) {
-      const dlong id=n+i*offset;
-      gasSource[id] += coef[n]*divGas[id]/as+coef[n+offset]*divLiquid[id]/bs;
-      mixtureStress[id] = coef[n+2*offset]*divGas[id]
-          +coef[n+3*offset]*divLiquid[id]-divBase[id]/rhoPressure[n];
-    }
-  }
-}
-
-// Extrapolate the assembled nonlinear gas-convection operators with the
-// native fluid coefficients. Only convection is stored here; scalar sources
-// and native UM-advection cancellation remain under the scalar EXT1 path.
-@kernel void extrapolateScalarConvection(
-    const dlong N, const dlong offset, const int nEXT,
-    const int useHistory, const int firstSample, const int advanceHistory,
-    @ restrict const dfloat *coeffEXT,
-    @ restrict const dfloat *current,
-    @ restrict dfloat *history,
-    @ restrict dfloat *extrapolated)
-{
-  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
-    for (int field = 0; field < 4; ++field) {
-      const dlong id = n + field * offset;
-      const dlong stride = 4 * offset;
-      if (!useHistory) {
-        // Initial CFL/source probes do not consume a physical history level.
-        extrapolated[id] = current[id];
-      } else {
-        if (firstSample) {
-          // Constant prehistory also avoids an artificial jump on restart.
-          for (int stage = 0; stage < nEXT; ++stage)
-            history[id + stage * stride] = current[id];
-        } else if (advanceHistory) {
-          for (int stage = nEXT - 1; stage > 0; --stage)
-            history[id + stage * stride] = history[id + (stage - 1) * stride];
-        }
-        history[id] = current[id];
-        dfloat value = 0.0;
-        for (int stage = 0; stage < nEXT; ++stage)
-          value += coeffEXT[stage] * history[id + stage * stride];
-        extrapolated[id] = value;
-      }
-    }
-  }
-}
-
-// The gas pointwise RHS already contains scale*aL at the current sample.
-// Replace only that explicit liquid-VM load by its native-fluid EXT value.
-// Gas own VM inertia stays in the normalized semi-implicit UG equation.
-@kernel void extrapolateGasVirtualMass(
-    const dlong N, const dlong offset, const int nEXT,
-    const int useHistory, const int firstSample, const int advanceHistory,
-    const dfloat scale,
-    @ restrict const dfloat *coeffEXT,
-    @ restrict const dfloat *liquidAcceleration,
-    @ restrict dfloat *history,
-    @ restrict dfloat *gasSource)
-{
-  for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
-    for (int field = 0; field < 3; ++field) {
-      const dlong id = n + field * offset;
-      const dlong stride = 3 * offset;
-      const dfloat current = scale * liquidAcceleration[id];
-      if (useHistory) {
-        if (firstSample) {
-          for (int stage = 0; stage < nEXT; ++stage)
-            history[id + stage * stride] = current;
-        } else if (advanceHistory) {
-          for (int stage = nEXT - 1; stage > 0; --stage)
-            history[id + stage * stride] = history[id + (stage - 1) * stride];
-        }
-        history[id] = current;
-        dfloat value = 0.0;
-        for (int stage = 0; stage < nEXT; ++stage)
-          value += coeffEXT[stage] * history[id + stage * stride];
-        gasSource[id] += value - current;
-      }
-    }
-  }
-}
-
 @kernel void reconstructGasVelocity(const dlong N,
                                     const dlong offset,
                                     const int lowAlphaCutoffEnabled,
@@ -355,8 +203,6 @@
                                 const dfloat bubbleDiameter,
                                 const dfloat virtualMassEnabled,
                                 const dfloat virtualMassCoefficient,
-                                const int mixtureVirtualMassEnabled,
-                                const int explicitVirtualMassEnabled,
                                 const dfloat gravityX,
                                 const dfloat gravityY,
                                 const dfloat gravityZ,
@@ -454,10 +300,10 @@
     // Freeze Ki and liquid velocity; only -Ki*UG/rhoEff is implicit.
     const dfloat dragRate = (a >= dragAlphaCutoff && dragEnabled != 0.0)
         ? dragEnabled * Ki * dragSlipFactor / rhoGas : 0.0;
-    // Legacy: move gas VM inertia to the LHS. Fully explicit VM instead
-    // keeps rhoGas and uses the entire completed-step (aL-aG) on the RHS.
+    // Move -C*rho_l*D_g(ug)/Dt to the left, then divide by rhoEff.
+    // Native scalar BDF advances ug, including its own matching history.
     const dfloat addedDensity = virtualMassEnabled * virtualMassCoefficient * rhoLiquid;
-    const dfloat rhoEff = rhoGas + (explicitVirtualMassEnabled ? 0.0 : addedDensity);
+    const dfloat rhoEff = rhoGas + addedDensity;
     const dfloat forceScale = rhoGas / rhoEff;
     dragLambda[n] = forceScale * dragRate;
     for (int i = 0; i < 3; ++i) {
@@ -465,15 +311,14 @@
       const dfloat gravity = i == 0 ? gravityX : (i == 1 ? gravityY : gravityZ);
       ugSource[id] = gasActive * (forceScale * (-gasPressureEnabled * gradP[id] / rhoGas
                           + gravity + dragRate * ul[id])
-          + addedDensity / rhoEff * (explicitVirtualMassEnabled
-              ? virtualMassRelativeAcceleration[id] : liquidAcceleration[id]));
+          + addedDensity / rhoEff * liquidAcceleration[id]);
     }
 
     // Interphase forces cancel in mass-weighted momentum, but not after the
     // phase momentum equations are divided by their densities and summed.
     // If a_g^I is the interphase acceleration in the gas equation, the
     // volume-mixture contribution is alpha*(1-rho_g/rho_l)*a_g^I.
-    const dfloat gasVirtualMassScale = virtualMassEnabled * mixtureVirtualMassEnabled
+    const dfloat gasVirtualMassScale = virtualMassEnabled
                                       * virtualMassCoefficient
                                       * rhoLiquid / rhoGas;
     const dfloat volumeWeight = a * (1.0 - rhoGas / rhoLiquid);

@@ -7,12 +7,7 @@ import numpy as np
 from numpy.polynomial.legendre import Legendre, leggauss
 
 root = Path(__file__).resolve().parents[1]
-par = (root/'bubbleColumn2Legacy.par').read_text()
-p = int(re.search(r'^polynomialOrder\s*=\s*(\d+)',par,re.M).group(1))
-cub = int(re.search(r'^cubaturePolynomialOrder\s*=\s*(\d+)',par,re.M).group(1))
-assert cub == 2*p
-low_cq = p + 4
-full_cq = cub + 1
+p = 7
 nq = p + 1
 x = np.r_[-1., Legendre.basis(p).deriv().roots(), 1.]
 wg = 2 / (p*(p+1)*Legendre.basis(p)(x)**2)
@@ -25,7 +20,7 @@ def array(name, value):
     return 'double '+name+'[]={'+','.join(format(v,'.17g') for v in np.asarray(value).ravel())+'};\n'
 
 errors = {}
-for cq in (low_cq, full_cq):
+for cq in (11, 15):
     z, wc = leggauss(cq)
     I = np.ones((cq, nq))
     for i in range(nq):
@@ -41,7 +36,7 @@ for cq in (low_cq, full_cq):
     tc,sc,rc = np.meshgrid(z,z,z,indexing='ij')
     fields = np.array([.02*(1+.3*Legendre.basis(p)(r)),
                        .3*(1+.3*Legendre.basis(p)(r)), np.zeros_like(r), np.zeros_like(r)])
-    # Exact derivative of the product of two independently degree-p fields.
+    # Exact derivative of the product of two independently degree-7 fields.
     exact = .006*.6*(1+.3*Legendre.basis(p)(rc))*Legendre.basis(p).deriv()(rc)
     weights = wc[:,None,None]*wc[None,:,None]*wc[None,None,:]
     mass = wg[:,None,None]*wg[None,:,None]*wg[None,None,:]
@@ -71,7 +66,7 @@ for cq in (low_cq, full_cq):
     errors[cq] = error
     # Four units of transverse area times the analytical flux difference.
     assert abs(integral-4*.0072)<1e-12
-    print(f'Actual conservative kernels: p={p} cubNq={cq}, relative projected-load error={error:.8e}; boundary balance passes.')
-assert errors[low_cq] > .01
-assert errors[full_cq] < 1e-11
+    print(f'Actual conservative kernels: p=7 cubNq={cq}, relative projected-load error={error:.8e}; boundary balance passes.')
+assert errors[11] > .1
+assert errors[15] < 1e-11
 print('Confirmed: boundary balance and low-degree tests do not establish high-degree dealiasing.')

@@ -1,21 +1,11 @@
 """Compare actual UG force/drag kernels and transport modules between methods."""
 from pathlib import Path
 import re
-import os,hashlib
 import subprocess
 import tempfile
 
 case=Path(__file__).resolve().parents[1]
-one=Path(os.environ.get('METHOD1_LEGACY_REFERENCE',str(case.parent/'bubbleColumn')))
-# This compares the archived Method2 force formulation to the Method1 version
-# with which it was originally aligned, not independently evolving Method1.
-reference=one/'bubbleColumnEquations.okl'
-if 'METHOD1_LEGACY_REFERENCE' not in os.environ:
- data=reference.read_bytes()
- blob=hashlib.sha1(b'blob '+str(len(data)).encode()+b'\0'+data).hexdigest()
- if blob!='8168c9f2e3e8ec7324f78a9961c80b1272e07fcf':
-  print('SKIP: legacy Method1 alignment requires its frozen reference; current Method1 has evolved. Set METHOD1_LEGACY_REFERENCE to run this historical comparison.')
-  raise SystemExit(0)
+one=case.parent/'bubbleColumn'
 def function(s, marker):
  start=s.index(marker);at=s.index('{',start);depth=1;end=at+1
  while depth:
@@ -31,23 +21,12 @@ for name in ['explicitFilter.hpp','explicitFilter.okl']:
  assert (one/name).read_bytes()==(case/name).read_bytes(),name
 m=(one/'bubbleColumnTerms.hpp').read_text();t=(case/'bubbleColumn2Terms.hpp').read_text()
 for name in ['evaluateGasCubatureTransport','prepareGasAdvection','evaluateNativeAlphaAdvection']:
- old=function(m,'inline void '+name+'(')
- if name=='evaluateNativeAlphaAdvection':
-  # Method1 has a divergence-specific compute/advector override. Compare
-  # the same native scalar operation after removing only that documented routing.
-  old=old.replace('static_cast<occa::memory>(o_userAdvectionCompute) + alphaIndex',
-                  'nrs->scalar->o_compute + alphaIndex')
-  old=old.replace('mixture ? (o_divergenceUrstOverride.isInitialized() ? o_divergenceUrstOverride : nrs->fluid->o_relUrst)\n                         : nrs->scalar->o_relUrst',
-                  'mixture ? nrs->fluid->o_relUrst : nrs->scalar->o_relUrst')
- # Documentation may differ when method2 handles time extrapolation separately.
- def code_only(text):
-  return re.sub(r'//[^\n]*','',text).split()
- assert code_only(old)==code_only(function(t,'inline void '+name+'(')),name
+ assert function(m,'inline void '+name+'(')==function(t,'inline void '+name+'('),name
 # Compile both actual physical UG kernels with identical prescribed alpha/UL/UG.
 prefix='#include <cmath>\n#include <cassert>\n#include <initializer_list>\nusing dfloat=double;using dlong=long;\n'
 values=dict(N=2,offset=4,rhoLiquid=998.2,rhoGas=1.2,muLiquid=.001,muGas=.000018,alphaFloor=1e-6,
  gasPressureEnabled=1,dragEnabled=1,mixtureDragEnabled=1,dragAlphaCutoff=0,dragSlipLimitEnabled=0,
- dragSlipMaximum=1,bubbleDiameter=.003,virtualMassEnabled=1,virtualMassCoefficient=.5,mixtureVirtualMassEnabled=1,explicitVirtualMassEnabled=0,
+ dragSlipMaximum=1,bubbleDiameter=.003,virtualMassEnabled=1,virtualMassCoefficient=.5,
  gravityX=.1,gravityY=-.2,gravityZ=-9.81)
 outputs={'rhoMField','rhoPressureField','muMField','driftStress','gasStress','alphaSource','ugSource',
          'dragLambda','mixtureInterphaseAcceleration','mixtureDragSource'}
@@ -92,7 +71,7 @@ eq=(case/'bubbleColumn2Equations.okl').read_text()
 for name in ['buildEquationTerms','initializePlume','updateVirtualMassHistory','postProcessGasVelocity','reconstructGasVelocity']:
  kernel=function(eq,'@kernel void '+name+'(')
  count=len(kernel.split(')\n{')[0].split('(',1)[1].split(','))
- source=t+(case/'bubbleColumn2Legacy.udf').read_text()
+ source=t+(case/'bubbleColumn2.udf').read_text()
  for match in re.finditer(r'\b'+name+r'Kernel\(',source):
   start=match.end();pos=start;depth=1
   while depth:

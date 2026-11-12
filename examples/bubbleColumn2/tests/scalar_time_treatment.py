@@ -1,4 +1,4 @@
-"""Check native scalar EXT1 source/cancellation path; convection has separate fluid EXT."""
+"""Check actual native forcing kernel with independent scalar EXT1 coefficients."""
 from pathlib import Path
 import re
 import subprocess
@@ -47,5 +47,4 @@ assert 'o_scalarCoeffEXT.resize(nEXT)' in case
 assert 'nrs->o_coeffEXT.copyFrom' not in case
 assert 'nrs->scalar->o_relUrst = nrs->fluid->o_relUrst;' in case
 assert 'nrs->scalar->o_U = nrs->fluid->o_U;' in case
-assert 'nrs->fluid->o_coeffEXT, o_scalarConvectionCurrent' in case
-print('Native scalar EXT1 source/cancellation and BDF wiring preserved; gas convection uses separate native fluid EXT history.')
+print('Native forcing: EXT1 applies latest convection/RHS to all four scalars; BDF and fluid EXT preserved. Native advector is mixture U; gas RHS uses latest UG.')

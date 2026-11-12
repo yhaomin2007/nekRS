@@ -1,149 +1,121 @@
-# Method2: native scalar transport, volume-mixture momentum
+# bubbleColumn2: method2 with method1 scalar transport
 
-The active case is `bubbleColumn2.udf`, using `bubbleColumn2Native.hpp` and
-`bubbleColumn2Native.okl`. It solves alpha and UG with the native scalar solver,
-then P/UM with the native fluid solver. **There is no UG pressure corrector.**
-No NekRS core files are changed.
+The native velocity is the volume average
+`UM=(1-alpha)*UL+alpha*UG`, with `div(UM)=0`.
+`UL=(UM-alpha*UG)/(1-alpha)` uses denominator protection near alpha=1.
+The checkpoint scalars are `ALPHA,UGX,UGY,UGZ`; `qg=alpha*UG` is derived.
+NekRS core and scalar / pressure / velocity solve ordering are unchanged.
+Method1 and other cases are unchanged by this update.
 
-## Equations and native transport
+## Alpha and gas velocity
 
-UM is the volume average, not the mass average:
+The scalar transport follows method1 at the synchronization commit:
 
-\[
-U_m=(1-\alpha)U_l+\alpha U_g,\qquad \nabla\cdot U_m=0,
-\qquad U_l=(U_m-\alpha U_g)/(1-\alpha).
-\]
+- Alpha uses direct cubature differentiation of the product `alpha*UG`,
+  projected to GLL and assembled with lumped-mass weights. This represents
+  `d(alpha)/dt + div(alpha*UG) = numerical diffusion/regularization`.
+- UG uses cubature `UG.grad(UG)`, not `div(UG tensor UG)`.
+- The exact native mixture-advection contribution is canceled in each scalar
+  RHS with matching mass assembly; native scalar velocity pointers still refer
+  to UM. There is no temporary replacement of the fluid velocity.
+- All scalar nonlinear sources/advection use EXT1, using separate scalar EXT
+  coefficient storage. Native BDF history/order and fluid EXT are retained.
+- Gas drag uses the native scalar implicit reaction: `lambda=Ki/rhoEff`,
+  with lagged `Ki` and `UL`; the explicit RHS contains `lambda*UL` and the
+  left side contains `lambda*UG`. Mixture drag remains a full explicit slip
+  force, with its existing independent switch/ramp/cutoff/limiter.
+- UG is retained at zero/dilute alpha by default, as in method1.
+  `gasVelocityLowAlphaCutoffEnabled=1` enables the optional hard/smooth mask;
+  magnitude clipping remains independent. Physical stress uses
+  `div(alpha*tau_g)/(max(alpha,alphaFloor)*rhoEff)`.
 
-The reconstruction protects the denominator near alpha=1. The pressure property
-is `rhoPressure=1/[(1-alpha)/rhoLiquid+alpha/rhoGas]`; user UM forces are
-accelerations, which native velocity RHS construction multiplies by this density.
+Conservative cubature transport is the fixed case implementation. Set
+`cubaturePolynomialOrder >= 2*polynomialOrder` (example: 14 for degree 7).
+The copied user interpolation-header helper supplies missing native `c_I`
+combinations without modifying installed NekRS files. Fixed mesh, four native
+scalars with `transportCoeff=1`, and no scalar subcycling are required.
 
-Native scalar advection uses a **separate UG transport velocity/Urst buffer**.
-The fluid solver retains its own UM buffers. The UDF launches the native
-`UrstCubatureHex3D` kernel with the same complete argument list as
-`nrs_t::computeUrst`, including the mesh-velocity stride. It avoids the
-`scalar_t::computeUrst` wrapper in this revision, which omits that argument. The native scalar solver forms
-`UG.grad(alpha)` and each `UG.grad(UGi)` from current fields, then its normal
-`makeForcing/sumMakef` applies the live native EXT coefficients to complete
-operator histories. The case does not predict the gas advector before forming
-those operators, does not cancel/reconstruct UM scalar advection, and does not
-maintain a separate user convection EXT history.
+`alphaExplicitFilterModes` / `alphaExplicitFilterStrength` configure the same
+standalone bubble-basis filter as method1. After each scalar advancement the
+sequence is filter alpha, mass assembly, reapply scalar Dirichlet values, then
+optional clipping. Strength 0 disables this filter; HPFRT remains independent.
+The example uses one mode at strength 0.05, diffusion 1e-5, and HPFRT one mode
+at scaling 10 for alpha/UG, matching method1. Filtering is not a positivity
+limiter and need not preserve gas volume on curved elements. Conservation CSV
+accounts for filter and clipping volume changes separately.
 
-Alpha retains the explicit compression source:
+## Initial and boundary conditions
 
-\[
-\partial_t\alpha+U_g\cdot\nabla\alpha
-=-\alpha\nabla\cdot U_g+\kappa_\alpha\nabla^2\alpha.
-\]
+Fresh starts use the same plume alpha/UG fields and parameters as method1:
 
-This is the split form of conservative gas continuity. The compression source
-uses the trace of the assembled UG gradient, and native EXT also handles its
-history. **This replaces the previous custom dealiased conservative-flux
-operator; the two spatial discretizations are not identical.** Discrete gas
-conservation should be checked in runs with nonuniform alpha/curved geometry.
-
-Cubature follows the v26 native default formula from `parseGeneral.hpp`:
-`cubN=round(1.5*(N+1)-1)-1`. For P5 it is 7 (eight GL points per direction).
-The case selects cubature advection internally. Do not put
-`cubaturePolynomialOrder` in the input; the case rejects that override. The
-existing interpolation-table compatibility helper only supplies a missing
-native interpolation matrix if the installed table lacks this combination.
-
-## Drag and other forces
-
-The drag coefficient Ki is evaluated from the current available phase fields
-using the existing Schiller-Naumann closure. Gas drag is
-
-\[
-\lambda^n U_l^{EXT}-\lambda^n U_g^{n+1},
-\quad \lambda^n=K_i^n/(\rho_g+c_n),
-\quad U_l^{EXT}=\sum_j\beta_j U_l^{n-j}.
-\]
-
-UL history uses the **same live native scalar EXT coefficients**, including
-startup and variable dt. Native scalar source EXT must not extrapolate this
-already predicted liquid load twice. Therefore only this gas drag component
-is held at its current `lambda*UL_EXT` value across source-history slots.
-Other UG source components retain normal native EXT. The implicit lambda is
-snapshotted at source assembly so later properties callbacks cannot change
-its pairing with the explicit liquid load. Ki itself is lagged, not predicted.
-
-The full nonlinear **UM drag source uses native fluid EXT**, with no special
-history freezing. Gravity, pressure, gas stress, mixture drift stress and the
-physical phase-stress/native-baseline correction remain active. No lift,
-turbulent dispersion or wall-lubrication model is added by this simplification.
-
-VM remains enabled in the supplied input, as in the preceding case:
-`Cvm=0.5`, no VM for 100 steps, ramp over 10000 further steps. Gas added inertia
-uses `c=ramp*Cvm*rhoLiquid` in `rhoGas+c`; its explicit liquid-acceleration
-source and the complete UM VM source now use normal native source EXT. The
-completed-step material-acceleration history still uses derivative order 1
-by default. Set `virtualMassEnabled=0` for a VM-off comparison. These settings
-are not a claim that the previously observed VM instability is fixed.
-
-The move from scalar EXT1 plus selected user EXT histories to **native EXT for
-all explicit scalar sources** also changes the time treatment of direct UG
-pressure and viscous/compression sources. This is intentional: it follows the
-requested native source/convection path. It is not a fully coupled phase solve.
-
-## Inlet, regularization and outlet
-
-- Inlet alpha and axial UG are spatially uniform: 0.016667 and 0.3 m/s.
-  Transverse UG is zero; inlet UMz=alphaInlet*UGinlet (stationary inlet liquid).
-- Shared inlet/wall rim nodes retain zero velocity to reconcile the no-slip
-  wall with inlet Dirichlet values. There is **no smooth near-wall ramp** in
-  the inlet interior. Alpha remains uniform at the inlet, including the rim.
-- Initial alpha/UG still use the preceding axial plume/tanh initialization.
-  This change concerns the inlet profile, not a frozen UG or a uniform-domain IC.
-- The additional user alpha filter is removed from the active path. Native
-  HPFRT remains selected in the supplied input; scalar diffusion remains 1e-5.
-  Alpha clipping to [0,1] is retained and can be disabled with `alphaClipEnabled=0`.
-- There is no outlet damping/ramping region. Scalar baseline diffusion is
-  restored uniformly from input on each properties evaluation, before any
-  selected native AVM contribution. UM viscosity has no outlet multiplier.
-- Native AVM is supported with UG as the transport velocity when selected.
-  The supplied input selects HPFRT, not AVM.
-
-## Run and diagnostics
-
-Use the existing column mesh, a fresh state and the usual NekRS invocation:
-
-```bash
-mpiexec -np 1 "$NEKRS_HOME/bin/nekrs" --setup bubbleColumn2
+```
+f = 0.5*(1-tanh((z-initialPlumeHeight)/initialPlumeThickness))
+alpha = alphaInlet*f
+UG = (0,0,gasInitialVelocity*f)
+UL = 0
+UM = alpha*UG
 ```
 
-Use the cluster's normal launcher/allocation. P5, tombo2 and dt=1e-5 are retained.
-Clear this case's UDF cache after updating included files. Startup prints
-`METHOD2 SIMPLE`, the automatic cubature order and the drag/transport choices.
-The current implementation requires fixed mesh, four active native elliptic
-scalars with transportCoeff=1, no subcycling and no NekNek.
+The last line is deliberately the volume average, rather than method1's density
+average. The example uses alphaInlet=0.016667, gasInitialVelocity=0.3,
+height=0.05 and thickness=0.01. The obsolete uniformInitialCondition/alphaInitial
+path is removed. Restart files take precedence over fresh initialization.
+Only UG checkpoints are compatible; old QG fields cannot be read as velocity.
 
-Checkpoint scalars remain `ALPHA,UGX,UGY,UGZ`. Additional databases are:
+At the inlet alpha=alphaInlet, UGz=gasInletVelocity and
+UMz=alphaInlet*gasInletVelocity. Both velocities are zero on walls. Shared
+inlet/wall rim nodes have wall precedence using the same nodal boundary mask as
+method1. The outlet keeps its existing pressure and zero-Neumann scalar types.
 
-| File series | Vector contents |
-| --- | --- |
-| `ug`, `ul` | Current reconstructed phase velocities |
-| `gps` | Raw strong gradient of the newly solved pressure |
-| `gpp` | Lagged pressure-gradient sample supplied at source assembly |
+UG pressure remains lagged. `gasPressureGradientMethod=0/1` selects assembled
+strong / mass-normalized weak **volume** gradient; it is not a new-pressure or
+full native phase-pressure boundary correction. Optional exponential filtering
+uses `gasPressureGradientFilterEnabled/Weight`. `gasPressureInletMaskEnabled=1`
+suppresses UG pressure forcing only on inlet nodes (including shared copies);
+the outlet remains active. Defaults match method1: strong, unfiltered, unmasked.
 
-Gradient vectors use the visualization `velocity` slots and have units Pa/m.
-`gpp` is one source sample, **not the complete EXT-weighted pressure acceleration**;
-pressure-source history also includes its density normalization at each sample.
-There is no post-pressure UG correction. The timestep log prints alpha min/max
-and the actual UG CFL at `stabilityMonitorInterval`.
+## Virtual mass consistency
 
-## Verification and historical cases
+Define one physical coefficient for both equations:
 
-The active checks are `tests/native_transport.py` and `tests/native_boundary.py`.
-They exercise actual kernels/native BDF-EXT forcing, UL prediction without
-repeat extrapolation, history updates, compression and uniform inlet/rim values.
-The UDF has also been syntax-checked against actual repository NekRS headers;
-new kernels have been executed with OCCA Serial and translated to CUDA. A full
-target MPI/GPU build/run and long-time stripe/VM stability remain unverified.
+`c = virtualMassEnabled * ramp(step) * virtualMassCoefficient * rhoLiquid`.
 
-`bubbleColumn2Legacy.udf/.par` preserve the preceding implementation and its
-settings. `bubbleColumn2Terms.hpp`, the old transport/filter modules and most
-older tests belong to that historical path; **they are not included by the
-active UDF**. The separate `method2Periodic` verification cases explicitly use
-the legacy UDF so this change does not silently alter their original tests.
-See `tests/README.md` for test scope. No Method1/3/4 or core solver code changes.
+UG solves the normalized semiimplicit equation
+
+```
+(rhoGas+c) * Dg(UG)/Dt = -gradP + rhoGas*g + Ki*(UL-UG)
+                         + div(alpha*tau_g)/alpha + c*aL_lagged
+```
+
+The gas BDF time derivative uses native UG histories; its own acceleration is
+not added again as an explicit VM source. All gas physical forces use the same
+`rhoEff=rhoGas+c`. Numerical diffusion/HPFRT remain in their configured UG units.
+
+UM retains the explicit physical volume-mixture source
+
+`alpha*(1-rhoGas/rhoLiquid)*(c/rhoGas)*(aL_lagged-aG_lagged)`.
+
+Do not divide this UM source by rhoEff or omit it as if UM were a density
+average. Its liquid acceleration comes from the same completed-step history
+field used in UG. The gas history and liquid history use the same selected
+first/second-order variable-dt derivative and current material convection.
+`virtualMassTimeDerivativeOrder=1` matches method1's liquid-history derivative;
+2 remains available, with first-order startup until enough samples exist.
+The implicit gas derivative order is controlled by native `timeStepper`.
+
+`virtualMassStartStep=S` leaves VM off through S;
+`virtualMassRampStep=R>0` gives `min(1,(step-S)/R)` afterward, and R=0 activates
+immediately. History is collected during the delay when VM is enabled.
+The default is VM on, coefficient 0.5, no delay/ramp, matching method1's
+activation. UM remains explicit with native fluid EXT, while scalar explicit
+parts use EXT1. Physical coefficients are paired; the coupled equations are
+not solved implicitly together. Pressure mobility remains
+`(1-alpha)/rhoLiquid + alpha/rhoGas`. Stability at larger dt is not established.
+
+## Verification
+
+Tests under `tests/` exercise actual kernels/native BDF forcing, cubature
+transport and high-degree quadrature, shared-node cancellation, initialization,
+inlet rim agreement, dilute UG, implicit gas drag, explicit mixture drag/ramp,
+VM histories/coefficient pairing, alpha postprocessing and interpolation fallback.
+Full NekRS MPI/GPU build and flow stability require a run on the target system.
