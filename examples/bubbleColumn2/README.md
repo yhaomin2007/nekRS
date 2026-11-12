@@ -19,7 +19,10 @@ is `rhoPressure=1/[(1-alpha)/rhoLiquid+alpha/rhoGas]`; user UM forces are
 accelerations, which native velocity RHS construction multiplies by this density.
 
 Native scalar advection uses a **separate UG transport velocity/Urst buffer**.
-The fluid solver retains its own UM buffers. The native scalar solver forms
+The fluid solver retains its own UM buffers. The UDF launches the native
+`UrstCubatureHex3D` kernel with the same complete argument list as
+`nrs_t::computeUrst`, including the mesh-velocity stride. It avoids the
+`scalar_t::computeUrst` wrapper in this revision, which omits that argument. The native scalar solver forms
 `UG.grad(alpha)` and each `UG.grad(UGi)` from current fields, then its normal
 `makeForcing/sumMakef` applies the live native EXT coefficients to complete
 operator histories. The case does not predict the gas advector before forming

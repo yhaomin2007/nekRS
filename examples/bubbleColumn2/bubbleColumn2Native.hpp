@@ -141,6 +141,24 @@ inline void pinGasDragHistory()
     o_previousDragLoad.copyFrom(o_dragLoad,3*O);
   }
 }
+// Match nrs_t::computeUrst, including the mesh-velocity stride. The v26
+// scalar_t wrapper omits that argument; using it shifts memory arguments.
+inline void computeGasUrst()
+{
+  auto &s=nrs->scalar;
+  auto mesh=nrs->meshV;
+  launchKernel("nrs-UrstCubatureHex3D",
+               mesh->Nelements,
+               0, // fixed mesh; subcycling is disabled for this case
+               mesh->o_cubvgeo,
+               mesh->o_cubInterpT,
+               s->vFieldOffset,
+               static_cast<dlong>(0), // mesh-velocity stride (Woffset)
+               s->vCubatureOffset,
+               s->o_U,
+               o_NULL,
+               s->o_relUrst);
+}
 inline void addExplicitSources(double)
 {
   auto &s=nrs->scalar;const dlong N=nrs->meshV->Nlocal,O=nrs->fieldOffset;
@@ -148,7 +166,7 @@ inline void addExplicitSources(double)
   // Native operator uses current UG, then native makeForcing extrapolates the
   // complete operator. Only BC prediction uses native extrapolated scalars.
   for(int c=0;c<3;++c)o_gasPredicted.copyFrom(s->o_Se,N,c*O,s->fieldOffsetScan[c+1]);
-  s->computeUrst(); // separate scalar Urst; never overwrite fluid UM Urst
+  computeGasUrst(); // separate scalar Urst; never overwrite fluid UM Urst
   liquidEXTKernel(N,O,static_cast<int>(s->o_coeffEXT.size()),static_cast<int>(liquidHistoryStep<0),
       static_cast<int>(nrs->tstep>0 && liquidHistoryStep!=nrs->tstep),s->o_coeffEXT,o_ul,o_ulHistory,o_ulEXT);
   if(nrs->tstep>0)liquidHistoryStep=nrs->tstep;

@@ -5,6 +5,9 @@ Active simplified case:
 - `native_transport.py`: actual new compression, UL EXT and gas-drag kernels;
   actual gas-drag history helper; native scalar sumMakef; independently expected
   BDF/EXT RHS, changing coefficients, repeated samples and padding; source routing.
+- `native_urst.py`: actual UDF launch wrapper against the native ten-argument
+  kernel signature; typed stride/memory routing, and optional real native OKL
+  execution with OCCA Serial when `OCCA_DIR` is set.
 - `native_boundary.py`: actual active boundary code, uniform inlet values and
   shared inlet/wall rim precedence.
 

@@ -119,7 +119,7 @@ with tempfile.TemporaryDirectory() as t:
  subprocess.run([str(p.with_suffix(''))],check=True)
 h=(case/'bubbleColumn2Native.hpp').read_text();u=(case/'bubbleColumn2.udf').read_text();par=(case/'bubbleColumn2.par').read_text()
 assert 'nrs->scalar->o_U=o_ug' in h and 'nrs->scalar->o_relUrst=o_gasUrst' in h
-assert 's->computeUrst()' in h and 'o_scalarCoeffEXT' not in h
+assert 'computeGasUrst();' in h and 'o_scalarCoeffEXT' not in h
 for forbidden in ('correctGasPressure','freezeDragHistory','explicitFilterApply','buildOutletRamp','gasInterpolate','o_scalarConvectionHistory'):
  assert forbidden not in h+u,forbidden
 assert 'cubaturePolynomialOrder =' not in par
