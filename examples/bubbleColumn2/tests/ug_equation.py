@@ -99,5 +99,5 @@ par=(root/'bubbleColumn2.par').read_text();bc=(root/'bubbleColumn2Boundary.oudf'
 assert 'scalars = ALPHA, UGX, UGY, UGZ' in par
 assert 'scalar ugz' in bc and '? bc->usrwrk[bc->idxVol] * p_UG_INLET : 0.0' in bc
 assert 'o_solution("qgx")' not in terms and 'o_solution("ugx")' in terms
-assert 'o_ugSource' in terms and 'evaluateGasCubatureTransport(false)' in terms
+assert 'o_ugSource' in terms and 'evaluateGasSEMTransport(false)' in terms
 print('UG actual-kernel/native-BDF checks: added inertia/history, pressure, convection, flux/liquid reconstruction, stress and BC/storage wiring passed.')

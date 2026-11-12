@@ -2,7 +2,7 @@ userSections = CASEDATA
 
 [GENERAL]
 polynomialOrder = 7
-# Resolve degree-14 alpha*UG products before conservative differentiation.
+# Native UM/scalar-cancellation advection still uses cubature; user alpha/UG transport uses GLL SEM.
 cubaturePolynomialOrder = 14
 # UG scalars require a new run or a converted UG restart.
 # startFrom = bubblecolumn0.f00036
@@ -118,7 +118,7 @@ virtualMassCoefficient = 0.5
 gasVelocityLowAlphaCutoffEnabled = 0
 smoothGasVelocityMaskEnabled = 0.0
 # Scalar sources/convection use EXT1; native BDF order and fluid EXT are unchanged.
-# Alpha uses cubature div(alpha*UG); UG uses cubature UG.grad(UG).
+# Alpha uses opSEM::strongDivergence(alpha*UG); UG uses assembled SEM UG.grad(UG).
 # Gas drag is an implicit reaction with lagged liquid velocity; mixture drag stays explicit.
 # 0 disables only mixture drag; implicit UG drag and virtual mass are retained.
 mixtureDragEnabled = 1.0

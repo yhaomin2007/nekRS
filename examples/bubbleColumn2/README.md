@@ -1,4 +1,4 @@
-# bubbleColumn2: method2 with method1 scalar transport
+# bubbleColumn2: method2 with native SEM gas transport
 
 The native velocity is the volume average
 `UM=(1-alpha)*UL+alpha*UG`, with `div(UM)=0`.
@@ -9,12 +9,14 @@ Method1 and other cases are unchanged by this update.
 
 ## Alpha and gas velocity
 
-The scalar transport follows method1 at the synchronization commit:
+The restored baseline now uses native SEM operators for alpha/UG convection:
 
-- Alpha uses direct cubature differentiation of the product `alpha*UG`,
-  projected to GLL and assembled with lumped-mass weights. This represents
+- Alpha uses `opSEM::strongDivergence(alpha*UG)`, with native shared-node
+  assembly and normalization. This represents
   `d(alpha)/dt + div(alpha*UG) = numerical diffusion/regularization`.
-- UG uses cubature `UG.grad(UG)`, not `div(UG tensor UG)`.
+- UG uses `opSEM::strongGradVec(UG)` (assembled component gradients),
+  followed by pointwise contraction `UG.grad(UG)`. It is material convection,
+  not `div(UG tensor UG)`. No custom cubature transport kernels are registered.
 - The exact native mixture-advection contribution is canceled in each scalar
   RHS with matching mass assembly; native scalar velocity pointers still refer
   to UM. There is no temporary replacement of the fluid velocity.
@@ -29,11 +31,23 @@ The scalar transport follows method1 at the synchronization commit:
   magnitude clipping remains independent. Physical stress uses
   `div(alpha*tau_g)/(max(alpha,alphaFloor)*rhoEff)`.
 
-Conservative cubature transport is the fixed case implementation. Set
-`cubaturePolynomialOrder >= 2*polynomialOrder` (example: 14 for degree 7).
-The copied user interpolation-header helper supplies missing native `c_I`
-combinations without modifying installed NekRS files. Fixed mesh, four native
-scalars with `transportCoeff=1`, and no scalar subcycling are required.
+The native strong operators return pointwise derivatives after shared-node
+assembly. The bare `opSEM::divergence` API returns a weak volume load instead;
+it cannot directly replace the pointwise alpha source without boundary and
+mass treatment. No extra mass assembly is applied after the strong operators.
+
+The user gas operators are evaluated at GLL nodes without cubature projection.
+Native UM/scalar advection cancellation still uses native cubature, with the
+restored P7 / cubature14 settings and interpolation compatibility helper.
+There is no longer a `cubaturePolynomialOrder >= 2*polynomialOrder` requirement
+for the user gas operators. Fixed mesh, four native scalars with
+`transportCoeff=1`, and no scalar subcycling are required.
+
+This changes spatial discretization only. Scalar EXT1, native BDF, implicit UG
+drag with lagged UL, UM drag excluded from EXT, pressure forcing, inlet profile,
+alpha filter and outlet enhancement retain the restored baseline treatment.
+The supplied input has `virtualMassEnabled = 0`. This change does not establish
+long-time stability; compare alpha volume balance and stripe onset in runs.
 
 `alphaExplicitFilterModes` / `alphaExplicitFilterStrength` configure the same
 standalone bubble-basis filter as method1. After each scalar advancement the
@@ -106,8 +120,8 @@ The implicit gas derivative order is controlled by native `timeStepper`.
 `virtualMassStartStep=S` leaves VM off through S;
 `virtualMassRampStep=R>0` gives `min(1,(step-S)/R)` afterward, and R=0 activates
 immediately. History is collected during the delay when VM is enabled.
-The default is VM on, coefficient 0.5, no delay/ramp, matching method1's
-activation. UM remains explicit with native fluid EXT, while scalar explicit
+The supplied input disables VM; coefficient 0.5 and zero delay/ramp
+remain configured for optional VM-on tests. UM remains explicit with native fluid EXT, while scalar explicit
 parts use EXT1. Physical coefficients are paired; the coupled equations are
 not solved implicitly together. Pressure mobility remains
 `(1-alpha)/rhoLiquid + alpha/rhoGas`. Stability at larger dt is not established.
@@ -119,3 +133,14 @@ transport and high-degree quadrature, shared-node cancellation, initialization,
 inlet rim agreement, dilute UG, implicit gas drag, explicit mixture drag/ramp,
 VM histories/coefficient pairing, alpha postprocessing and interpolation fallback.
 Full NekRS MPI/GPU build and flow stability require a run on the target system.
+
+### SEM transport check
+
+`OCCA_DIR=/path/to/occa python3 tests/sem_transport.py` executes the actual
+native GLL gradient/divergence kernels and the actual pointwise UG contraction
+with OCCA Serial. It checks polynomial derivatives, nonzero compression,
+material versus conservative UG convection, mass normalization, padding and
+source wiring. `conservative_alpha.py` checks source signs and exact native
+advection cancellation. The retained custom-cubature source file and its old
+kernel tests are historical comparisons; that source is not registered or
+called by this case. Full target MPI/GPU time integration remains untested.

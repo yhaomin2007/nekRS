@@ -68,12 +68,8 @@ struct Parameters {
 };
 
 static Parameters p;
-static deviceMemory<dfloat> o_gasTransportFields;
-static deviceMemory<dfloat> o_gasCubatureFields;
-static deviceMemory<dfloat> o_gasCubatureProducts;
 static deviceMemory<dfloat> o_gasTransport;
-static occa::kernel gasInterpolateKernel, gasCubatureProductsKernel;
-static occa::kernel gasProjectKernel, alphaConservativeCubatureKernel;
+static occa::kernel gasMaterialConvectionKernel;
 static deviceMemory<dfloat> o_gasAdvector;
 static deviceMemory<dfloat> o_scalarCoeffEXT;
 
@@ -171,22 +167,6 @@ static occa::kernel buildOutletRampFactorKernel;
 inline void registerKernels(deviceKernelProperties &kernelInfo)
 {
   userExplicitFilter::registerKernels(kernelInfo);
-  {
-    auto cubInfo = kernelInfo;
-    int cubN = 0;
-    platform->options.getArgs("CUBATURE POLYNOMIAL DEGREE", cubN);
-    cubInfo.define("p_cubNq") = cubN + 1;
-    cubInfo.define("p_cubNp") = (cubN + 1) * (cubN + 1) * (cubN + 1);
-    const std::string req = "bubbleColumn2::transport";
-    if (platform->options.compareArgs("REGISTER ONLY", "TRUE")) {
-      platform->kernelRequests.add(req, "bubbleColumn2Transport.okl", cubInfo);
-    } else {
-      gasInterpolateKernel = platform->kernelRequests.load(req, "gasInterpolate");
-      gasCubatureProductsKernel = platform->kernelRequests.load(req, "gasCubatureProducts");
-      gasProjectKernel = platform->kernelRequests.load(req, "gasProject");
-      alphaConservativeCubatureKernel = platform->kernelRequests.load(req, "alphaConservativeCubature");
-    }
-  }
 
   const std::string request = "bubbleColumn2::equations";
   // This is standalone OKL source.  The .okl suffix is required so OCCA
@@ -195,6 +175,7 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
   if (platform->options.compareArgs("REGISTER ONLY", "TRUE")) {
     platform->kernelRequests.add(request, fileName, kernelInfo);
   } else {
+    gasMaterialConvectionKernel = platform->kernelRequests.load(request, "gasMaterialConvection");
     vectorMagnitudeKernel = platform->kernelRequests.load(request, "vectorMagnitude");
     buildMixtureStressCorrectionKernel = platform->kernelRequests.load(request, "buildMixtureStressCorrection");
     addMixtureStressCorrectionKernel = platform->kernelRequests.load(request, "addMixtureStressCorrection");
@@ -225,10 +206,6 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
 inline void allocate()
 {
   const dlong offset = nrs->fieldOffset;
-  nekrsCheck(nrs->meshV->cubNq < 2 * nrs->meshV->N + 1
-                 || !platform->options.compareArgs("ADVECTION TYPE", "CUBATURE"),
-             platform->comm.mpiComm(), EXIT_FAILURE,
-             "%s", "Conservative gas transport requires cubaturePolynomialOrder >= 2*polynomialOrder and cubature advection.\n");
   nekrsCheck(platform->options.compareArgs("MOVING MESH", "TRUE"),
              platform->comm.mpiComm(), EXIT_FAILURE,
              "%s", "Gas transport requires a fixed mesh.\n");
@@ -245,11 +222,7 @@ inline void allocate()
                  || p.alphaExplicitFilterStrength < 0 || p.alphaExplicitFilterStrength > 1,
              platform->comm.mpiComm(), EXIT_FAILURE,
              "%s", "Alpha explicit filter requires modes in [1,N-1] and strength in [0,1].\n");
-  const dlong cubOffset = nrs->meshV->Nelements * nrs->meshV->cubNp;
-  o_gasTransportFields.resize(4 * offset);
   o_gasTransport.resize(4 * offset);
-  o_gasCubatureFields.resize(4 * cubOffset);
-  o_gasCubatureProducts.resize(4 * cubOffset);
   o_gasAdvector.resize(3 * offset);
 
   nekrsCheck(p.gasMomentumCutoff < 0.0
@@ -461,31 +434,20 @@ inline dfloat virtualMassRampFactor(int step)
       (static_cast<dfloat>(step) - p.virtualMassStartStep) / p.virtualMassRampStep);
 }
 
-inline void evaluateGasCubatureTransport(bool conservativeAlpha = false)
+// Positive pointwise transport operators, assembled by native SEM operators.
+inline void evaluateGasSEMTransport(bool conservativeAlpha = false)
 {
   auto mesh = nrs->meshV;
   const dlong offset = nrs->fieldOffset;
-  const dlong cubOffset = mesh->Nelements * mesh->cubNp;
-  o_gasTransportFields.copyFrom(nrs->scalar->o_solution("alpha"), mesh->Nlocal);
-  for (int i = 0; i < 3; ++i) {
-    o_gasTransportFields.copyFrom(o_gasAdvector, mesh->Nlocal, (i + 1) * offset, i * offset);
-  }
-  gasInterpolateKernel(mesh->Nelements, offset, cubOffset,
-                       mesh->o_cubInterpT, o_gasTransportFields, o_gasCubatureFields);
   if (conservativeAlpha) {
-    alphaConservativeCubatureKernel(mesh->Nelements, cubOffset, mesh->o_cubD,
-        mesh->o_cubvgeo, o_gasCubatureFields, o_gasCubatureProducts);
+    // qg is reconstructed as alpha*UG at the same time level as the sources.
+    auto divergence = o_gasTransport.slice(0, offset);
+    opSEM::strongDivergence(mesh, offset, o_qg, divergence);
   } else {
-    gasCubatureProductsKernel(mesh->Nelements, cubOffset, mesh->o_cubD,
-        mesh->o_cubvgeo, o_gasCubatureFields, o_gasCubatureProducts);
+    // evaluatePointwiseTerms already computed assembled strongGradVec(UG).
+    // Only the pointwise contraction is user code; all derivatives are native.
+    gasMaterialConvectionKernel(mesh->Nlocal, offset, o_ug, o_gradUg, o_gasTransport);
   }
-  gasProjectKernel(mesh->Nelements, offset, cubOffset, mesh->o_cubInterpT,
-                   mesh->o_vgeo, o_gasCubatureProducts, o_gasTransport);
-  // Mass-weighted CG assembly of normalized nodal loads.
-  platform->linAlg->axmyMany(mesh->Nlocal, 4, offset, 0, 1.0, mesh->o_LMM, o_gasTransport);
-  oogs::startFinish(o_gasTransport, 4, offset, ogsDfloat, ogsAdd, mesh->oogs);
-  platform->linAlg->axmyMany(mesh->Nlocal, 4, offset, 0, 1.0, mesh->o_invLMM, o_gasTransport);
-  // Component zero is full div(alpha*UG) in conservative mode, compression otherwise.
 }
 
 inline void prepareGasAdvection()
@@ -615,7 +577,7 @@ inline void evaluatePointwiseTerms()
                            o_mixtureInterphaseAcceleration,
                            o_mixtureDragSource);
 
-  evaluateGasCubatureTransport(true);
+  evaluateGasSEMTransport(true);
   platform->linAlg->axpby(mesh->Nlocal, -1.0, o_gasTransport, 0.0, o_alphaSource);
 
   // Smoothly increase the implicit mixture viscosity and all implicit scalar
@@ -1077,7 +1039,7 @@ inline void addExplicitSources(double)
   nrs->scalar->o_explicitTerms("alpha").copyFrom(o_alphaSource, Nlocal);
   // Gas momentum remains material-velocity form: subtract UG.grad(UG),
   // not div(UG tensor UG). Alpha has already received -div(alpha*UG).
-  evaluateGasCubatureTransport(false);
+  evaluateGasSEMTransport(false);
   const char *names[4] = {"alpha", "ugx", "ugy", "ugz"};
   for (int i = 0; i < 3; ++i) {
     auto source = o_ugSource.slice(i * offset, offset);

@@ -501,3 +501,20 @@
     source[n] += divStress[n] / (aSafe * rhoEff);
   }
 }
+
+// Derivatives come from opSEM::strongGradVec; this kernel only contracts UG.grad(UG).
+@kernel void gasMaterialConvection(const dlong Nlocal,
+                                  const dlong offset,
+                                  @ restrict const dfloat *ug,
+                                  @ restrict const dfloat *gradUg,
+                                  @ restrict dfloat *transport)
+{
+  for (dlong n = 0; n < Nlocal; ++n; @tile(p_blockSize, @outer, @inner)) {
+    for (int c = 0; c < 3; ++c) {
+      transport[n + (c + 1) * offset] =
+          ug[n] * gradUg[n + (3*c) * offset]
+        + ug[n + offset] * gradUg[n + (3*c + 1) * offset]
+        + ug[n + 2*offset] * gradUg[n + (3*c + 2) * offset];
+    }
+  }
+}

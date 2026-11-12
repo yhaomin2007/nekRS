@@ -56,7 +56,7 @@ with tempfile.TemporaryDirectory() as directory:
 case = (root/'examples/bubbleColumn2/bubbleColumn2Terms.hpp').read_text()
 evaluation = case.split('inline void evaluatePointwiseTerms()')[1].split(
     'inline void evaluateNativeAlphaAdvection')[0]
-assert 'evaluateGasCubatureTransport(true);' in evaluation
+assert 'evaluateGasSEMTransport(true);' in evaluation
 forcing = case.split('inline void addExplicitSources(double)')[1].split(
     'inline occa::memory implicitGasDrag')[0]
 assert 'evaluateNativeAlphaAdvection(o_nativeTransportAdvection, true, names[i], true);' in forcing
