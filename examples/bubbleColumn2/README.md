@@ -45,18 +45,17 @@ for the user gas operators. Fixed mesh, four native scalars with
 
 This changes spatial discretization only. Scalar EXT1, native BDF, implicit UG
 drag with lagged UL, UM drag excluded from EXT, pressure forcing, inlet profile,
-alpha filter and outlet enhancement retain the restored baseline treatment.
+outlet enhancement retain the restored baseline treatment. The additional
+user alpha filter has been removed; native HPFRT and alpha clipping remain.
 The supplied input has `virtualMassEnabled = 0`. This change does not establish
 long-time stability; compare alpha volume balance and stripe onset in runs.
 
-`alphaExplicitFilterModes` / `alphaExplicitFilterStrength` configure the same
-standalone bubble-basis filter as method1. After each scalar advancement the
-sequence is filter alpha, mass assembly, reapply scalar Dirichlet values, then
-optional clipping. Strength 0 disables this filter; HPFRT remains independent.
-The example uses one mode at strength 0.05, diffusion 1e-5, and HPFRT one mode
-at scaling 10 for alpha/UG, matching method1. Filtering is not a positivity
-limiter and need not preserve gas volume on curved elements. Conservation CSV
-accounts for filter and clipping volume changes separately.
+There is no additional user alpha filter or filter-kernel registration.
+The supplied input retains diffusion 1e-5 and native HPFRT (one mode, scaling
+10) for alpha/UG. `postProcessAlpha` only applies the configured clipping and
+records its gas-volume change. Historical conservation CSV filter columns
+are retained as zeros for compatibility. The old standalone filter source
+files are unused by the active case.
 
 ## Initial and boundary conditions
 

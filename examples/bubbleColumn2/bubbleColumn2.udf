@@ -58,8 +58,6 @@ void UDF_Setup0(MPI_Comm, setupAide &)
   // Retain the old spelling as an alias; the documented key takes precedence.
   platform->par->extract("casedata", "alphaclippenabled", p.alphaClippingEnabled);
   platform->par->extract("casedata", "alphaclipenabled", p.alphaClippingEnabled);
-  platform->par->extract("casedata", "alphaexplicitfiltermodes", p.alphaExplicitFilterModes);
-  platform->par->extract("casedata", "alphaexplicitfilterstrength", p.alphaExplicitFilterStrength);
   platform->par->extract("casedata", "gasvelocitylowalphacutoffenabled", p.gasVelocityLowAlphaCutoffEnabled);
   platform->par->extract("casedata", "alphaminimum", p.alphaMinimum);
   platform->par->extract("casedata", "alphamaximum", p.alphaMaximum);

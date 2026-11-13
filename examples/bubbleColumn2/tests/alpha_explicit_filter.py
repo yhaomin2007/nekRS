@@ -1,11 +1,11 @@
-"""Exercise actual postScalar filter/BC/clip ordering and BDF correction."""
+"""Verify removed extra filter and retained clipping/volume diagnostics."""
 from pathlib import Path
 import subprocess
 import tempfile
 
 case=Path(__file__).resolve().parents[1]
 source=(case/'bubbleColumn2Terms.hpp').read_text()
-body=source.split('inline void postProcessAlpha(double time, int)')[1].split('inline void clipVolumeVelocity')[0]
+body=source.split('inline void postProcessAlpha(double, int)')[1].split('inline void clipVolumeVelocity')[0]
 prefix=r'''
 #include <cassert>
 #include <cmath>
@@ -33,28 +33,28 @@ void clipAlphaKernel(long n,double lo,double hi,Mem a){
  assert(order==0||order==3);order=4;++clipCalls;for(int i=0;i<n;++i)a.a[i]=std::max(lo,std::min(hi,a.a[i]));}
 '''
 main=r'''
-int main(){for(int filtering=0;filtering<=1;++filtering)for(int clipping=0;clipping<=1;++clipping){
+int main(){for(int clipping=0;clipping<=1;++clipping){
  const double original[3]={-.1,.02,.08};std::copy(original,original+3,values);
- order=filterCalls=bcCalls=clipCalls=0;cumulativeAlphaFilterDeltaVolume=cumulativeAlphaClipDeltaVolume=0.;
- p.alphaExplicitFilterModes=1;p.alphaExplicitFilterStrength=filtering?.05:0.;
+ order=filterCalls=bcCalls=clipCalls=0;
+ cumulativeAlphaFilterDeltaVolume=cumulativeAlphaClipDeltaVolume=0.;
  p.alphaClippingEnabled=clipping;p.alphaMinimum=0.;p.alphaMaximum=.05;
  postProcessAlpha(.1,1);
- double afterFilter[3]={filtering?-.03:-.1,.02,filtering?.06:.08};
- double dvFilter=0,dvClip=0;
- for(int i=0;i<3;++i){double expected=clipping?std::max(0.,std::min(.05,afterFilter[i])):afterFilter[i];
+ double dvClip=0;
+ for(int i=0;i<3;++i){double expected=clipping?std::max(0.,std::min(.05,original[i])):original[i];
  assert(std::abs(values[i]-expected)<1e-14);
- 
- dvFilter+=mass[i]*(afterFilter[i]-original[i]);dvClip+=mass[i]*(expected-afterFilter[i]);}
- assert(std::abs(alphaFilterDeltaVolume-dvFilter)<1e-14);
+ dvClip+=mass[i]*(expected-original[i]);}
+ assert(alphaFilterDeltaVolume==0 && cumulativeAlphaFilterDeltaVolume==0);
  assert(std::abs(alphaClipDeltaVolume-dvClip)<1e-14);
- assert(std::abs(cumulativeAlphaFilterDeltaVolume-dvFilter)<1e-14);
  assert(std::abs(cumulativeAlphaClipDeltaVolume-dvClip)<1e-14);
- assert(filterCalls==filtering&&bcCalls==filtering&&clipCalls==clipping);
+ assert(filterCalls==0 && bcCalls==0 && clipCalls==clipping);
 }}
 '''
 with tempfile.TemporaryDirectory() as directory:
-    path=Path(directory);(path/'check.cpp').write_text(prefix+'inline void postProcessAlpha(double time, int)'+body+main)
+    path=Path(directory);(path/'check.cpp').write_text(prefix+'inline void postProcessAlpha(double, int)'+body+main)
     subprocess.run(['g++','-std=c++11',str(path/'check.cpp'),'-o',str(path/'check')],check=True)
     subprocess.run([str(path/'check')],check=True)
 assert 'nrs->postScalar = &bubbleColumn2::postProcessAlpha' in (case/'bubbleColumn2.udf').read_text()
-print('Actual alpha postScalar: filter/assembly/BC/clip order, independent switches, separate filter/clipping volume changes passed.')
+assert 'userExplicitFilter::' not in source
+assert 'alphaExplicitFilterStrength' not in source
+assert 'alphaExplicitFilterStrength' not in (case/'bubbleColumn2.par').read_text()
+print('Actual alpha postScalar: no extra filtering/BC resets; clipping toggle and volume diagnostics passed.')

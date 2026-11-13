@@ -7,7 +7,6 @@
 #include <vector>
 
 #include "opSEM.hpp"
-#include "explicitFilter.hpp"
 
 namespace bubbleColumn2
 {
@@ -24,8 +23,6 @@ struct Parameters {
   dfloat gravity[3];
   dfloat alphaFloor;
   dfloat alphaClippingEnabled;
-  int alphaExplicitFilterModes = 1;
-  dfloat alphaExplicitFilterStrength = 0.0;
   dfloat alphaMinimum;
   dfloat alphaMaximum;
   dfloat subtractAlphaDiffusion;
@@ -141,6 +138,7 @@ static dfloat validationPreviousGasBoundaryFlux = 0.0;
 static dfloat validationPreviousMassBoundaryFlux = 0.0;
 static dfloat cumulativeGasBoundaryIntegral = 0.0;
 static dfloat cumulativeMassBoundaryIntegral = 0.0;
+// Retain zero-valued filter columns for conservation CSV compatibility.
 static dfloat alphaFilterDeltaVolume = 0.0;
 static dfloat cumulativeAlphaFilterDeltaVolume = 0.0;
 static dfloat alphaClipDeltaVolume = 0.0;
@@ -166,7 +164,6 @@ static occa::kernel buildOutletRampFactorKernel;
 
 inline void registerKernels(deviceKernelProperties &kernelInfo)
 {
-  userExplicitFilter::registerKernels(kernelInfo);
 
   const std::string request = "bubbleColumn2::equations";
   // This is standalone OKL source.  The .okl suffix is required so OCCA
@@ -217,11 +214,6 @@ inline void allocate()
                  || p.gasPressureGradientFilterWeight <= 0 || p.gasPressureGradientFilterWeight > 1,
              platform->comm.mpiComm(), EXIT_FAILURE,
              "%s", "Gas pressure gradient filter weight must be in (0,1].\n");
-  nekrsCheck(p.alphaExplicitFilterModes < 1 || p.alphaExplicitFilterModes > nrs->meshV->N - 1
-                 || !std::isfinite(p.alphaExplicitFilterStrength)
-                 || p.alphaExplicitFilterStrength < 0 || p.alphaExplicitFilterStrength > 1,
-             platform->comm.mpiComm(), EXIT_FAILURE,
-             "%s", "Alpha explicit filter requires modes in [1,N-1] and strength in [0,1].\n");
   o_gasTransport.resize(4 * offset);
   o_gasAdvector.resize(3 * offset);
 
@@ -782,28 +774,16 @@ inline void assembleNodalField(deviceMemory<dfloat>& o_divergence)
   platform->linAlg->axmy(Nlocal, 1.0, mesh->o_invLMM, o_divergence);
 }
 
-inline void postProcessAlpha(double time, int)
+inline void postProcessAlpha(double, int)
 {
   const dlong Nlocal = nrs->meshV->Nlocal;
   const MPI_Comm comm = platform->comm.mpiComm();
   auto alpha = nrs->scalar->o_solution("alpha");
   alphaFilterDeltaVolume = 0.0;
   alphaClipDeltaVolume = 0.0;
-  if (p.alphaExplicitFilterStrength == 0.0 && p.alphaClippingEnabled == 0.0) return;
+  if (p.alphaClippingEnabled == 0.0) return;
   dfloat volumeBefore = platform->linAlg->innerProd(
       Nlocal, nrs->meshV->o_LMM, alpha, comm);
-  if (p.alphaExplicitFilterStrength > 0.0) {
-    userExplicitFilter::explicitFilterApply("alpha", nrs->meshV,
-        p.alphaExplicitFilterModes, p.alphaExplicitFilterStrength, alpha);
-    assembleNodalField(alpha);
-    // Reimpose prescribed scalar boundary values after direct field filtering.
-    nrs->scalar->applyDirichlet(time);
-    const dfloat volumeAfter = platform->linAlg->innerProd(
-        Nlocal, nrs->meshV->o_LMM, alpha, comm);
-    alphaFilterDeltaVolume = volumeAfter - volumeBefore;
-    cumulativeAlphaFilterDeltaVolume += alphaFilterDeltaVolume;
-    volumeBefore = volumeAfter;
-  }
   if (p.alphaClippingEnabled != 0.0) {
     clipAlphaKernel(Nlocal, p.alphaMinimum, p.alphaMaximum, alpha);
     const dfloat volumeAfter = platform->linAlg->innerProd(
