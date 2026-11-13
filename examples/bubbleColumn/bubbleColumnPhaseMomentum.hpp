@@ -89,6 +89,7 @@ inline void beginStep(double time)
   // Reuse conservative alpha transport, density/drift stress and native UM forcing.
   // No writes to UM or to its native time coefficients/history.
   addExplicitSources(time);
+  alphaStabilization::addSources();
   auto mesh=nrs->meshV;
   const dlong N=mesh->Nlocal, offset=nrs->fieldOffset;
   // The same cubature operator and fluid EXT coefficients as UG convection.

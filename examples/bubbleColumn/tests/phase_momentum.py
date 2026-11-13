@@ -121,7 +121,7 @@ with tempfile.TemporaryDirectory() as tmp:
 par=configparser.ConfigParser(inline_comment_prefixes=('#',),strict=True)
 par.read_string('[ROOT]\n'+(case/'bubbleColumn.par').read_text())
 assert [x.strip() for x in par['GENERAL']['scalars'].split(',')]==['ALPHA','UGX','UGY','UGZ','ULX','ULY','ULZ']
-assert len(par['CASEDATA'])==14
+assert len(par['CASEDATA'])==18
 udf=(case/'bubbleColumn.udf').read_text()
 host=(case/'bubbleColumnPhaseMomentum.hpp').read_text()
 correct=host.split('inline void correct()')[1].split('inline void reportVector')[0]

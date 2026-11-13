@@ -9,6 +9,13 @@ phase predictors never overwrite UM before its pressure/velocity solve.
 The final correction changes only the current phase scalar solutions; their
 corrected values enter the normal native histories at the next step.
 
+Alpha now has an optional weak anisotropic stabilization module. The default
+is constant crosswind diffusion Dcw=2e-5 m^2/s, in addition to native D0=1e-5.
+Set alphaStabilizationMode=0 for the previous alpha equation. Modes 3 and 4
+provide streamline artificial diffusion and combined diffusion, respectively;
+these are not SUPG. See [ALPHA_STABILIZATION.md](ALPHA_STABILIZATION.md) for
+parameters, boundary/time treatment, diagnostics and the coefficient sweep.
+
 ## Phase predictors
 
 Alpha uses conservative cubature transport with UG. Both phase material
@@ -51,7 +58,9 @@ The physical stress/drag still impose explicit timestep restrictions.
 The native UM momentum equation keeps its own convection, variable density,
 mixture viscosity, gravity and drift-stress forcing. Pressure uses the
 variable 1/rhoM coefficient and the alpha-derived relative-flux divergence
-target, including alpha numerical diffusion. The final phase correction
+target, including alpha numerical diffusion and the identical selected explicit
+stabilization contribution. The target and alpha use matching stabilization
+time weights. The final phase correction
 does not modify UM, pressure, their histories, or their forcing.
 
 For the completed alpha, define wg=a*rhoG/rhoM and wl=b*rhoL/rhoM.

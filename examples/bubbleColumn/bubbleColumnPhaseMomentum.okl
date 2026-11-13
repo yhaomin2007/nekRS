@@ -1,3 +1,5 @@
+#include <math.h>
+
 @kernel void mixtureDivergenceDifference(const dlong N,
     @restrict const dfloat *target, @restrict const dfloat *actual,
     @restrict dfloat *difference)

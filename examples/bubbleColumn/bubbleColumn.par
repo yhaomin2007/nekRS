@@ -103,3 +103,11 @@ gasPressureGradientExtrapolation = 0
 alphaCompressionEnabled = 1
 # First step, every N steps, and checkpoints; 0: first/checkpoints only.
 diagnosticInterval = 10
+
+# Alpha-only artificial diffusion: 0=off, 1=crosswind, 3=streamline, 4=both.
+# Adaptive mode 2 and full SUPG mode 5 are reserved, not implemented.
+alphaStabilizationMode = 1
+alphaCrosswindDiffusivity = 2e-5
+alphaStreamlineDiffusivity = 2e-5
+# Velocity regularization (m/s); at UG=0 crosswind becomes isotropic.
+alphaDirectionEpsilon = 1e-6

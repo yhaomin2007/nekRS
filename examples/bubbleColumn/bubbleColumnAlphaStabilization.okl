@@ -1,0 +1,55 @@
+#include <math.h>
+// Constant anisotropic artificial diffusion; this is not SUPG/GLS.
+@kernel void alphaStabilizationFlux(const dlong N, const dlong offset,
+    const dfloat crosswind, const dfloat streamline, const dfloat epsilon,
+    @restrict const dfloat *vgeo, @restrict const dfloat *ug,
+    @restrict const dfloat *weightedGradient, @restrict dfloat *flux)
+{
+  for (dlong n=0;n<N;++n;@tile(p_blockSize,@outer,@inner)) {
+    const dlong e=n/p_Np, node=n-e*p_Np;
+    const dfloat invJW=1/vgeo[e*p_Nvgeo*p_Np+node+p_JWID*p_Np];
+    const dfloat ux=ug[n], uy=ug[n+offset], uz=ug[n+2*offset];
+    const dfloat speed2=ux*ux+uy*uy+uz*uz;
+    const dfloat gx=invJW*weightedGradient[n];
+    const dfloat gy=invJW*weightedGradient[n+offset];
+    const dfloat gz=invJW*weightedGradient[n+2*offset];
+    // n*n^T*grad(alpha) = u*(u.grad(alpha))/(|u|^2+epsilon^2).
+    const dfloat projected=(ux*gx+uy*gy+uz*gz)/(speed2+epsilon*epsilon);
+    flux[n]=crosswind*gx+(streamline-crosswind)*ux*projected;
+    flux[n+offset]=crosswind*gy+(streamline-crosswind)*uy*projected;
+    flux[n+2*offset]=crosswind*gz+(streamline-crosswind)*uz*projected;
+  }
+}
+
+@kernel void alphaStabilizationDiagnostics(const dlong N, const dlong offset,
+    const dfloat crosswind, const dfloat streamline, const dfloat epsilon,
+    const dfloat g0idt,
+    @restrict const dfloat *alpha, @restrict const dfloat *ug,
+    @restrict const dfloat *gradient, @restrict const dfloat *gradientUgZ,
+    @restrict const dfloat *divUg, @restrict const dfloat *rawRhs,
+    @restrict const dfloat *usedRhs, @restrict const dfloat *historyRate,
+    @restrict const dfloat *transportEXT, @restrict const dfloat *baselineDiffusion,
+    @restrict dfloat *fields)
+{
+  for (dlong n=0;n<N;++n;@tile(p_blockSize,@outer,@inner)) {
+    const dfloat ux=ug[n], uy=ug[n+offset], uz=ug[n+2*offset];
+    const dfloat denom=ux*ux+uy*uy+uz*uz+epsilon*epsilon;
+    const dfloat proj=(ux*gradientUgZ[n]+uy*gradientUgZ[n+offset]+uz*gradientUgZ[n+2*offset])/denom;
+    const dfloat sx=gradientUgZ[n]-ux*proj;
+    const dfloat sy=gradientUgZ[n+offset]-uy*proj;
+    const dfloat sz=gradientUgZ[n+2*offset]-uz*proj;
+    fields[n]=alpha[n];
+    fields[n+offset]=divUg[n];
+    fields[n+2*offset]=ux*gradient[n]+uy*gradient[n+offset]+uz*gradient[n+2*offset];
+    fields[n+3*offset]=alpha[n]*divUg[n];
+    fields[n+4*offset]=crosswind;
+    fields[n+5*offset]=streamline;
+    fields[n+6*offset]=rawRhs[n];
+    fields[n+7*offset]=usedRhs[n];
+    fields[n+8*offset]=sqrt(sx*sx+sy*sy+sz*sz);
+    // Correct native BDF history and selected EXT transport, not (a-aOld)/dt.
+    const dfloat residual=g0idt*alpha[n]-historyRate[n]-transportEXT[n]-baselineDiffusion[n];
+    fields[n+9*offset]=residual;
+    fields[n+10*offset]=residual-usedRhs[n];
+  }
+}

@@ -1,5 +1,6 @@
 #include "bubbleColumnTerms.hpp"
 #include "bubbleColumnCubature.hpp"
+#include "bubbleColumnAlphaStabilization.hpp"
 #include "bubbleColumnPhaseMomentum.hpp"
 
 #ifdef __okl__
@@ -13,6 +14,7 @@ void UDF_LoadKernels(deviceKernelProperties &info)
   info.define("p_ALPHA_INLET")=bubbleColumn::p.alphaInlet;
   info.define("p_UG_INLET")=bubbleColumn::p.ugInlet;
   bubbleColumn::registerKernels(info);
+  bubbleColumn::alphaStabilization::registerKernels(info);
   bubbleColumn::phaseMomentum::registerKernels(info);
 }
 
@@ -54,6 +56,7 @@ void UDF_Setup0(MPI_Comm,setupAide &)
   read("gaspressuregradientextrapolation",p.gasPressureGradientExtrapolation);
   read("alphacompressionenabled",p.alphaCompressionEnabled);
   read("diagnosticinterval",bubbleColumn::phaseMomentum::interval);
+  bubbleColumn::alphaStabilization::readParameters();
   nekrsCheck(!(std::isfinite(p.rhoLiquid) && p.rhoLiquid>0 &&
       std::isfinite(p.rhoGas) && p.rhoGas>0 &&
       std::isfinite(p.muLiquid) && p.muLiquid>0 &&
@@ -70,6 +73,7 @@ void UDF_Setup0(MPI_Comm,setupAide &)
 void UDF_Setup()
 {
   bubbleColumn::allocate();
+  bubbleColumn::alphaStabilization::allocate();
   bubbleColumn::phaseMomentum::allocate();
   if (platform->options.getArgs("RESTART FILE NAME").empty()) {
     const auto &p=bubbleColumn::p;
@@ -106,4 +110,5 @@ void UDF_ExecuteStep(double time,int tstep)
   bubbleColumn::reconstructGasVelocity();
   bubbleColumn::reconstructLiquidVelocity();
   bubbleColumn::phaseMomentum::diagnostics(time);
+  bubbleColumn::alphaStabilization::diagnostics(time);
 }
