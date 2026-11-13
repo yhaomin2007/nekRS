@@ -7,6 +7,20 @@ The checkpoint scalars are `ALPHA,UGX,UGY,UGZ`; `qg=alpha*UG` is derived.
 NekRS core and scalar / pressure / velocity solve ordering are unchanged.
 Method1 and other cases are unchanged by this update.
 
+## Native UM viscosity
+
+The supplied native dynamic viscosity is the volume-weighted closure
+`muBase=(1-alpha)*muLiquid+alpha*muGas`. The pressure density remains
+`rhoPressure=1/[(1-alpha)/rhoLiquid+alpha/rhoGas]`.
+NekRS solves with rhoPressure on the LHS and native implicit UM diffusion
+`div(muSolver*grad(UM))`, where `muSolver=R(z)*muBase` retains the existing
+outlet enhancement (1 below z=0.9, smoothly increasing to 20 at z=0.95).
+For locally constant coefficients, acceleration diffusion is
+`R(z)*muBase/rhoPressure * laplacian(UM)`.
+The optional phase-stress correction remains disabled; its baseline subtraction
+uses the same muBase for consistency if enabled later. This is an approximate
+UM viscosity closure, not an exact reduction of separate phase viscous forces.
+
 ## Alpha and gas velocity
 
 The restored baseline now uses native SEM operators for alpha/UG convection:

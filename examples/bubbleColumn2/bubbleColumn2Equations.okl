@@ -235,9 +235,8 @@
     const dfloat rhoM = beta * rhoLiquid + a * rhoGas;
     const dfloat pressureMobility = beta / rhoLiquid + a / rhoGas;
     const dfloat rhoPressure = 1.0 / pressureMobility;
-    const dfloat nuEffective = beta * muLiquid / rhoLiquid
-                               + a * muGas / rhoGas;
-    const dfloat muEffective = rhoPressure * nuEffective;
+    // Volume-weighted dynamic viscosity supplied directly to native UM diffusion.
+    const dfloat muEffective = beta * muLiquid + a * muGas;
 
     const dfloat dx = ug[n + 0 * offset] - uv[n + 0 * offset];
     const dfloat dy = ug[n + 1 * offset] - uv[n + 1 * offset];
@@ -430,7 +429,7 @@
   for (dlong n = 0; n < N; ++n; @tile(p_blockSize, @outer, @inner)) {
     const dfloat a = alpha[n] < 0 ? 0 : (alpha[n] > 1 ? 1 : alpha[n]);
     const dfloat beta = 1 - a;
-    const dfloat baseMu = rhoPressure[n] * (beta * muLiquid / rhoLiquid + a * muGas / rhoGas);
+    const dfloat baseMu = beta * muLiquid + a * muGas;
     const dfloat divUl = gradUl[n] + gradUl[n + 4 * offset] + gradUl[n + 8 * offset];
     const dfloat divUg = gradUg[n] + gradUg[n + 4 * offset] + gradUg[n + 8 * offset];
     const dfloat divUv = gradUv[n] + gradUv[n + 4 * offset] + gradUv[n + 8 * offset];

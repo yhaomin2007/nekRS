@@ -37,6 +37,8 @@ int main(){
  alpha[0]=.05;ug[0]=.3;ul[0]=.1;
  gradP[0]=-12.;liquidAcceleration[0]=2;
 '''+call+r'''
+ assert(std::abs(muMField[0]-(.95*muLiquid+.05*muGas))<1e-15);
+ assert(std::abs(1/rhoPressureField[0]-(.95/rhoLiquid+.05/rhoGas))<1e-15);
  double c=.5*rhoLiquid,eff=rhoGas+c;
  assert(std::abs(ugSource[0]-(12+c*2)/eff)<1e-12);
  // Changing alpha does not multiply the UG pressure/VM acceleration.
