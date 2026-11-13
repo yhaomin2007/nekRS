@@ -1,4 +1,9 @@
-# Method1 alpha stabilization: first-stage implementation
+# Legacy constant-coefficient stabilization (modes 1/3/4)
+
+The current default is **mode 6**, described in
+[ALPHA_RESIDUAL_STABILIZATION.md](ALPHA_RESIDUAL_STABILIZATION.md).
+The following describes only the retained constant-coefficient comparison modes.
+They must be selected explicitly.
 
 This implements the supplied handoff in **bubbleColumn / Method1**. No core,
 momentum, drag, pressure algorithm, phase correction, convection selection,
@@ -15,13 +20,13 @@ front, alpha-gradient, low-alpha or shear activation mask.
 
 | CASEDATA parameter | Default | Meaning |
 | --- | --- | --- |
-| alphaStabilizationMode | 1 | 0 off; 1 crosswind; 3 streamline artificial diffusion; 4 both |
+| alphaStabilizationMode | 6 | 0 off; 1 crosswind; 3 streamline artificial diffusion; 4 both |
 | alphaCrosswindDiffusivity | 2e-5 | Dcw in m^2/s, active in modes 1 and 4 |
 | alphaStreamlineDiffusivity | 2e-5 | Dstream in m^2/s, active in modes 3 and 4 |
 | alphaDirectionEpsilon | 1e-6 | Positive velocity regularization in m/s |
 
 Mode 0 does not alter the scalar forcing or mixture divergence target and is
-the baseline comparison. Modes 2 (adaptive) and 5 (SUPG) are rejected explicitly.
+the baseline comparison. Modes 2/5/6 use the separate residual module.
 Streamline artificial diffusion is **not SUPG/GLS**. Residual, modal and shear
 sensors are diagnostic/deferred work, not adaptive diffusivity selectors.
 
@@ -32,7 +37,7 @@ tensor is not an exact projector. Equal active coefficients give exactly
 isotropic added diffusion, independent of velocity, a useful comparison test.
 
 The default native alpha diffusion remains D0=1e-5 m^2/s and is implicit.
-The default added crosswind coefficient is the handoff's first nonzero sweep
+For legacy mode 1, the fallback crosswind coefficient is the handoff's first nonzero sweep
 value. Existing HPFRT is retained so that its change does not confound the test.
 Sweep Dcw = 0, 2e-5, 5e-5, 1e-4 with mode 1; compare identical physical times.
 Mode 0 is the strict baseline; mode 4 with Dcw=Dstream gives isotropic added

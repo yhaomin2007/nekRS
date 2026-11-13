@@ -172,8 +172,8 @@ assert 'o_U.copyFrom' not in header and '->solve(' not in header
 assert 'strongGrad(mesh,offset,nrs->scalar->o_solution("alpha"),weightedGradient,false)' in header
 assert 'axmy(N,-1.0,mesh->o_invLMM,rawRhs)' in header
 assert 'alphaStabilization::diagnostics(time)' in udf
-assert 'mode!=0 && mode!=1 && mode!=3 && mode!=4' in header
-print('Production alpha source and Method1 target receive the same EXT sample once; off path and deferred modes verified.')
+assert 'mode<0 || mode>6' in header
+print('Legacy constant-mode source and Method1 target receive the same EXT sample once; off path verified.')
 
 # Execute the actual source hook, with known variable-step EXT weights. The
 # real ExplicitHistory itself is exercised by time_extrapolation.py.
@@ -197,7 +197,7 @@ struct Mesh {int Nlocal=3;} mesh;
 struct Nrs {Mesh *meshV=&mesh;Scalar *scalar;double dt[1]={.01};} nr{&mesh,&scalar},*nrs=&nr;
 double raw[5]={},used[5]={},alphaSource[5]={1,1,1,123,123},targetPart[5]={.5,.5,.5,123,123},hist[5]={};
 Mem rawRhs{raw,5},usedRhs{used,5},o_alphaSource{alphaSource,5},o_alphaExplicitDiffusion{targetPart,5},historyRate{hist,5};
-bool active=true;bool enabled(){return active;}bool due(){return false;}
+int mode=1;bool active=true;bool enabled(){return active;}bool due(){return false;}
 void evaluateDiffusion(){raw[0]=-.2;raw[1]=.1;raw[2]=.1;}
 struct History {int calls=0;void apply(Mem sample,Mem out,int components,bool extrapolate){
  assert(components==1&&extrapolate);++calls;double previous[3]={-.1,.04,.06};

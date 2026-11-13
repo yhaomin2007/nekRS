@@ -9,12 +9,17 @@ phase predictors never overwrite UM before its pressure/velocity solve.
 The final correction changes only the current phase scalar solutions; their
 corrected values enter the normal native histories at the next step.
 
-Alpha now has an optional weak anisotropic stabilization module. The default
-is constant crosswind diffusion Dcw=2e-5 m^2/s, in addition to native D0=1e-5.
-Set alphaStabilizationMode=0 for the previous alpha equation. Modes 3 and 4
-provide streamline artificial diffusion and combined diffusion, respectively;
-these are not SUPG. See [ALPHA_STABILIZATION.md](ALPHA_STABILIZATION.md) for
-parameters, boundary/time treatment, diagnostics and the coefficient sweep.
+Alpha defaults to residual-based Codina-type crosswind stabilization plus a
+transient SUPG weak-residual term (`alphaStabilizationMode=6`). The added
+crosswind diffusivity varies with the local transport residual, gas velocity,
+alpha gradient, geometry and polynomial order. An alpha-only Newton/GMRES
+correction solves the stabilized equation before existing clipping; the native
+forcing and histories are read without being overwritten. Set mode 0 for the
+previous alpha equation, 2 for crosswind only, or 5 for SUPG only.
+See [ALPHA_RESIDUAL_STABILIZATION.md](ALPHA_RESIDUAL_STABILIZATION.md) for the
+formulation, COMSOL correspondence, controls, output and validation limits.
+Legacy constant modes 1/3/4 are documented separately in
+[ALPHA_STABILIZATION.md](ALPHA_STABILIZATION.md).
 
 ## Phase predictors
 
@@ -58,9 +63,10 @@ The physical stress/drag still impose explicit timestep restrictions.
 The native UM momentum equation keeps its own convection, variable density,
 mixture viscosity, gravity and drift-stress forcing. Pressure uses the
 variable 1/rhoM coefficient and the alpha-derived relative-flux divergence
-target, including alpha numerical diffusion and the identical selected explicit
-stabilization contribution. The target and alpha use matching stabilization
-time weights. The final phase correction
+target, including alpha numerical diffusion and the identical applied
+stabilization contribution. Residual modes use the accepted current weak source;
+legacy constant modes use their selected explicit history. The target and alpha
+use matching stabilization time weights. The final phase correction
 does not modify UM, pressure, their histories, or their forcing.
 
 For the completed alpha, define wg=a*rhoG/rhoM and wl=b*rhoL/rhoM.

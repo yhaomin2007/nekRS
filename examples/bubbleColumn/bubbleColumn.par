@@ -104,10 +104,16 @@ alphaCompressionEnabled = 1
 # First step, every N steps, and checkpoints; 0: first/checkpoints only.
 diagnosticInterval = 10
 
-# Alpha-only artificial diffusion: 0=off, 1=crosswind, 3=streamline, 4=both.
-# Adaptive mode 2 and full SUPG mode 5 are reserved, not implemented.
-alphaStabilizationMode = 1
-alphaCrosswindDiffusivity = 2e-5
-alphaStreamlineDiffusivity = 2e-5
-# Velocity regularization (m/s); at UG=0 crosswind becomes isotropic.
+# Residual stabilization: 0=off, 2=Codina-type crosswind, 5=SUPG, 6=both.
+# Legacy constant diffusion modes 1/3/4 remain available, not the default.
+alphaStabilizationMode = 6
+alphaCrosswindScale = 1.0
+alphaStreamlineScale = 1.0
+alphaLowerGradientChange = 1e-5
+# Upper safeguard only, not a uniformly applied diffusion coefficient (m^2/s).
+alphaMaxResidualDiffusivity = 1e-3
+alphaStabilizationRelTol = 1e-5
+alphaStabilizationAbsTol = 1e-7
+alphaStabilizationMaxIterations = 30
+# Velocity regularization (m/s); residual crosswind switches off below this speed.
 alphaDirectionEpsilon = 1e-6

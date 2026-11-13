@@ -1,0 +1,70 @@
+#include <math.h>
+
+@kernel void alphaResidualGradient(const dlong N,const dlong offset,
+    @restrict const dfloat *vgeo,@restrict const dfloat *weightedGradient,
+    @restrict const dfloat *diffusion,@restrict dfloat *flux)
+{
+  for(dlong n=0;n<N;++n;@tile(p_blockSize,@outer,@inner)) {
+    const dlong e=n/p_Np,node=n-e*p_Np;
+    const dfloat invJW=1/vgeo[e*p_Nvgeo*p_Np+node+p_JWID*p_Np];
+    for(int c=0;c<3;++c) flux[n+c*offset]=diffusion[n]*invJW*weightedGradient[n+c*offset];
+  }
+}
+
+// Conservative transient SUPG + residual-dependent Codina-type crosswind.
+// R uses the SAME BDF history and explicit transport EXT as the alpha equation.
+@kernel void alphaResidualFlux(const dlong N,const dlong offset,
+    const dfloat h,const dfloat dt,const int order,const int cwEnabled,const int supgEnabled,
+    const dfloat cwScale,const dfloat supgScale,const dfloat gradientChange,
+    const dfloat maxDiffusion,const dfloat epsilon,
+    @restrict const dfloat *vgeo,@restrict const dfloat *alpha,
+    @restrict const dfloat *ug,@restrict const dfloat *weightedGradient,
+    @restrict const dfloat *weightedLaplacian,@restrict const dfloat *weightedDivUg,
+    @restrict const dfloat *history,@restrict const dfloat *transportEXT,
+    @restrict const dfloat *diffusion,
+    @restrict dfloat *cwFlux,@restrict dfloat *supgFlux,@restrict dfloat *fields)
+{
+  for(dlong n=0;n<N;++n;@tile(p_blockSize,@outer,@inner)) {
+    const dlong e=n/p_Np,node=n-e*p_Np,base=e*p_Nvgeo*p_Np+node;
+    const dfloat invJW=1/vgeo[base+p_JWID*p_Np];
+    const dfloat ux=ug[n],uy=ug[n+offset],uz=ug[n+2*offset];
+    const dfloat speed2=ux*ux+uy*uy+uz*uz,speed=sqrt(speed2);
+    const dfloat gx=weightedGradient[n]*invJW,gy=weightedGradient[n+offset]*invJW,gz=weightedGradient[n+2*offset]*invJW;
+    const dfloat grad2=gx*gx+gy*gy+gz*gz,grad=sqrt(grad2);
+    dfloat metricTrace=0,metricU=0,metricGrad=0;
+    for(int d=0;d<3;++d) {
+      const dfloat mx=vgeo[base+(3*d)*p_Np],my=vgeo[base+(3*d+1)*p_Np],mz=vgeo[base+(3*d+2)*p_Np];
+      const dfloat a=mx*ux+my*uy+mz*uz,b=mx*gx+my*gy+mz*gz;
+      metricTrace+=mx*mx+my*my+mz*mz;metricU+=a*a;metricGrad+=b*b;
+    }
+    const dfloat hmin=2/sqrt(metricTrace);
+    const dfloat hgrad=grad>0?2*grad/sqrt(metricGrad):hmin;
+    const dfloat hvelocity=speed>epsilon?2*speed/sqrt(metricU):hmin;
+    const dfloat p=order>0?order:1;
+    const dfloat heff=hmin/p,hstream=hvelocity/p;
+    const dfloat q=weightedDivUg[n]*invJW;
+    const dfloat R=h*alpha[n]-history[n]-transportEXT[n]-weightedLaplacian[n]*invJW;
+    const dfloat timeRate=2/dt,advRate=2*speed/hstream,diffRate=4*diffusion[n]/(heff*heff);
+    const dfloat tau=supgEnabled?supgScale/sqrt(timeRate*timeRate+advRate*advRate+diffRate*diffRate+q*q):0;
+    // COMSOL documents a (sqrt(2))^(1-N) reduction for high-order crosswind.
+    const dfloat reduction=pow(sqrt(2.0),1-p);
+    const dfloat floor=gradientChange/(hgrad*reduction);
+    const dfloat denominator=grad>floor?grad:floor;
+    const dfloat gate=speed>epsilon?1-2*diffusion[n]/(speed*hgrad):0;
+    dfloat dcw=cwEnabled && gate>0?cwScale*reduction*0.5*gate*hgrad*fabs(R)/denominator:0;
+    dcw=dcw<maxDiffusion?dcw:maxDiffusion;
+    const dfloat projection=(ux*gx+uy*gy+uz*gz)/(speed2+epsilon*epsilon);
+    cwFlux[n]=dcw*(gx-ux*projection);supgFlux[n]=tau*ux*R;
+    cwFlux[n+offset]=dcw*(gy-uy*projection);supgFlux[n+offset]=tau*uy*R;
+    cwFlux[n+2*offset]=dcw*(gz-uz*projection);supgFlux[n+2*offset]=tau*uz*R;
+    fields[n]=alpha[n];fields[n+offset]=q;
+    fields[n+2*offset]=ux*gx+uy*gy+uz*gz;fields[n+3*offset]=alpha[n]*q;
+    fields[n+4*offset]=dcw;fields[n+5*offset]=tau;
+    fields[n+8*offset]=R;
+  }
+}
+
+@kernel void alphaResidualMask(const dlong N,@restrict const dlong *ids,@restrict dfloat *field)
+{
+  for(dlong n=0;n<N;++n;@tile(p_blockSize,@outer,@inner)) field[ids[n]]=0;
+}

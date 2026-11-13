@@ -90,6 +90,7 @@ inline void beginStep(double time)
   // No writes to UM or to its native time coefficients/history.
   addExplicitSources(time);
   alphaStabilization::addSources();
+  alphaStabilization::residual::beginStep();
   auto mesh=nrs->meshV;
   const dlong N=mesh->Nlocal, offset=nrs->fieldOffset;
   // The same cubature operator and fluid EXT coefficients as UG convection.
@@ -137,6 +138,7 @@ inline void beginStep(double time)
 }
 inline void postScalar(double time,int tstep)
 {
+  alphaStabilization::residual::solve(time,tstep);
   postProcessAlpha(time,tstep);
   trace("ALPHA_UG_UL_DONE");
 }

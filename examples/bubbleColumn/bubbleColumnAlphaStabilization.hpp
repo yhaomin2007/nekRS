@@ -4,7 +4,7 @@
 // Case-local integration of a reusable weak anisotropic diffusion operator.
 // Requires bubbleColumnTerms.hpp (and its native EXT history helper) first.
 namespace bubbleColumn { namespace alphaStabilization {
-static int mode=1,interval=10;
+static int mode=6,interval=10;
 static dfloat crosswind=2e-5,streamline=2e-5,epsilon=1e-6;
 static dfloat inverseLengthBound=0;
 static occa::kernel fluxKernel,diagnosticKernel;
@@ -26,11 +26,10 @@ inline void readParameters()
   read("alphastreamlinediffusivity",streamline);
   read("alphadirectionepsilon",epsilon);
   read("diagnosticinterval",interval);
-  nekrsCheck((mode!=0 && mode!=1 && mode!=3 && mode!=4) || interval<0 ||
+  nekrsCheck((mode<0 || mode>6) || interval<0 ||
       !std::isfinite(crosswind) || crosswind<0 || !std::isfinite(streamline) || streamline<0 ||
       !std::isfinite(epsilon) || epsilon<=0,platform->comm.mpiComm(),EXIT_FAILURE,
-      "%s","Alpha stabilization: modes 0,1,3,4 only; diffusivities >=0 and direction epsilon >0 must be finite. "
-      "Adaptive mode 2 and SUPG mode 5 are not implemented.\n");
+      "%s","Alpha stabilization: mode 0..6; legacy diffusivities >=0 and direction epsilon >0 must be finite.\n");
 }
 inline void registerKernels(deviceKernelProperties &info)
 {
@@ -82,6 +81,12 @@ inline dfloat geometryBound(int nq,int nvgeo,int ne,
 inline void allocate()
 {
   const dlong offset=nrs->fieldOffset;
+  // Residual modes only reuse these two buffers; do not allocate the legacy
+  // constant operator and its diagnostic fields in the default path.
+  historyRate.resize(offset);usedRhs.resize(offset);
+  platform->linAlg->fill(offset,0.0,usedRhs);
+  platform->linAlg->fill(offset,0.0,historyRate);
+  if(mode==2 || mode==5 || mode==6)return;
   weightedGradient.resize(3*offset); flux.resize(3*offset);
   rawRhs.resize(offset); usedRhs.resize(offset);
   gradient.resize(3*offset); gradientUgZ.resize(3*offset);
@@ -122,7 +127,7 @@ inline void addSources()
 {
   const dlong N=nrs->meshV->Nlocal;
   // Preserve native pre-lag BDF history for the diagnostic split residual.
-  if (due()) {
+  if (due() && mode!=2 && mode!=5 && mode!=6) {
     platform->linAlg->fill(N,0.0,historyRate);
     std::vector<dfloat> w(nrs->scalar->o_coeffBDF.size());
     nrs->scalar->o_coeffBDF.copyTo(w.data());
@@ -196,3 +201,5 @@ inline void diagnostics(double time)
   nrs->writeToFile("astGrad",time,mesh,{{"velocity",{gradient.slice(0,N),gradient.slice(offset,N),gradient.slice(2*offset,N)}}},true,true);
 }
 } } // namespace bubbleColumn::alphaStabilization
+
+#include "bubbleColumnAlphaResidual.hpp"
