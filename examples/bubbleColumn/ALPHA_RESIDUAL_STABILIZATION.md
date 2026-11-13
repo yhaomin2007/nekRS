@@ -1,10 +1,14 @@
 # Method1: residual-based crosswind and SUPG
 
-The default is `alphaStabilizationMode=6`: nonlinear Codina-type crosswind
-diffusion and transient SUPG. No uniform artificial diffusivity is prescribed
+The default is `alphaStabilizationMode=6`: residual-dependent Codina-type
+crosswind diffusion and transient SUPG, with coefficients lagged within each
+timestep. No uniform artificial diffusivity is prescribed
 in these modes. This implements the **approach** of consistent residual-based
 stabilization offered by COMSOL, adapted to Method1's existing BDF/explicit
-transport split. It is not a reproduction of COMSOL's internal solver.
+transport split. It is not a reproduction of COMSOL's internal solver. In particular, the crosswind coefficient is selected
+from the native alpha predictor, then held fixed for a linear stabilized solve.
+It is recomputed at every timestep. This is a semi-implicit adaptation, not
+COMSOL's fully converged nonlinear crosswind discretization.
 
 ## Correspondence and scope
 
@@ -44,10 +48,10 @@ stabilization itself is excluded from this baseline residual. HPFRT remains
 in the original native RHS, and is not interpreted as physical alpha transport
 in this sensor. Thus a nonzero R can also reflect the existing regularization.
 
-With `b_native` the saved unassembled native alpha RHS, the nonlinear equation is
+With `b_native` the saved unassembled native alpha RHS, the equation solved is
 
 ```
-H alpha + sum_e G_e^T W_e [Dcw Pperp grad(alpha) + tau UG R(alpha)] = b_native
+H alpha + sum_e G_e^T W_e [Dcw_predictor Pperp grad(alpha) + tau UG R(alpha)] = b_native
 H = h M + K(D0)
 ```
 
@@ -62,7 +66,8 @@ convection discretization. Original advective timestep restrictions remain.
 
 ## Coefficients
 
-For contravariant metric rows `a_r,a_s,a_t`, define
+Evaluate the following coefficient formulas on the native alpha predictor,
+using its BDF/EXT residual and gradients. For contravariant metric rows `a_r,a_s,a_t`, define
 
 ```
 hmin = 2 / sqrt(sum_d |a_d|^2)
@@ -84,35 +89,58 @@ Pperp = I - UG UG^T/(|UG|^2 + epsilon_u^2)
 ```
 
 `Pe_gate=0` when `|UG|<=epsilon_u`. Dcw is nonnegative, spatially varying,
-updated at every nonlinear evaluation, and vanishes with R. The gradient floor
+updated at every timestep, and vanishes with the predictor residual. The gradient floor
 regularizes the coefficient; it is not a minimum diffusivity. `Dmax` is a cap,
 not a prescribed uniform value. Near zero velocity Pperp is regularized; the
 gate also turns crosswind off. The metric lengths, tau and floor are NekRS
 adaptations, disclosed here for reproducibility.
 
-## Nonlinear correction
+## Predictor-lagged linear correction
 
-The native alpha result seeds a damped matrix-free Newton solve of the full
-stabilized weak equation on free rows. Each direction uses up to 20 GMRES
-vectors, two-pass mass-weighted orthogonalization, and right scaling by h.
-The Jacobian action is a finite difference of the complete residual. GMRES
-targets 5% of the current nonlinear residual. A backtracking line search
-requires residual descent or attainment of the nonlinear tolerance.
+1. The native alpha Helmholtz result supplies a predictor.
+2. Compute `R_predictor`, Dcw and tau once, and freeze the coefficients for this
+   timestep. The gas velocity direction also remains frozen at source time.
+3. Solve the stabilized equation for current alpha, using restarted GMRES(20).
+   Crosswind is implicit with the frozen nonnegative coefficient; SUPG retains
+   the current BDF/diffusion residual. No finite-difference Jacobian, Newton
+   iteration, line search, or coefficient update occurs inside this solve.
+4. Reevaluate the actual assembled equation residual after each GMRES cycle.
+   Accept only when the true free-row RMS reaches the requested tolerance.
+5. Route the final applied weak source to the Method1 divergence target once,
+   then perform the existing alpha postprocessing/clipping.
+
+For a free-row direction v, the homogeneous operator is applied directly:
+
+```
+A v = H v + sum_e G_e^T W_e [Dcw_predictor Pperp grad(v)
+                           + tau UG (h v - div(D0 grad(v)))]
+```
+
+Known histories/transport are zero only in this operator action; they are
+retained in the actual affine residual. Two-pass mass-weighted orthogonalization
+and right scaling by h are used. No trial operator action modifies alpha or the
+native forcing/history. All correction directions have zero Dirichlet rows.
 
 The convergence norm is the volume-weighted RMS of the assembled residual
 divided by assembled lumped mass, with Dirichlet rows zeroed. The target is
-`AbsTol + RelTol * initialRms`. Native inlet alpha values are held fixed by
-zero-row corrections. No extra Dirichlet boundary callbacks are invoked.
-The implementation requires the existing unit alpha transport coefficient,
-no Robin condition, and no custom scalar implicit linear term.
+`AbsTol + RelTol * initialRms`. The implementation requires the existing unit
+alpha transport coefficient, zero Neumann alpha loads, no Robin condition,
+and no custom scalar implicit linear term.
 
-Nonlinear stabilization can fail to converge in strongly under-resolved
-conditions; it is not unconditionally stable or bound preserving. Failure to
-find a descent step or meet the tolerance stops with an explicit error rather
-than accepting an unconverged stabilized equation. Reduce dt or stabilization
-scales and inspect the exported residual if this occurs. A deliberately sharp
-two-element stress problem exposed this difficulty; successful manufactured
-tests do not establish robustness for the bubble column.
+The previous fully nonlinear wrapper differentiated a nonsmooth, strongly
+state-dependent crosswind coefficient through the current BDF residual. A
+sharp-front two-element problem stalled at RMS about 1.44e-3, including with a
+separate dense nonlinear solver. Predictor-lagging removes that feedback; it
+changes the coefficient time treatment rather than merely loosening a line
+search. The regression now converges in two linear iterations (RMS about
+2.47e-9), and also passes with a fixed nonzero alpha inlet.
+
+This does not establish unconditional stability, bound preservation, or stripe
+suppression. The coefficient lags the corrected solution within a timestep, so
+accuracy must be assessed with timestep refinement. Linear nonconvergence still
+stops with step, mode, iteration count, initial/true/projected residuals, target,
+and dt. No unconverged alpha is silently accepted and no fallback turns off
+stabilization.
 
 ## Controls
 
@@ -124,9 +152,9 @@ tests do not establish robustness for the bubble column.
 | alphaLowerGradientChange | 1e-5 | Alpha change delta_alpha for gradient floor |
 | alphaMaxResidualDiffusivity | 1e-3 | Dcw cap, m²/s |
 | alphaDirectionEpsilon | 1e-6 | Velocity regularization, m/s |
-| alphaStabilizationRelTol | 1e-5 | Relative nonlinear RMS tolerance |
-| alphaStabilizationAbsTol | 1e-7 | Absolute nonlinear RMS tolerance, 1/s |
-| alphaStabilizationMaxIterations | 30 | Maximum Newton iterations |
+| alphaStabilizationRelTol | 1e-5 | Relative true linear RMS tolerance |
+| alphaStabilizationAbsTol | 1e-7 | Absolute true linear RMS tolerance, 1/s |
+| alphaStabilizationMaxIterations | 200 | Maximum total GMRES iterations, restarted every 20 |
 
 Modes 1/3/4 retain the earlier constant-coefficient experiments, selected
 explicitly and documented in `ALPHA_STABILIZATION.md`. The default par file
@@ -155,16 +183,18 @@ gas-volume conservation, and does not remove the effect of clipping.
 
 ## Diagnostics
 
-At the existing diagnostic interval, logs report Newton and GMRES iterations,
+At the existing diagnostic interval, logs report total GMRES iterations and cycles,
 initial/final/target free-row RMS, Dcw maximum, tau maximum, gas volume, net raw
 stabilization and clipping volume change. The CSV is
 `bubbleColumn_alpha_residual.csv`. A large fraction of values at Dmax indicates
 that the cap is controlling the model; inspect the field before calibration.
 
-Checkpoint `ars` contains the accepted **pre-clipping** nonlinear evaluation
+Checkpoint `ars` contains the accepted **pre-clipping** linear solution evaluation
 with the frozen source-time velocity; it is not reevaluated using subsequently
 corrected phase velocities. `arsGrad` contains its assembled gradient vector.
-The ordinary case output retains final postprocessed alpha.
+The ordinary case output retains final postprocessed alpha. Dcw is selected
+from s12 and predictor gradients; it is not recomputed from the final s9 field.
+The existing CSV `iterations` column now means total linear GMRES iterations.
 
 | VisIt field | Meaning |
 | --- | --- |
@@ -178,7 +208,8 @@ The ordinary case output retains final postprocessed alpha.
 | s8 | Assembled SUPG RHS, 1/s |
 | s9 | Local strong baseline R, 1/s |
 | s10 | Total applied stabilization RHS, 1/s |
-| s11 | Assembled mass-normalized free-row nonlinear residual, 1/s |
+| s11 | Assembled mass-normalized free-row linear equation residual, 1/s |
+| s12 | Native predictor strong residual used to select Dcw, 1/s |
 
 ## Verification and references
 
@@ -186,10 +217,11 @@ The ordinary case output retains final postprocessed alpha.
 with real native Serial SEM gradients and weak divergences on unequal hexes.
 It checks BDF/EXT residual signs, zero-residual consistency, variable
 coefficients, high-order reduction, caps, directional switches, padded
-offsets, conservation, crosswind energy, a manufactured Newton/GMRES solve,
-and CUDA translation. `tests/alpha_newton_direction.py` executes the actual
-host GMRES direction against a nonsymmetric nonlinear Jacobian, checking its
-linear tolerance and fixed inlet component. The UDF also passes a header syntax check against the
+offsets, conservation, crosswind energy, manufactured and sharp-front linear solves,
+fixed coefficient checks, affine/homogeneous operator consistency, and CUDA
+translation. `tests/alpha_linear_direction.py` executes the actual host GMRES
+direction against a nonsymmetric operator, forcing multiple restart cycles and
+checking true convergence and its fixed inlet component. The UDF also passes a header syntax check against the
 native interfaces. These are not a full MPI/GPU column run or evidence that
 the stripes are eliminated. Compare profiles, onset time, smearing, volume
 budget and wall-clock cost at identical physical times.

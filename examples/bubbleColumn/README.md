@@ -12,8 +12,9 @@ corrected values enter the normal native histories at the next step.
 Alpha defaults to residual-based Codina-type crosswind stabilization plus a
 transient SUPG weak-residual term (`alphaStabilizationMode=6`). The added
 crosswind diffusivity varies with the local transport residual, gas velocity,
-alpha gradient, geometry and polynomial order. An alpha-only Newton/GMRES
-correction solves the stabilized equation before existing clipping; the native
+alpha gradient, geometry and polynomial order. The coefficients are selected
+on the native alpha predictor once per timestep; an alpha-only linear GMRES
+correction solves the resulting stabilized equation before existing clipping; the native
 forcing and histories are read without being overwritten. Set mode 0 for the
 previous alpha equation, 2 for crosswind only, or 5 for SUPG only.
 See [ALPHA_RESIDUAL_STABILIZATION.md](ALPHA_RESIDUAL_STABILIZATION.md) for the

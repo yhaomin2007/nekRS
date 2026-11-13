@@ -114,6 +114,7 @@ alphaLowerGradientChange = 1e-5
 alphaMaxResidualDiffusivity = 1e-3
 alphaStabilizationRelTol = 1e-5
 alphaStabilizationAbsTol = 1e-7
-alphaStabilizationMaxIterations = 30
+# Maximum total linear GMRES iterations (restart length 20).
+alphaStabilizationMaxIterations = 200
 # Velocity regularization (m/s); residual crosswind switches off below this speed.
 alphaDirectionEpsilon = 1e-6

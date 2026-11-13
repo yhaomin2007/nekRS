@@ -1,4 +1,4 @@
-"""Execute residual stabilization with real SEM kernels and nonlinear weak solves."""
+"""Execute residual stabilization with real SEM kernels and predictor-lagged linear solves."""
 from pathlib import Path
 import ctypes,json,os,subprocess,tempfile
 import numpy as np
@@ -36,7 +36,7 @@ code=r'''
 extern "C" void run(int ne,int offset,const double *geo,const double *D,const double *alpha,const double *ug,
  const double *diffusion,const double *history,const double *transport,double h,double dt,int order,
  int cw,int supg,double cwScale,double supgScale,double gradFloor,double cap,double epsilon,
- double *fields,double *cwLoad,double *supgLoad) {
+ int frozen,const double *coefficients,double *fields,double *cwLoad,double *supgLoad) {
  static occa::device d;static occa::kernel grad,div,weak,flux,stab;
  if(!d.isInitialized()) {
   d.setup(std::string("{mode:'Serial'}"));occa::properties p;
@@ -53,13 +53,13 @@ extern "C" void run(int ne,int offset,const double *geo,const double *D,const do
  int N=ne*64;
  auto og=d.malloc<double>(ne*12*64,geo),od=d.malloc<double>(16,D),oa=d.malloc<double>(offset,alpha);
  auto ou=d.malloc<double>(3*offset,ug),oD=d.malloc<double>(offset,diffusion);
- auto oh=d.malloc<double>(offset,history),ot=d.malloc<double>(offset,transport);
+ auto oh=d.malloc<double>(offset,history),ot=d.malloc<double>(offset,transport),oc=d.malloc<double>(2*offset,coefficients);
  auto gradient=d.malloc<double>(3*offset),baseFlux=d.malloc<double>(3*offset),lap=d.malloc<double>(offset),q=d.malloc<double>(offset);
  auto fc=d.malloc<double>(3*offset),fs=d.malloc<double>(3*offset),of=d.malloc<double>(11*offset,fields);
  auto lc=d.malloc<double>(offset,cwLoad),ls=d.malloc<double>(offset,supgLoad);
  grad(ne,og,od,offset,oa,gradient);flux(N,offset,og,gradient,oD,baseFlux);
  div(ne,og,od,offset,baseFlux,lap);div(ne,og,od,offset,ou,q);
- stab(N,offset,h,dt,order,cw,supg,cwScale,supgScale,gradFloor,cap,epsilon,og,oa,ou,gradient,lap,q,oh,ot,oD,fc,fs,of);
+ stab(N,offset,h,dt,order,cw,supg,cwScale,supgScale,gradFloor,cap,epsilon,frozen,oc,og,oa,ou,gradient,lap,q,oh,ot,oD,fc,fs,of);
  weak(ne,og,od,offset,fc,lc);weak(ne,og,od,offset,fs,ls);
  of.copyTo(fields);lc.copyTo(cwLoad);ls.copyTo(supgLoad);
 }
@@ -72,12 +72,14 @@ with tempfile.TemporaryDirectory() as tmp:
     tmp=Path(tmp);(tmp/'run.cpp').write_text(code)
     subprocess.run(['g++','-std=c++17','-shared','-fPIC','-O2',str(tmp/'run.cpp'),'-I'+str(occa/'include'),'-L'+str(occa/'lib'),'-Wl,-rpath,'+str(occa/'lib'),'-locca','-o',str(tmp/'run.so')],check=True)
     lib=ctypes.CDLL(str(tmp/'run.so'))
-    lib.run.argtypes=[ctypes.c_int,ctypes.c_int]+[P]*7+[ctypes.c_double,ctypes.c_double]+[ctypes.c_int]*3+[ctypes.c_double]*5+[P]*3
+    lib.run.argtypes=[ctypes.c_int,ctypes.c_int]+[P]*7+[ctypes.c_double,ctypes.c_double]+[ctypes.c_int]*3+[ctypes.c_double]*5+[ctypes.c_int,P]+[P]*3
 
-    def evaluate(a,hist,transport,h=150000.,dt=1e-5,cw=1,supg=1,order=3,cap=1e-3):
+    def evaluate(a,hist,transport,h=150000.,dt=1e-5,cw=1,supg=1,order=3,cap=1e-3,coefficients=None):
         fields=np.full((11,offset),777.);lc=np.full(offset,777.);ls=lc.copy()
+        frozen=coefficients is not None
+        cached=np.zeros((2,offset)) if coefficients is None else np.pad(coefficients,((0,0),(0,offset-N)))
         a=local(a);hist=local(hist);transport=local(transport)
-        lib.run(ne,offset,ptr(geo),ptr(D),ptr(a),ptr(ug),ptr(diffusion),ptr(hist),ptr(transport),h,dt,order,cw,supg,1.,1.,1e-5,cap,1e-6,ptr(fields),ptr(lc),ptr(ls))
+        lib.run(ne,offset,ptr(geo),ptr(D),ptr(a),ptr(ug),ptr(diffusion),ptr(hist),ptr(transport),h,dt,order,cw,supg,1.,1.,1e-5,cap,1e-6,int(frozen),ptr(cached),ptr(fields),ptr(lc),ptr(ls))
         gradients=np.hstack([(Ge@a[e*64:(e+1)*64]).reshape(3,64) for e,Ge in enumerate(G)])
         lap=np.hstack([sum((Ge[d*64:(d+1)*64]@(1e-5*gradients[d,e*64:(e+1)*64]) for d in range(3))) for e,Ge in enumerate(G)])
         R=h*a[:N]-hist[:N]-transport[:N]-lap
@@ -113,71 +115,83 @@ with tempfile.TemporaryDirectory() as tmp:
     zero,_=evaluate(alpha,hist-1.,transport)
     assert not np.any(zero[4])
     ug[:]=savedUg
-    # Discrete weak nonlinear problem with native mass + baseline stiffness.
+    # Discrete weak problem with native mass + baseline stiffness.
     K=np.zeros((ng,ng))
     for e,Ge in enumerate(G):
         ke=Ge.T@(np.tile(massLocal[e*64:(e+1)*64],3)[:,None]*Ge)*1e-5
         ie=ids[e*64:(e+1)*64];np.add.at(K,(ie[:,None],ie[None,:]),ke)
     H=K+np.diag(h*mass);Hinv=np.linalg.inv(H)
     def assemble(load):return np.bincount(ids,weights=load,minlength=ng)
-    old=np.zeros(ng);old[ids]=alpha
-    old[ids]=truth
-    hist=h*old;transport=np.zeros(ng);transport[ids]=-lapTruth
-    base=mass*(hist+transport)
-    a=Hinv@base+1e-5*np.sin(np.arange(ng)*.3)
-    def equation(a):
-        ff,ll=evaluate(a[ids],hist[ids],transport[ids]);r=H@a+assemble(ll)-base
-        return np.sqrt(np.dot(r/mass,r)/mass.sum()),ff,ll
-    # Matrix-free Newton/GMRES, matching the UDF algorithm (mass-weighted norm).
+    # Exercise the former line-search failure as well as a manufactured root.
+    # The coefficient is selected ONCE on the native predictor for each solve.
     def dot(a,b):return np.dot(mass*a,b)/mass.sum()
     def length(a):return np.sqrt(dot(a,a))
-    constrained=np.zeros(ng,dtype=bool)
-    def residual(a):
-        ff,ll=evaluate(a[ids],hist[ids],transport[ids]);r=(H@a+assemble(ll)-base)/mass
-        r[constrained]=0
-        return r,ff,ll
-    def direction(a,r):
-        beta=length(r);V=[-r/beta];A=np.zeros((21,20));g=np.zeros(21);g[0]=beta
-        eps=np.sqrt(np.finfo(float).eps)*max(length(a),1e-4)
-        for j in range(20):
-            trial,_,_=residual(a+eps*V[j]);z=(trial-r)/(eps*h)
-            for repeat in range(2):
-                for i in range(j+1):
-                    c=dot(V[i],z);A[i,j]+=c;z-=c*V[i]
-            A[j+1,j]=length(z)
-            y=np.linalg.lstsq(A[:j+2,:j+1],g[:j+2],rcond=None)[0]
-            error=np.linalg.norm(A[:j+2,:j+1]@y-g[:j+2])
-            if error<.05*beta or A[j+1,j]<1e-12:break
-            V.append(z/A[j+1,j])
-        return sum(y[i]*V[i] for i in range(len(y)))/h
-    for with_inlet in [False,True]:
+    for sharp_front in [False,True]:
+      for with_inlet in [False,True]:
+        old=np.zeros(ng);old[ids]=alpha if sharp_front else truth
+        hist=h*old;transport=np.zeros(ng)
+        if not sharp_front:transport[ids]=-lapTruth
+        base=mass*(hist+transport)
+        exact=np.zeros(ng);exact[ids]=truth
+        constrained=np.zeros(ng,dtype=bool)
         if with_inlet:constrained[ids[np.isclose(coord[2],-.005)]]=True
-        a=Hinv@base+1e-5*np.sin(np.arange(ng)*.3)
-        exact=np.zeros(ng);exact[ids]=truth;a[constrained]=exact[constrained]
+        free=~constrained
+        a=old.copy()
+        a[free]=np.linalg.solve(H[np.ix_(free,free)],(base-H[:,constrained]@a[constrained])[free])
         fixed=a[constrained].copy()
-        r,ff,ll=residual(a);start=norm=length(r)
-        for it in range(30):
-            if norm<1e-7+1e-5*start:break
-            delta=direction(a,r);accepted=False
-            for omega in [2.**(-k) for k in range(21)]:
-                trial=a+omega*delta;rr,tf,tl=residual(trial);new=length(rr)
-                if new<1e-7+1e-5*start or new<(1-1e-4*omega)*norm:
-                    a,norm,r,ff,ll=trial,new,rr,tf,tl;accepted=True;break
-            assert accepted,'Newton line search failed in manufactured SEM test'
-        assert norm<=1e-7+1e-5*start,(start,norm,it)
+        f,_=evaluate(a[ids],hist[ids],transport[ids]);cached=f[4:6].copy()
+        # Imperfect native predictor seed, while keeping the selected sensor
+        # coefficients fixed. The exact manufactured solution remains known.
+        if not sharp_front:a[free]+=1e-5*np.sin(np.arange(ng)[free]*.3)
+        def residual(a):
+            ff,ll=evaluate(a[ids],hist[ids],transport[ids],coefficients=cached)
+            r=(H@a+assemble(ll)-base)/mass;r[constrained]=0
+            return r,ff,ll
+        def apply(v):
+            _,load=evaluate(v[ids],np.zeros(N),np.zeros(N),coefficients=cached)
+            out=(H@v+assemble(load))/mass;out[constrained]=0
+            return out
+        # Exact homogeneous production action, no finite-difference Jacobian.
+        rng=np.random.default_rng(4);v=rng.standard_normal(ng)*.001;v[constrained]=0
+        r0,_,_=residual(a);rv,_,_=residual(a+v)
+        np.testing.assert_allclose(rv-r0,apply(v),rtol=1e-9,atol=5e-10)
+        def direction(r,tolerance,budget):
+            beta=length(r);V=[-r/beta];A=np.zeros((21,20));g=np.zeros(21);g[0]=beta
+            for j in range(min(20,budget)):
+                z=apply(V[j])/h
+                for repeat in range(2):
+                    for i in range(j+1):
+                        c=dot(V[i],z);A[i,j]+=c;z-=c*V[i]
+                A[j+1,j]=length(z)
+                y=np.linalg.lstsq(A[:j+2,:j+1],g[:j+2],rcond=None)[0]
+                error=np.linalg.norm(A[:j+2,:j+1]@y-g[:j+2])
+                if error<tolerance or A[j+1,j]<1e-12:break
+                V.append(z/A[j+1,j])
+            return sum(y[i]*V[i] for i in range(len(y)))/h,j+1
+        r,ff,ll=residual(a);start=norm=length(r);iterations=0
+        target=1e-7+1e-5*start
+        while norm>target and iterations<200:
+            step,count=direction(r,target*.5,200-iterations);a+=step;iterations+=count
+            r,ff,ll=residual(a);norm=length(r)
+        assert norm<=target,(sharp_front,with_inlet,start,norm,iterations)
         np.testing.assert_array_equal(a[constrained],fixed)
-        np.testing.assert_allclose(a,exact,atol=1e-8)
-        print('Manufactured two-element solve, inlet Dirichlet=',with_inlet,':',it,'Newton iterations, RMS',start,'->',norm)
+        np.testing.assert_array_equal(ff[4:6],cached)
+        if not sharp_front:np.testing.assert_allclose(a,exact,atol=1e-8)
+        if sharp_front:assert cached[0].max()>0 and np.ptp(cached[0])>1e-10
+        print('Frozen-coefficient SEM: sharp_front=',sharp_front,'inlet=',with_inlet,
+              'GMRES=',iterations,'RMS',start,'->',norm,'target=',target)
     for mode in [(1,0),(0,1)]:evaluate(alpha,hist[ids],transport[ids],cw=mode[0],supg=mode[1])
     with (tmp/'residual.cu').open('w') as out:
         subprocess.run([str(occa/'bin/occa'),'translate','-m','CUDA','-D','p_blockSize=256','-D','dfloat=double','-D','dlong=int','-D','p_Np=64','-D','p_Nvgeo=12','-D','p_JWID=10',str(case/'bubbleColumnAlphaResidual.okl')],stdout=out,check=True)
-print('Production residual kernels: correct BDF/EXT residual, zero-residual consistency, nonuniform coefficient, cap, high-order reduction, conservative weak SUPG/CW, nonlinear convergence, padding and CUDA translation passed.')
+print('Production residual kernels: correct BDF/EXT residual, zero-residual consistency, nonuniform coefficient, cap, high-order reduction, conservative weak SUPG/CW, sharp-front linear convergence, padding and CUDA translation passed.')
 
 host=(case/'bubbleColumnAlphaResidual.hpp').read_text();phase=(case/'bubbleColumnPhaseMomentum.hpp').read_text()
-assert 'direction();' in host and 'baseResidual.copyFrom' in host
+assert 'direction(maxIterations-lastIterations,tolerance*0.5);' in host and 'baseResidual.copyFrom' in host
 assert 'nrs->scalar->solve(' not in host and 'compute=' not in host
 assert 'baselineRhs.copyFrom(nativeRhs' in host
 assert 'lagSolution(' not in host and 'makeForcing(' not in host
 assert phase.index('residual::solve(time,tstep)')<phase.index('postProcessAlpha(time,tstep)')
 assert 'o_alphaExplicitDiffusion' in host and 'usedRhs.copyFrom(totalWeak' in host
 assert 'No unconverged alpha is accepted' in host
+assert 'line search' not in host and 'omega' not in host
+assert 'coefficientsFrozen=false;evaluate();' in host and 'coefficientsFrozen=true;' in host

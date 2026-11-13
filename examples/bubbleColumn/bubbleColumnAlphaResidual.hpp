@@ -3,15 +3,17 @@
 namespace bubbleColumn { namespace alphaStabilization { namespace residual {
 static dfloat cwScale=1,supgScale=1,gradientChange=1e-5,maxDiffusion=1e-3;
 static dfloat relativeTolerance=1e-5,absoluteTolerance=1e-7;
-static int maxIterations=30,lastIterations=0;
+static int maxIterations=200,lastIterations=0;
 static dfloat initialNorm=0,finalNorm=0;
 static occa::kernel gradientKernel,residualFluxKernel,maskKernel;
 static deviceMemory<dfloat> velocity,weightedDiv,weightedGrad,baselineFlux,weightedLap;
 static deviceMemory<dfloat> cwFlux,supgFlux,cwWeak,supgWeak,totalWeak;
-static deviceMemory<dfloat> baselineRhs,previous,lambdaTime,ax,residualStrong,buffer,fields,displayGradient;
-static deviceMemory<dfloat> baseResidual,jacobianVector,newtonStep;
+static deviceMemory<dfloat> baselineRhs,lambdaTime,ax,residualStrong,buffer,fields,displayGradient;
+static deviceMemory<dfloat> baseResidual,operatorVector,linearStep,coefficients,zeroRhs;
 static std::vector<deviceMemory<dfloat>> krylov;
-static int lastLinearIterations=0;
+static bool coefficientsFrozen=false;
+static int lastCycles=0;
+static dfloat projectedNorm=0;
 static std::ofstream csv;
 inline bool active() { return mode==2 || mode==5 || mode==6; }
 inline void readParameters()
@@ -44,13 +46,14 @@ inline void allocate()
   velocity.resize(3*o);weightedDiv.resize(o);weightedGrad.resize(3*o);
   baselineFlux.resize(3*o);weightedLap.resize(o);
   cwFlux.resize(3*o);supgFlux.resize(3*o);
-  for(auto *v:{&cwWeak,&supgWeak,&totalWeak,&baselineRhs,&previous,&lambdaTime,&ax,&residualStrong,&buffer,&baseResidual,&jacobianVector,&newtonStep})v->resize(o);
-  fields.resize(11*o);displayGradient.resize(3*o);
+  for(auto *v:{&cwWeak,&supgWeak,&totalWeak,&baselineRhs,&lambdaTime,&ax,&residualStrong,&buffer,&baseResidual,&operatorVector,&linearStep,&zeroRhs})v->resize(o);
+  fields.resize(12*o);displayGradient.resize(3*o);coefficients.resize(2*o);
+  platform->linAlg->fill(o,0.0,zeroRhs);
   krylov.resize(21);for(auto &v:krylov)v.resize(o);
-  platform->linAlg->fill(11*o,0.0,fields);
+  platform->linAlg->fill(12*o,0.0,fields);
   if(platform->comm.mpiRank()==0)
     printf("alphaResidual: mode=%d Codina-type crosswind=%d SUPG=%d; current BDF/EXT residual, "
-           "alpha-only Newton/GMRES correction; no constant added viscosity.\n",mode,mode!=5,mode!=2);
+           "predictor-lagged coefficients, linear alpha-only GMRES; no constant added viscosity.\n",mode,mode!=5,mode!=2);
 }
 inline void beginStep()
 {
@@ -66,19 +69,36 @@ inline void beginStep()
     platform->linAlg->axpby(N,w[j]/nrs->dt[0],old,1.0,historyRate);
   }
 }
-inline void evaluate()
+inline void buildWeak(const deviceMemory<dfloat> &alpha,bool homogeneous=false)
 {
   auto mesh=nrs->meshV;const dlong N=mesh->Nlocal,o=nrs->fieldOffset;
-  auto alpha=nrs->scalar->o_solution("alpha"),D=nrs->scalar->o_diffusionCoeff("alpha");
+  auto D=nrs->scalar->o_diffusionCoeff("alpha");
   opSEM::strongGrad(mesh,o,alpha,weightedGrad,false);
   gradientKernel(N,o,mesh->o_vgeo,weightedGrad,D,baselineFlux);
   opSEM::strongDivergence(mesh,o,baselineFlux,weightedLap,false);
   residualFluxKernel(N,o,nrs->g0/nrs->dt[0],nrs->dt[0],mesh->N,mode!=5,mode!=2,
-      cwScale,supgScale,gradientChange,maxDiffusion,epsilon,mesh->o_vgeo,alpha,velocity,
-      weightedGrad,weightedLap,weightedDiv,historyRate,o_convectionEXT,D,cwFlux,supgFlux,fields);
+      cwScale,supgScale,gradientChange,maxDiffusion,epsilon,int(coefficientsFrozen),coefficients,
+      mesh->o_vgeo,alpha,velocity,weightedGrad,weightedLap,weightedDiv,
+      homogeneous?zeroRhs:historyRate,homogeneous?zeroRhs:o_convectionEXT,D,cwFlux,supgFlux,fields);
   opSEM::divergence(mesh,o,cwFlux,cwWeak);
   opSEM::divergence(mesh,o,supgFlux,supgWeak);
   totalWeak.copyFrom(cwWeak,N);platform->linAlg->axpby(N,1.0,supgWeak,1.0,totalWeak);
+}
+inline void evaluate(){buildWeak(nrs->scalar->o_solution("alpha"));}
+// Linear stabilized Jacobian with the same frozen coefficients. Histories and
+// known transport are zero ONLY in this homogeneous operator action.
+inline void apply(const deviceMemory<dfloat> &v,deviceMemory<dfloat> &out)
+{
+  auto mesh=nrs->meshV;const dlong N=mesh->Nlocal;
+  const int is=nrs->scalar->nameToIndex.at("alpha");
+  auto elliptic=nrs->scalar->ellipticSolver[is];
+  auto D=nrs->scalar->o_diffusionCoeff("alpha");
+  buildWeak(v,true);
+  elliptic->Ax(D,lambdaTime,v,out);
+  platform->linAlg->axpby(N,1.0,totalWeak,1.0,out);
+  oogs::startFinish(out,1,0,ogsDfloat,ogsAdd,mesh->oogs);
+  platform->linAlg->axmy(N,1.0,mesh->o_invLMM,out);
+  if(elliptic->Nmasked())maskKernel(elliptic->Nmasked(),elliptic->o_maskIds(),out);
 }
 inline dfloat norm()
 {
@@ -108,32 +128,27 @@ inline dfloat dot(const deviceMemory<dfloat> &a,const deviceMemory<dfloat> &b)
 }
 inline dfloat length(const deviceMemory<dfloat> &a){return std::sqrt(std::max(dfloat(0),dot(a,a)));}
 
-// Matrix-free right-scaled Newton direction. Native H is applied by norm();
-// no scalar solve flags, forcing buffers, BDF/EXT histories or other phases
-// are changed. Finite-difference vectors have zero Dirichlet rows.
-inline void direction()
+// One restarted linear GMRES cycle. A/h is applied directly, without finite
+// differences, perturbing alpha, differentiating |R|, or changing the sensor.
+// All basis vectors have zero Dirichlet rows; the fixed inlet is preserved.
+inline void direction(int budget,dfloat tolerance)
 {
   const dlong N=nrs->meshV->Nlocal;
-  auto alpha=nrs->scalar->o_solution("alpha");
   const dfloat beta=length(baseResidual),h=nrs->g0/nrs->dt[0];
-  const dfloat delta=std::sqrt(std::numeric_limits<dfloat>::epsilon())*std::max(length(previous),dfloat(1e-4));
   krylov[0].copyFrom(baseResidual,N);platform->linAlg->scale(N,-1/beta,krylov[0]);
   dfloat H[21][20]={},cs[20]={},sn[20]={},g[21]={},y[20]={};g[0]=beta;
   int count=0;
-  for(int j=0;j<20;++j) {
-    alpha.copyFrom(previous,N);platform->linAlg->axpby(N,delta,krylov[j],1.0,alpha);
-    evaluate();norm();
-    jacobianVector.copyFrom(residualStrong,N);
-    platform->linAlg->axpby(N,-1.0,baseResidual,1.0,jacobianVector);
-    platform->linAlg->scale(N,1/(delta*h),jacobianVector);
+  for(int j=0;j<std::min(20,budget);++j) {
+    apply(krylov[j],operatorVector);
+    platform->linAlg->scale(N,1/h,operatorVector);
     for(int pass=0;pass<2;++pass)for(int i=0;i<=j;++i) {
-      const dfloat c=dot(krylov[i],jacobianVector);H[i][j]+=c;
-      platform->linAlg->axpby(N,-c,krylov[i],1.0,jacobianVector);
+      const dfloat c=dot(krylov[i],operatorVector);H[i][j]+=c;
+      platform->linAlg->axpby(N,-c,krylov[i],1.0,operatorVector);
     }
-    H[j+1][j]=length(jacobianVector);
+    H[j+1][j]=length(operatorVector);
     const bool breakdown=H[j+1][j]<1e-12;
     if(!breakdown) {
-      krylov[j+1].copyFrom(jacobianVector,N);
+      krylov[j+1].copyFrom(operatorVector,N);
       platform->linAlg->scale(N,1/H[j+1][j],krylov[j+1]);
     }
     for(int i=0;i<j;++i) {
@@ -142,18 +157,17 @@ inline void direction()
     }
     const dfloat r=std::hypot(H[j][j],H[j+1][j]);
     nekrsCheck(!std::isfinite(r)||r<1e-30,platform->comm.mpiComm(),EXIT_FAILURE,"%s",
-        "Alpha Newton/GMRES breakdown. Reduce dt or stabilization scales.\n");
+        "Alpha linear GMRES breakdown with frozen residual coefficients.\n");
     cs[j]=H[j][j]/r;sn[j]=H[j+1][j]/r;H[j][j]=r;H[j+1][j]=0;
     g[j+1]=-sn[j]*g[j];g[j]*=cs[j];count=j+1;
-    if(std::abs(g[j+1])<=0.05*beta || breakdown)break;
+    if(std::abs(g[j+1])<=tolerance || breakdown)break;
   }
   for(int i=count-1;i>=0;--i) {
     y[i]=g[i];for(int j=i+1;j<count;++j)y[i]-=H[i][j]*y[j];y[i]/=H[i][i];
   }
-  platform->linAlg->fill(N,0.0,newtonStep);
-  for(int i=0;i<count;++i)platform->linAlg->axpby(N,y[i]/h,krylov[i],1.0,newtonStep);
-  lastLinearIterations+=count;
-  alpha.copyFrom(previous,N);
+  platform->linAlg->fill(N,0.0,linearStep);
+  for(int i=0;i<count;++i)platform->linAlg->axpby(N,y[i]/h,krylov[i],1.0,linearStep);
+  lastIterations+=count;projectedNorm=std::abs(g[count]);
 }
 inline void solve(double time,int)
 {
@@ -175,26 +189,25 @@ inline void solve(double time,int)
   baselineRhs.copyFrom(nativeRhs,N);
   auto alpha=nrs->scalar->o_solution("alpha");
   platform->linAlg->fill(N,nrs->g0/nrs->dt[0],lambdaTime);
-  evaluate();initialNorm=norm();finalNorm=initialNorm;lastIterations=0;lastLinearIterations=0;
+  // Compute the nonlinear sensor once on the native predictor, then lag it.
+  // It remains spatially varying and is refreshed at EVERY timestep.
+  coefficientsFrozen=false;evaluate();
+  coefficients.copyFrom(fields,N,0,4*o);coefficients.copyFrom(fields,N,o,5*o);
+  fields.copyFrom(fields,N,11*o,8*o); // predictor residual that selected Dcw
+  coefficientsFrozen=true;
+  initialNorm=norm();finalNorm=initialNorm;lastIterations=0;lastCycles=0;projectedNorm=0;
   const dfloat tolerance=absoluteTolerance+relativeTolerance*initialNorm;
-  while(finalNorm>tolerance && lastIterations<maxIterations) {
-    previous.copyFrom(alpha,N);
+  while(std::isfinite(finalNorm) && finalNorm>tolerance && lastIterations<maxIterations) {
     baseResidual.copyFrom(residualStrong,N);
-    direction();
-    const dfloat oldNorm=finalNorm;
-    bool accepted=false;
-    for(dfloat omega=1;omega>=1.0/1048576;omega*=0.5) {
-      alpha.copyFrom(previous,N);
-      platform->linAlg->axpby(N,omega,newtonStep,1.0,alpha);
-      evaluate();finalNorm=norm();
-      if(std::isfinite(finalNorm) && (finalNorm<=tolerance || finalNorm<(1-1e-4*omega)*oldNorm)) {accepted=true;break;}
-    }
-    ++lastIterations;
-    nekrsCheck(!accepted,platform->comm.mpiComm(),EXIT_FAILURE,"%s",
-        "Alpha residual stabilization line search failed; reduce dt or stabilization scales. No unconverged alpha is accepted.\n");
+    direction(maxIterations-lastIterations,tolerance*0.5);
+    platform->linAlg->axpby(N,1.0,linearStep,1.0,alpha);
+    evaluate();finalNorm=norm();++lastCycles;
   }
   nekrsCheck(!std::isfinite(finalNorm)||finalNorm>tolerance,platform->comm.mpiComm(),EXIT_FAILURE,
-      "Alpha residual stabilization did not converge: rms=%.8e target=%.8e; check alpha inner tolerance, dt and nonlinear iterations.\n",finalNorm,tolerance);
+      "Alpha frozen-coefficient linear solve failed: step=%d mode=%d GMRES=%d cycles=%d "
+      "initialRms=%.8e trueRms=%.8e projectedRms=%.8e target=%.8e dt=%.8e. "
+      "No unconverged alpha is accepted.\n",nrs->tstep,mode,lastIterations,lastCycles,
+      initialNorm,finalNorm,projectedNorm,tolerance,nrs->dt[0]);
   // Store exactly the final accepted conservative weak source, with NO EXT.
   usedRhs.copyFrom(totalWeak,N);oogs::startFinish(usedRhs,1,0,ogsDfloat,ogsAdd,mesh->oogs);
   platform->linAlg->axmy(N,-1.0,mesh->o_invLMM,usedRhs);
@@ -206,8 +219,8 @@ inline void solve(double time,int)
   }
   fields.copyFrom(usedRhs,N,9*o,0);fields.copyFrom(residualStrong,N,10*o,0);
   if(due()&&platform->comm.mpiRank()==0)
-    printf("alphaResidualSolve step=%d time=%.8e iterations=%d GMRES=%d weakRms(initial,final,target)=[%.8e,%.8e,%.8e]\n",
-        nrs->tstep,time,lastIterations,lastLinearIterations,initialNorm,finalNorm,tolerance);
+    printf("alphaResidualSolve step=%d time=%.8e solver=lagged-linear GMRES=%d cycles=%d weakRms(initial,final,target)=[%.8e,%.8e,%.8e]\n",
+        nrs->tstep,time,lastIterations,lastCycles,initialNorm,finalNorm,tolerance);
 }
 inline void diagnostics(double time)
 {
@@ -230,7 +243,7 @@ inline void diagnostics(double time)
   }
   if(!nrs->checkpointStep)return;
   std::vector<std::tuple<std::string,std::vector<deviceMemory<dfloat>>>> list;
-  for(int i=0;i<11;++i)list.push_back({"scalar"+(i<10?std::string("0"):std::string())+std::to_string(i),{fields.slice(i*o,N)}});
+  for(int i=0;i<12;++i)list.push_back({"scalar"+(i<10?std::string("0"):std::string())+std::to_string(i),{fields.slice(i*o,N)}});
   nrs->writeToFile("ars",time,mesh,list,true,true);
   auto preclipAlpha=fields.slice(0,N);opSEM::strongGrad(mesh,o,preclipAlpha,displayGradient,true);
   nrs->writeToFile("arsGrad",time,mesh,{{"velocity",{displayGradient.slice(0,N),displayGradient.slice(o,N),displayGradient.slice(2*o,N)}}},true,true);
