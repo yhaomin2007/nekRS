@@ -1,158 +1,78 @@
-# Method 1: phase velocities, alpha, then native mixture solve
+# Method 1: UG, alpha, then native pressure/UM
 
-The case stores seven scalars in the fixed order `ALPHA, UGX, UGY, UGZ,
-ULX, ULY, ULZ`. The **solve order** is:
+The case transports four scalars, stored as `ALPHA, UGX, UGY, UGZ`.
+The solve order is **UG -> ALPHA(new UG) -> native pressure -> native UM**.
+There is no independent liquid momentum solve or end-step phase correction.
+No NekRS core files are changed.
 
-`UG -> UL -> ALPHA(new UG) -> native pressure -> native UM`.
+## Liquid velocity and gas momentum
 
-The UDF disables alpha in the first native scalar sweep. In `postScalar`, it
-rebuilds alpha transport from the just-solved UG and solves only alpha using
-the native scalar Helmholtz solver. Alpha is advanced exactly once per step.
-Its BDF history load and native HPFRT contribution are saved before the core
-lags histories; no second lag or native forcing-history update occurs.
-Alpha convection uses alpha at the completed step and the new UG directly,
-without extrapolating this product again. This split does not establish
-second-order accuracy of the coupled equations despite native BDF2.
+Liquid velocity is reconstructed using the density-averaged mixture identity:
 
-The relative-flux divergence target is refreshed from the same transport
-used by alpha before native pressure/UM. The phase momentum predictors and
-native UM forcing otherwise retain their existing treatment. UM is never
-reset from the phase predictors. No end-step correction of alpha, UG, or UL
-is applied. No NekRS core source files are changed.
+\[
+\mathbf u_l=\frac{\rho_m\mathbf u_m-\alpha\rho_g\mathbf u_g}
+{(1-\alpha)\rho_l},\qquad
+\rho_m=(1-\alpha)\rho_l+\alpha\rho_g.
+\]
 
-Alpha retains native implicit diffusion (`diffusionCoeff=1e-5`), HPFRT,
-compression switch and post-solve clipping. Custom crosswind/SUPG remain absent.
+The existing denominator floor protects the vanishing-liquid limit. No UL
+scalar fields, UL boundary sections, liquid Helmholtz solves or symmetric
+phase-inertia inversion remain. The fresh-start plume helper initializes UM
+consistently with the gas field and a stationary liquid.
 
-## Phase predictors
+The gas-only equation keeps explicit Schiller–Naumann drag and physical gas
+stress, and semi-implicit gas virtual-mass acceleration. Its liquid material
+acceleration is evaluated from successive completed reconstructed UL fields
+and UL.grad(UL), then extrapolated using the native fluid EXT weights. This
+history is updated once after the completed native pressure/UM solve.
+At startup/restart the reconstructed liquid velocity is the history baseline
+and the unavailable liquid acceleration is initialized to zero.
+The gas pressure gradient remains the latest assembled strong gradient,
+with `gasPressureGradientExtrapolation=1` selecting its time extrapolation.
 
-Alpha uses conservative cubature transport with UG. Both phase material
-convection products use the same cubature operator and native fluid EXT
-coefficients. Scalar EXT is a separate EXT1 carrier to avoid double
-extrapolation. The pressure gradient is the assembled strong gradient of the
-latest completed pressure; `gasPressureGradientExtrapolation=1` extrapolates
-that gradient for **both phases**, independently of convection.
+## Alpha scheduling and pressure
 
-With a=alpha, b=1-a, r=a/max(b,alphaFloor), and c=Cvm*rhoL,
-the local virtual-mass inertia block is
+The first native scalar sweep solves only UG. In `postScalar`, the UDF builds
+alpha transport from the just-solved UG and completed alpha, then solves only
+alpha using the native scalar Helmholtz solver. Alpha is advanced exactly
+once. Its BDF history load and native HPFRT contribution are saved before
+native history lagging; no second lag or forcing-history update occurs.
+This split does not establish second-order coupled accuracy despite BDF2.
 
-```text
-M = [rhoG+c,    -c        ]
-    [-r*c,     rhoL+r*c  ].
-```
-
-At source time, solve M*(aG,aL)= (fG,fL), where aG/aL are the
-material accelerations, and
-
-```text
-fG = -grad(p) + rhoG*g + K*(UL-UG) + div(a*tauG)/max(a,alphaFloor)
-fL = -grad(p) + rhoL*g - r*K*(UL-UG) + div(b*tauL)/max(b,alphaFloor).
-```
-
-Each scalar source is its resulting acceleration minus its own extrapolated
-material convection. This replaces the old extrapolated reconstructed-liquid
-acceleration path: UL now has its own momentum equation and symmetric VM
-reaction. The 2x2 inertia inversion is pointwise and analytic; no Picard loop
-or additional global solve is used.
-
-Physical Newtonian stresses and Schiller–Naumann drag are **explicit**.
-The local VM time inertia is inverted jointly. Native scalar Helmholtz solves
-provide the additional numerical diffusion specified in the scalar sections;
-this is separate from physical stress. Native HPFRT remains in those sections.
-The physical stress/drag still impose explicit timestep restrictions.
-
-## Mixture solve and initialization
-
-The native UM momentum equation keeps its own convection, variable density,
-mixture viscosity, gravity and drift-stress forcing. Pressure uses the
-variable 1/rhoM coefficient and the alpha-derived relative-flux divergence
-target, including alpha numerical diffusion. The stored phase velocities
-remain their predictor solutions after the native pressure/UM solve;
-weighted phase velocity is therefore not forced to equal final UM.
-
-The inlet prescribes alpha and UG, stationary UL, and matching mass-weighted
-UM. A fresh start initializes UM from the actual UG, UL and alpha fields.
-Restart preserves checkpoint UM and histories. No UM reconstruction occurs
-during time stepping. All phase velocities and UM are zero at the walls.
+The relative-flux pressure divergence target uses the same new-UG transport
+as alpha. Native UM retains its own momentum equation, density, mixture
+viscosity, gravity and drift-stress forcing. UM is never reset during stepping.
+Alpha retains native numerical diffusion, HPFRT and post-solve clipping.
+`alphaCompressionEnabled=0` removes alpha*div(UG), changing the conservation
+law. The reduced pressure target still omits HPFRT/clipping rates.
+Custom alpha stabilization remains absent.
 
 ## Parameters and output
 
-The default par exposes physical properties, inlet/plume data, bubble size,
-VM coefficient, pressure-gradient EXT, alpha compression and diagnostic
-interval. Solver tolerance, scalar numerical diffusion, HPFRT and BCs remain
-in their native solver sections. Old velocity limiters, low-alpha masks,
-outlet damping, user alpha filtering, divergence filtering/ramping/inlet
-masking and old diagnostic selector options are no longer read by this UDF.
-Their shared helper implementations remain for historical tests.
+The par file contains physical/input parameters and native solver controls.
+UL sections have been removed. Prefer a fresh run for comparison with the
+previous seven-scalar implementation.
 
-Alpha is clipped to [0,1] after its solve with denominator floor 1e-6.
-The alpha-derived reduced divergence target omits HPFRT and clipping rates,
-as in the previous Method 1; therefore this is not exact discrete phase
-mass conservation including those numerical operations.
-`alphaCompressionEnabled=0` remains a diagnostic switch that removes
-alpha*div(UG), changes the equation and loses conservative alpha transport.
+At the configured diagnostic interval, logs show:
+`UG_BEGIN -> UG_DONE -> ALPHA_BEGIN_NEW_UG -> ALPHA_DONE ->
+NATIVE_PRESSURE_UM_BEGIN -> NATIVE_PRESSURE_UM_DONE`.
 
-`diagnosticInterval` controls order traces and componentwise global min/max:
-first step, every N steps and checkpoints (0 means first/checkpoints only).
-The order trace is `UG_UL_BEGIN -> UG_UL_DONE -> ALPHA_BEGIN_NEW_UG ->
-ALPHA_DONE -> NATIVE_PRESSURE_UM_BEGIN -> NATIVE_PRESSURE_UM_DONE`.
-One additional checkpoint file, `diag`, is written at the existing checkpoint
-interval in FP64 with coordinates:
+The single auxiliary checkpoint `diag` is unchanged:
 
-| VisIt variable | Meaning |
+| Field | Meaning |
 | --- | --- |
-| s1 (`scalar00`) | Imposed target div(UM), in 1/s |
-| s2 (`scalar01`) | Actual assembled strong div(UM), in 1/s |
-| Velocity vector / x_velocity, y_velocity, z_velocity | Latest strong grad(P), in pressure/length units |
+| s1 | Target div(UM), copied immediately before pressure/UM |
+| s2 | Actual assembled strong div(UM) after the solve |
+| velocity vector | Latest strong pressure gradient |
 
-The vector in `diag` represents the pressure gradient, not a velocity.
-The target is copied directly from `fluid->o_div` in preFluid, immediately
-before the native pressure/UM solve. Actual divergence is computed from all
-three components of final native UM. The gradient uses the latest completed
-native pressure, rather than the older/extrapolated gradient used in phase
-source assembly. This strong-divergence comparison is distinct from the weak
-discrete continuity residual and the pressure linear-solver residual.
+The strong-divergence comparison differs from the native weak continuity
+residual and pressure linear-solver residual.
 
-The separate phase, correction, momentum-term, momentum-defect and `divUm`
-field exports are no longer written. The normal native case checkpoint remains
-unchanged. Existing files from previous runs are not deleted. The following
-term and momentum-defect statistics remain available in the terminal log.
+## Verification
 
-Gas equation term snapshots are frozen at source assembly and reported in
-acceleration units after division by rhoG. Their sum is the **physical
-predictor RHS**, before native numerical diffusion/HPFRT.
-The log's sourceTime distinguishes them from end-of-step velocities.
-The old single-UG BDF/Helmholtz balance exports do not describe this scheme
-and are not registered. The source snapshots are not final phase PDE residuals.
-
-The stdout momentum-defect diagnostics compute M*(D_BDF U_final - RHS_predictor)
-plus the strong pressure-gradient change from source time to the final native
-pressure, then divide the gas/liquid rows by rhoG/rhoL. They use the **frozen
-source-time alpha and physical spatial terms**, the actual variable-step
-native BDF coefficients and uncorrected final phase velocities. Weighted BDF histories
-are saved before native lagging discards the oldest slot. Dirichlet rows are
-zeroed. Scalar numerical diffusion/HPFRT are not
-subtracted: their momentum effects remain visible in these physical defects.
-This is a residual of the chosen frozen-spatial-term time split, not a new
-evaluation of fully nonlinear final-time phase equations.
-
-Start a fresh run or use a checkpoint containing all seven scalars.
-Old four-scalar checkpoints cannot initialize the new independent UL history.
-
-## Validation
-
-Run `python3 examples/bubbleColumn/tests/phase_alpha_order.py` for the
-production host scheduling/forcing path with controlled solver doubles,
-including BDF1/BDF2 history, latest UG and exactly one alpha solve.
-Run `python3 examples/bubbleColumn/tests/phase_momentum.py` for the actual
-kernel algebra, pressure/drag/VM signs, bounded-density edge cases, stiff
-response, partially constrained boundaries and unchanged native UM.
-Set OCCA_DIR to a built OCCA checkout to additionally build and execute the
-actual OCCA Serial kernels and translate them for CUDA. The other tests cover
-the retained alpha transport/time-extrapolation and SEM utility operators;
-several retained modules are historical and are not active UDF hooks.
-METHOD1_AUDIT.md and the old OneThrough/UGTerms helpers describe the previous
-four-scalar scheme; the active hooks are in bubbleColumnPhaseMomentum.hpp.
-
-A full MPI/GPU column run requires the original mesh and a configured NekRS
-installation. Serial algebra, kernel builds and header syntax checks do not
-establish long-time stability of this new split.
+Run tests `phase_momentum.py`, `phase_alpha_order.py`, `ug_virtual_mass.py`,
+`ug_liquid_acceleration_ext.py` and `scalar_time_treatment.py` under `tests/`.
+These check reconstruction kernels, deferred-alpha host scheduling, gas VM
+and drag, liquid-acceleration extrapolation, and native forcing algebra.
+A full GPU/MPI run with the original mesh is still needed to assess stripes.
+METHOD1_AUDIT.md describes an older implementation.

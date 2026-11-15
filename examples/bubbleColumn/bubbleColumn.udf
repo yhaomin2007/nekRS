@@ -13,7 +13,6 @@ void UDF_LoadKernels(deviceKernelProperties &info)
   info.define("p_ALPHA_INLET")=bubbleColumn::p.alphaInlet;
   info.define("p_UG_INLET")=bubbleColumn::p.ugInlet;
   bubbleColumn::registerKernels(info);
-  bubbleColumn::phaseMomentum::registerKernels(info);
 }
 
 void UDF_Setup0(MPI_Comm,setupAide &)
@@ -73,16 +72,12 @@ void UDF_Setup()
   bubbleColumn::phaseMomentum::allocate();
   if (platform->options.getArgs("RESTART FILE NAME").empty()) {
     const auto &p=bubbleColumn::p;
-    for (const char *name:{"ulx","uly","ulz"})
-      platform->linAlg->fill(nrs->meshV->Nlocal,0.0,nrs->scalar->o_solution(name));
     bubbleColumn::initializePlumeKernel(nrs->meshV->Nlocal,nrs->fieldOffset,
         p.rhoLiquid,p.rhoGas,p.alphaInlet,p.ugInitial,
         p.initialPlumeHeight,p.initialPlumeThickness,nrs->meshV->o_z,
         nrs->scalar->o_solution("alpha"),nrs->scalar->o_solution("ugx"),
         nrs->scalar->o_solution("ugy"),nrs->scalar->o_solution("ugz"),nrs->fluid->o_U);
-    // Replace the plume helper's stationary-liquid special case with the
-    // mass-weighted velocity of the actual initialized UG and UL fields.
-    bubbleColumn::phaseMomentum::initializeMixture();
+    // The plume helper initializes UM for a stationary reconstructed liquid.
   }
   bubbleColumn::initializeHistory();
   nrs->userSource=&bubbleColumn::phaseMomentum::beginStep;
@@ -92,10 +87,10 @@ void UDF_Setup()
   nrs->preFluid=&bubbleColumn::phaseMomentum::preFluid;
   nrs->userConvergenceCheck=&bubbleColumn::phaseMomentum::singlePass;
   if (platform->comm.mpiRank()==0)
-    printf("Method1: UG -> UL -> ALPHA(new UG) -> native PRESSURE -> native UM.\n"
+    printf("Method1: UG -> ALPHA(new UG) -> native PRESSURE -> native UM.\n"
            "No end-step phase correction; UM is never reset; core solvers unchanged.\n"
            "Phase convection=fluid EXT; pressure=strong %s; alphaCompression=%d.\n"
-           "Physical phase stress and drag explicit; VM uses symmetric local inertia block.\n",
+           "UL reconstructed; gas stress/drag explicit; VM uses extrapolated liquid acceleration.\n",
         bubbleColumn::p.gasPressureGradientExtrapolation?"EXT":"latest",
         bubbleColumn::p.alphaCompressionEnabled);
 }
@@ -105,5 +100,6 @@ void UDF_ExecuteStep(double time,int tstep)
   if (tstep>0) bubbleColumn::phaseMomentum::trace("NATIVE_PRESSURE_UM_DONE");
   bubbleColumn::reconstructGasVelocity();
   bubbleColumn::reconstructLiquidVelocity();
+  if (tstep>0) bubbleColumn::updateVirtualMassHistory();
   bubbleColumn::phaseMomentum::diagnostics(time);
 }

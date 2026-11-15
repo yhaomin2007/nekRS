@@ -1,5 +1,5 @@
-> Historical audit: the active case now solves UG/UL, then alpha with new UG,
-> then native pressure/UM, without an end-step phase correction. See README.md
+> Historical audit: the active case now solves UG, then alpha with new UG,
+> then native pressure/UM. UL is reconstructed; no end-step correction. See README.md
 > for the current configuration; the analysis below describes an older solver.
 
 > Historical audit: the current implementation is described in README.md. In particular, UG drag is now fully explicit, liquid material acceleration is time-extrapolated, and convection uses user histories. The older descriptions below are retained as the audit record.

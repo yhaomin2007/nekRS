@@ -578,11 +578,10 @@ inline void reconstructGasFlux()
 
 inline void reconstructLiquidVelocity()
 {
-  const dlong Nlocal = nrs->meshV->Nlocal;
-  const dlong offset = nrs->fieldOffset;
-  const char *names[] = {"ulx", "uly", "ulz"};
-  for (int c = 0; c < 3; ++c)
-    o_ul.copyFrom(nrs->scalar->o_solution(names[c]), Nlocal, c * offset, 0);
+  reconstructGasFlux();
+  buildLiquidVelocityKernel(nrs->meshV->Nlocal,nrs->fieldOffset,
+      p.rhoLiquid,p.rhoGas,p.alphaFloor,nrs->scalar->o_solution("alpha"),
+      nrs->fluid->o_U,o_qg,o_ul);
 }
 
 inline void evaluateGasCubatureTransport(bool conservativeAlpha = false)
@@ -826,7 +825,7 @@ inline void disableNativeGasScalarAdvection()
   std::vector<dlong> flags(nrs->scalar->compute.begin(), nrs->scalar->compute.end());
   o_userAdvectionCompute.resize(flags.size());
   o_userAdvectionCompute.copyFrom(flags);
-  for (const char *name : {"alpha", "ugx", "ugy", "ugz", "ulx", "uly", "ulz"}) {
+  for (const char *name : {"alpha", "ugx", "ugy", "ugz"}) {
     flags[nrs->scalar->nameToIndex.at(name)] = 0;
   }
   nrs->scalar->o_compute.copyFrom(flags.data());

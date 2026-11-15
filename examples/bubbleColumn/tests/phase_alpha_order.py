@@ -10,7 +10,7 @@ import tempfile
 
 case = Path(__file__).resolve().parents[1]
 host = (case / 'bubbleColumnPhaseMomentum.hpp').read_text()
-snapshot = '  // Capture alpha BDF load' + host.split('  // Capture alpha\'s BDF load')[1].split('  sourceTime=time;')[0]
+snapshot = '  // Capture alpha BDF load' + host.split('  // Capture alpha\'s BDF load')[1].split('  trace("UG_BEGIN");')[0]
 post = 'inline void postScalar(double time,int tstep)' + host.split('inline void postScalar(double time,int tstep)')[1].split('inline void preFluid')[0]
 source = r'''
 #include <algorithm>
@@ -41,22 +41,22 @@ constexpr int N=2,O=2;
 struct Mesh {int Nlocal=N;Memory o_LMM{N};};
 std::vector<std::string> stages;
 struct Scalar {
- std::vector<int> compute=std::vector<int>(7,1);
+ std::vector<int> compute=std::vector<int>(4,1);
  std::map<std::string,int> nameToIndex{{"alpha",0}};
- std::vector<int> fieldOffsetScan{0,2,4,6,8,10,12};
- int fieldOffsetSum=7*O, solves=0,explicitCalls=0;
- Memory o_coeffBDF{2},o_S{2*7*O},o_JwF{7*O},ext{2*7*O};
+ std::vector<int> fieldOffsetScan{0,2,4,6};
+ int fieldOffsetSum=4*O, solves=0,explicitCalls=0;
+ Memory o_coeffBDF{2},o_S{2*4*O},o_JwF{4*O},ext{2*4*O};
  Memory o_explicitTerms(std::string){return ext.slice(0,O);}
  void makeExplicit(int is,double,int){assert(is==0);++explicitCalls;for(int i=0;i<N;++i)ext[i]+=-.3*o_S[i];}
- void applyDirichlet(double){assert(compute[0]==1);for(int k=1;k<7;++k)assert(compute[k]==0);stages.push_back("alphaBC");}
- void solve(double,int stage){assert(stage==1);++solves;assert(compute[0]==1);for(int k=1;k<7;++k)assert(compute[k]==0);stages.push_back("alphaSolve");}
+ void applyDirichlet(double){assert(compute[0]==1);for(int k=1;k<4;++k)assert(compute[k]==0);stages.push_back("alphaBC");}
+ void solve(double,int stage){assert(stage==1);++solves;assert(compute[0]==1);for(int k=1;k<4;++k)assert(compute[k]==0);stages.push_back("alphaSolve");}
 };
 struct Nrs {std::unique_ptr<Scalar> scalar=std::make_unique<Scalar>();Mesh *meshV;double dt[1]={.1};int tstep=2;};
 Mesh mesh;Nrs state;Nrs *nrs=&state;
 struct Params {int mixtureDivergenceForm=2,alphaCompressionEnabled=1;}p;
 Memory alphaHistory(N),alphaRegularization(N),o_alphaSource(N),o_alphaRelativeRhs(N),
        o_divergenceTransportEXT(N),o_alphaExplicitDiffusion(N),gas(N);
-std::vector<int> activeScalars(7,1);
+std::vector<int> activeScalars(4,1);
 void trace(const char *s){stages.push_back(s);}
 void prepareGasAdvection(){for(int i=0;i<N;++i)gas[i]=nrs->scalar->o_S[O+i];stages.push_back("newUG");}
 void evaluateAlphaTransport(){for(int i=0;i<N;++i)o_alphaSource[i]=-(p.alphaCompressionEnabled?2.:1.)*gas[i]*nrs->scalar->o_S[i];}
@@ -96,7 +96,7 @@ int main(){
    assert(s.o_S[s.fieldOffsetSum+i]==old[i]);
    assert(s.o_S[O+i]==.6+.1*i); // alpha solve never overwrites new UG
   }
-  assert((stages==std::vector<std::string>{"UG_UL_DONE","alphaBC","newUG",
+  assert((stages==std::vector<std::string>{"UG_DONE","alphaBC","newUG",
       "ALPHA_BEGIN_NEW_UG","alphaSolve","alphaPostprocess","ALPHA_DONE"}));
  }
 }
