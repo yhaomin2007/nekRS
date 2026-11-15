@@ -51,7 +51,7 @@ regularization = hpfrt + nModes=1 + scalingCoeff=10.0
 
 [SCALAR UGZ]
 initialGuess = previous
-boundaryTypeMap = udfDirichlet, zeroNeumann, zeroNeumann
+boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
 residualTol = 1e-6
 transportCoeff = 1
 # Additional numerical diffusivity; physical stress is supplied by the UDF.
