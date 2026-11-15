@@ -1,17 +1,27 @@
-# Method 1: native mixture solve with two-phase velocity correction
+# Method 1: phase velocities, alpha, then native mixture solve
 
-The active case transports seven scalars, in this fixed native order:
+The case stores seven scalars in the fixed order `ALPHA, UGX, UGY, UGZ,
+ULX, ULY, ULZ`. The **solve order** is:
 
-`ALPHA -> UGX/UGY/UGZ -> ULX/ULY/ULZ -> native pressure -> native UM -> phase correction`.
+`UG -> UL -> ALPHA(new UG) -> native pressure -> native UM`.
 
-There is one native stage per step. No core source files are changed. The
-phase predictors never overwrite UM before its pressure/velocity solve.
-The final correction changes only the current phase scalar solutions; their
-corrected values enter the normal native histories at the next step.
+The UDF disables alpha in the first native scalar sweep. In `postScalar`, it
+rebuilds alpha transport from the just-solved UG and solves only alpha using
+the native scalar Helmholtz solver. Alpha is advanced exactly once per step.
+Its BDF history load and native HPFRT contribution are saved before the core
+lags histories; no second lag or native forcing-history update occurs.
+Alpha convection uses alpha at the completed step and the new UG directly,
+without extrapolating this product again. This split does not establish
+second-order accuracy of the coupled equations despite native BDF2.
 
-Alpha uses native implicit diffusion (`diffusionCoeff=1e-5`) and the configured
-native HPFRT regularization. The experimental crosswind/SUPG modules and their
-additional alpha solve have been removed.
+The relative-flux divergence target is refreshed from the same transport
+used by alpha before native pressure/UM. The phase momentum predictors and
+native UM forcing otherwise retain their existing treatment. UM is never
+reset from the phase predictors. No end-step correction of alpha, UG, or UL
+is applied. No NekRS core source files are changed.
+
+Alpha retains native implicit diffusion (`diffusionCoeff=1e-5`), HPFRT,
+compression switch and post-solve clipping. Custom crosswind/SUPG remain absent.
 
 ## Phase predictors
 
@@ -50,52 +60,19 @@ provide the additional numerical diffusion specified in the scalar sections;
 this is separate from physical stress. Native HPFRT remains in those sections.
 The physical stress/drag still impose explicit timestep restrictions.
 
-## Mixture solve and final correction
+## Mixture solve and initialization
 
 The native UM momentum equation keeps its own convection, variable density,
 mixture viscosity, gravity and drift-stress forcing. Pressure uses the
 variable 1/rhoM coefficient and the alpha-derived relative-flux divergence
-target, including alpha numerical diffusion. The final phase correction
-does not modify UM, pressure, their histories, or their forcing.
+target, including alpha numerical diffusion. The stored phase velocities
+remain their predictor solutions after the native pressure/UM solve;
+weighted phase velocity is therefore not forced to equal final UM.
 
-For the completed alpha, define wg=a*rhoG/rhoM and wl=b*rhoL/rhoM.
-The mismatch is R=UM-wg*UGpredict-wl*ULpredict.
-Use the cheap local response of
-
-```text
-A = (g0/dt)*M + K*[ 1, -1 ]
-                    [-r,  r ].
-B = inverse(A)*(1,1).
-deltaUG = BG*R/(wg*BG+wl*BL)
-deltaUL = BL*R/(wg*BG+wl*BL).
-```
-
-Dirichlet phase rows are removed before computing B; prescribed velocities
-are untouched. With at least one phase of nonzero mixture weight free,
-wg*UG+wl*UL=UM to roundoff. At fully constrained nodes, incompatible boundary
-data cannot be repaired by this correction: the reported residual remains.
-At a phase-absent node, a free zero-weight phase alone cannot remove mismatch.
-
-This is an **approximate splitting of the whole native UM mismatch**.
-It is not a second pressure projection or an exact inverse of the spatial
-phase momentum operators. In particular, viscosity has no diagonal
-approximation in A. Exact mixture consistency does not establish small
-individual phase PDE residuals or prove stripe suppression.
-
-The inlet has prescribed alpha and UG, stationary UL, and the matching
-mass-weighted native UM. Initial UL is zero; a tanh plume initializes alpha
-and UG. After the phase initial fields are assigned, a separate initialization
-kernel reads all three components of both phase velocities and sets
-UM=(alpha*rhoG*UG+(1-alpha)*rhoL*UL)/(alpha*rhoG+(1-alpha)*rhoL).
-This runs only for a fresh start, before source/history initialization. Thus
-custom nonzero UL initial fields are included automatically. Restart keeps the
-checkpoint UM and time histories. No such UM reconstruction occurs during
-time stepping. Existing wall types are retained: UGX/UGY and all UL components
-Dirichlet zero, UGZ zero Neumann; native UM is no-slip. The algebraic
-correction preserves Dirichlet values. It does not independently enforce a
-strong zero-normal-gradient constraint on corrected UGZ; Neumann conditions
-enter the next native phase Helmholtz solve naturally. Use zero UGZ wall
-Dirichlet if that is the intended wall model.
+The inlet prescribes alpha and UG, stationary UL, and matching mass-weighted
+UM. A fresh start initializes UM from the actual UG, UL and alpha fields.
+Restart preserves checkpoint UM and histories. No UM reconstruction occurs
+during time stepping. All phase velocities and UM are zero at the walls.
 
 ## Parameters and output
 
@@ -116,7 +93,8 @@ alpha*div(UG), changes the equation and loses conservative alpha transport.
 
 `diagnosticInterval` controls order traces and componentwise global min/max:
 first step, every N steps and checkpoints (0 means first/checkpoints only).
-Check `mixtureDefectBefore` and `mixtureDefectAfter`, especially at boundaries.
+The order trace is `UG_UL_BEGIN -> UG_UL_DONE -> ALPHA_BEGIN_NEW_UG ->
+ALPHA_DONE -> NATIVE_PRESSURE_UM_BEGIN -> NATIVE_PRESSURE_UM_DONE`.
 One additional checkpoint file, `diag`, is written at the existing checkpoint
 interval in FP64 with coordinates:
 
@@ -141,18 +119,18 @@ term and momentum-defect statistics remain available in the terminal log.
 
 Gas equation term snapshots are frozen at source assembly and reported in
 acceleration units after division by rhoG. Their sum is the **physical
-predictor RHS**, before native numerical diffusion/HPFRT and final correction.
+predictor RHS**, before native numerical diffusion/HPFRT.
 The log's sourceTime distinguishes them from end-of-step velocities.
 The old single-UG BDF/Helmholtz balance exports do not describe this scheme
 and are not registered. The source snapshots are not final phase PDE residuals.
 
-The separate gmr/lmr diagnostics compute M*(D_BDF U_final - RHS_predictor)
+The stdout momentum-defect diagnostics compute M*(D_BDF U_final - RHS_predictor)
 plus the strong pressure-gradient change from source time to the final native
 pressure, then divide the gas/liquid rows by rhoG/rhoL. They use the **frozen
 source-time alpha and physical spatial terms**, the actual variable-step
-native BDF coefficients and corrected final velocities. Weighted BDF histories
+native BDF coefficients and uncorrected final phase velocities. Weighted BDF histories
 are saved before native lagging discards the oldest slot. Dirichlet rows are
-zeroed. Scalar numerical diffusion/HPFRT and the final correction are not
+zeroed. Scalar numerical diffusion/HPFRT are not
 subtracted: their momentum effects remain visible in these physical defects.
 This is a residual of the chosen frozen-spatial-term time split, not a new
 evaluation of fully nonlinear final-time phase equations.
@@ -162,6 +140,9 @@ Old four-scalar checkpoints cannot initialize the new independent UL history.
 
 ## Validation
 
+Run `python3 examples/bubbleColumn/tests/phase_alpha_order.py` for the
+production host scheduling/forcing path with controlled solver doubles,
+including BDF1/BDF2 history, latest UG and exactly one alpha solve.
 Run `python3 examples/bubbleColumn/tests/phase_momentum.py` for the actual
 kernel algebra, pressure/drag/VM signs, bounded-density edge cases, stiff
 response, partially constrained boundaries and unchanged native UM.

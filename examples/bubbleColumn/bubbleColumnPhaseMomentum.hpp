@@ -14,6 +14,8 @@ static deviceMemory<dfloat> bad;
 static deviceMemory<dfloat> mixtureDivergence;
 static deviceMemory<dfloat> sourceAlpha,sourceRhsG,historyG,historyL,defectG,defectL;
 static ExplicitHistory convectionHistory;
+static deviceMemory<dfloat> alphaHistory,alphaRegularization;
+static std::vector<int> activeScalars;
 
 inline void registerKernels(deviceKernelProperties &info)
 {
@@ -64,6 +66,8 @@ inline void allocate()
   bad.resize(offset);
   mixtureDivergence.resize(2*offset);
   sourceAlpha.resize(offset); sourceRhsG.resize(3*offset);
+  alphaHistory.resize(offset); alphaRegularization.resize(offset);
+  activeScalars=nrs->scalar->compute;
   historyG.resize(3*offset); historyL.resize(3*offset);
   defectG.resize(3*offset); defectL.resize(3*offset);
   for (auto *v:{&deltaG,&deltaL,&before,&after,&terms,&defectG,&defectL})
@@ -83,6 +87,9 @@ inline void initializeMixture()
 
 inline void beginStep(double time)
 {
+  // A source callback may also be used by native adaptive-dt estimation.
+  // Always restore the configured mask before preparing a new step.
+  nrs->scalar->compute=activeScalars;
   // Reuse conservative alpha transport, density/drift stress and native UM forcing.
   // No writes to UM or to its native time coefficients/history.
   addExplicitSources(time);
@@ -128,13 +135,61 @@ inline void beginStep(double time)
     nrs->scalar->o_explicitTerms(gasNames[c]).copyFrom(o_ugSource,N,0,c*offset);
     nrs->scalar->o_explicitTerms(liquidNames[c]).copyFrom(rhs,N,0,c*offset);
   }
+  // Capture alpha's BDF load BEFORE native lagSolution discards the oldest
+  // history. Native makeForcing will prepare/lag the phase forcing only.
+  std::vector<dfloat> weights(nrs->scalar->o_coeffBDF.size());
+  nrs->scalar->o_coeffBDF.copyTo(weights.data());
+  platform->linAlg->fill(N,0.0,alphaHistory);
+  const int ia=nrs->scalar->nameToIndex.at("alpha");
+  for (int j=0;j<static_cast<int>(weights.size());++j) {
+    auto input=nrs->scalar->o_S.slice(nrs->scalar->fieldOffsetScan[ia]+
+        j*nrs->scalar->fieldOffsetSum,N);
+    platform->linAlg->axpby(N,weights[j]/nrs->dt[0],input,1.0,alphaHistory);
+  }
+  // Retain the native HPFRT/GJP contribution evaluated on alpha^n, once.
+  // No user stabilization or extra time-history advancement is introduced.
+  auto explicitAlpha=nrs->scalar->o_explicitTerms("alpha");
+  platform->linAlg->fill(N,0.0,explicitAlpha);
+  nrs->scalar->makeExplicit(ia,time,nrs->tstep);
+  alphaRegularization.copyFrom(explicitAlpha,N);
+  nrs->scalar->compute[ia]=0; // native scalar sweep solves UG/UL only
   sourceTime=time; // userSource is called with the completed step's time t^n.
-  trace("ALPHA_UG_UL_PENDING");
+  trace("UG_UL_BEGIN");
 }
 inline void postScalar(double time,int tstep)
 {
+  trace("UG_UL_DONE");
+  auto &scalar=nrs->scalar;
+  auto mesh=nrs->meshV;
+  const dlong N=mesh->Nlocal;
+  const int ia=scalar->nameToIndex.at("alpha");
+  // Solve alpha exactly once, after the phase sweep. Applying its BCs here
+  // cannot overwrite the newly computed interior phase velocities.
+  scalar->compute.assign(activeScalars.size(),0);
+  scalar->compute[ia]=1;
+  scalar->applyDirichlet(time);
+  prepareGasAdvection(); // reads the just-solved UG, not o_Se or an EXT history
+  evaluateAlphaTransport(); // alpha^n with UG^(n+1), compression switch retained
+  prepareRelativeDivergenceRhs();
+  // The pressure target must use the SAME transport flux as this alpha solve.
+  // Do not extrapolate it again or advance either explicit history a second time.
+  o_divergenceTransportEXT.copyFrom(
+      p.mixtureDivergenceForm==2?o_alphaRelativeRhs:o_alphaSource,N);
+  platform->linAlg->axpby(N,1.0,o_alphaExplicitDiffusion,1.0,o_alphaSource);
+  auto explicitAlpha=scalar->o_explicitTerms("alpha");
+  explicitAlpha.copyFrom(o_alphaSource,N);
+  platform->linAlg->axpby(N,1.0,alphaRegularization,1.0,explicitAlpha);
+  // Same local mass-weighted RHS as native sumMakef for unit transportCoeff
+  // and the configured scalar EXT1 carrier. BDF history was saved pre-lag.
+  auto load=scalar->o_JwF.slice(scalar->fieldOffsetScan[ia],N);
+  load.copyFrom(alphaHistory,N);
+  platform->linAlg->axpby(N,1.0,explicitAlpha,1.0,load);
+  platform->linAlg->axmy(N,1.0,mesh->o_LMM,load);
+  trace("ALPHA_BEGIN_NEW_UG");
+  scalar->solve(time,1); // only alpha enabled; no lagSolution/makeForcing here
+  scalar->compute=activeScalars;
   postProcessAlpha(time,tstep);
-  trace("ALPHA_UG_UL_DONE");
+  trace("ALPHA_DONE");
 }
 inline void preFluid(double,int)
 {
@@ -203,14 +258,13 @@ inline void diagnostics(double time)
     // Latest completed pressure, including at an initial checkpoint.
     opSEM::strongGrad(nrs->meshV,nrs->fieldOffset,nrs->fluid->o_P,o_gradPStrong);
     if (nrs->tstep>0) {
+      initializeMasks();
       defectKernel(nrs->meshV->Nlocal,nrs->fieldOffset,p.rhoGas,p.rhoLiquid,
           p.virtualMassEnabled*p.virtualMassCoefficient,p.alphaFloor,nrs->g0/nrs->dt[0],
           sourceAlpha,o_ug,o_ul,historyG,historyL,sourceRhsG,rhs,terms,
           o_gradPStrong,freeG,freeL,defectG,defectL);
     }
     reportVector("UG",o_ug); reportVector("UL",o_ul);
-    reportVector("deltaUG",deltaG); reportVector("deltaUL",deltaL);
-    reportVector("mixtureDefectBefore",before); reportVector("mixtureDefectAfter",after);
     reportVector("physicalMomentumDefectG_free",defectG); reportVector("physicalMomentumDefectL_free",defectL);
     for (int t=0;t<6;++t) reportVector(termNames[t],terms.slice(3*t*nrs->fieldOffset,3*nrs->fieldOffset));
     fflush(stdout);

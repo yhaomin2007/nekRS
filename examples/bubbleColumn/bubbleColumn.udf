@@ -92,8 +92,8 @@ void UDF_Setup()
   nrs->preFluid=&bubbleColumn::phaseMomentum::preFluid;
   nrs->userConvergenceCheck=&bubbleColumn::phaseMomentum::singlePass;
   if (platform->comm.mpiRank()==0)
-    printf("Method1: ALPHA -> UG -> UL -> native PRESSURE -> native UM -> phase correction.\n"
-           "UM is never reset from phase predictors; core solvers unchanged.\n"
+    printf("Method1: UG -> UL -> ALPHA(new UG) -> native PRESSURE -> native UM.\n"
+           "No end-step phase correction; UM is never reset; core solvers unchanged.\n"
            "Phase convection=fluid EXT; pressure=strong %s; alphaCompression=%d.\n"
            "Physical phase stress and drag explicit; VM uses symmetric local inertia block.\n",
         bubbleColumn::p.gasPressureGradientExtrapolation?"EXT":"latest",
@@ -102,7 +102,7 @@ void UDF_Setup()
 
 void UDF_ExecuteStep(double time,int tstep)
 {
-  if (tstep>0) bubbleColumn::phaseMomentum::correct();
+  if (tstep>0) bubbleColumn::phaseMomentum::trace("NATIVE_PRESSURE_UM_DONE");
   bubbleColumn::reconstructGasVelocity();
   bubbleColumn::reconstructLiquidVelocity();
   bubbleColumn::phaseMomentum::diagnostics(time);

@@ -9,6 +9,7 @@ dt = 1e-5
 timeStepper = tombo2
 checkpointInterval = 1000
 scalars = ALPHA, UGX, UGY, UGZ, ULX, ULY, ULZ
+# Storage order only: UDF solves UG/UL, then ALPHA with new UG, then native P/UM.
 # Fresh start, or a checkpoint with all seven scalars.
 
 [FLUID PRESSURE]

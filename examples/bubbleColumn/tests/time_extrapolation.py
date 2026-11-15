@@ -181,9 +181,9 @@ with tempfile.TemporaryDirectory() as d:
 order=(case/'bubbleColumnOneThrough.hpp').read_text()
 udf=(case/'bubbleColumn.udf').read_text()
 assert '->solve(' not in order and 'compute =' not in order
-assert 'phaseMomentum::correct()' in udf and 'solveGas' not in udf
+assert 'phaseMomentum::correct()' not in udf and 'solveGas' not in udf
 assert 'scalar->o_coeffEXT = o_scalarCoeffEXT' in terms
 assert 'coefficients[0] = 1.0' in terms
 assert 'gasPressureGradientFilter' not in terms
 assert 'gasPressureInletMask' not in terms
-print('Native all-scalar schedule and EXT1 carrier/no legacy pressure processing source checks passed.')
+print('Native EXT1 carrier and no end-step phase correction or legacy pressure processing source checks passed.')

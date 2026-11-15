@@ -1215,8 +1215,8 @@ inline void buildDivergenceFromAlphaRhs(deviceMemory<dfloat>& o_divergence)
 
   const int index = nrs->scalar->nameToIndex.at("alpha");
   const dlong alphaOffset = nrs->scalar->fieldOffsetScan[index];
-  // The raw conservative flux was extrapolated at source time with UM's EXT
-  // coefficients. Add only the current explicit diffusion compensation.
+  // The caller selects the transport flux/time treatment. The active Method1
+  // postScalar supplies its new-UG flux directly. Add diffusion compensation.
   o_alphaMixtureRhs.copyFrom(o_divergenceTransportEXT, Nlocal);
   platform->linAlg->axpby(Nlocal, 1.0, o_alphaExplicitDiffusion, 1.0, o_alphaMixtureRhs);
   assembleDivergence(o_alphaMixtureRhs);
@@ -1283,9 +1283,9 @@ inline void buildDivergenceFromAlphaBdf(deviceMemory<dfloat>& o_divergence)
 
 inline void updateProperties(double)
 {
-  // Called after alpha advances, before UM/pressure. UG is still at the old
-  // physical step. Its postprocessing is deferred until after its own solve.
-  // Refresh mixture properties and the alpha transport/diffusion target.
+  // Called after the phase predictors and alpha advance, before UM/pressure.
+  // Refresh properties; the pressure-target flux was saved by postScalar
+  // from precisely the new-UG transport used in the alpha solve.
   evaluatePointwiseTerms();
   // Cache transport/diffusion RHS and full BDF diagnostics. The reduced RHS
   // supplies the pressure target; BDF includes HPF/postprocessing/BC effects.

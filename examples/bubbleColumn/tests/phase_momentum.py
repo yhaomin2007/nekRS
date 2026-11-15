@@ -125,15 +125,15 @@ assert len(par['CASEDATA'])==14
 udf=(case/'bubbleColumn.udf').read_text()
 host=(case/'bubbleColumnPhaseMomentum.hpp').read_text()
 correct=host.split('inline void correct()')[1].split('inline void reportVector')[0]
-assert '->solve(' not in udf+host
+assert 'scalar->solve(time,1)' in host and 'fluid->solve(' not in udf+host
 assert 'nrs->fluid->o_U,' in correct and 'o_U.copyFrom' not in correct
-assert udf.index('phaseMomentum::correct()')<udf.index('phaseMomentum::diagnostics(time)')
+assert 'phaseMomentum::correct()' not in udf
 assert 'initializeMasks()' not in udf and '!elliptic' in host
 assert 'rebuildMixture' not in udf+host
 assert 'nrs->scalar->o_solution(liquidNames[c]).copyFrom(o_ul' in correct
 assert 'phaseMomentum::singlePass' in udf
 assert 'ugTerms::' not in udf and 'oneThrough::' not in udf
-print('Active seven-scalar configuration, native callbacks, lazy masks, corrected phase histories and no UM reset verified.')
+print('Seven-scalar storage, deferred alpha solve, native callbacks, no end-step phase correction or UM reset verified.')
 
 occa=Path(os.environ.get('OCCA_DIR',case.parents[1]/'3rd_party/occa'))
 if not (occa/'lib/libocca.so').exists():

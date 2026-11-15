@@ -56,5 +56,5 @@ source=host.split('inline void addExplicitSources(double)')[1]
 assert source.index('o_mixtureAdvectorUsed.copyFrom')<source.index('prepareGasAdvection()')
 udf=(r/'bubbleColumn.udf').read_text().split('void UDF_ExecuteStep')[1]
 assert 'clipMixtureVelocity()' not in udf
-assert 'phaseMomentum::correct()' in udf
+assert 'phaseMomentum::correct()' not in udf
 print('Coupling lag: actual kernel/callback, three components, sign, density clamp, padded strides, zero limits, fresh gradient, interval and weighted CSV passed.')
