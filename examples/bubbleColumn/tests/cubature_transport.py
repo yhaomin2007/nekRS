@@ -53,6 +53,18 @@ with tempfile.TemporaryDirectory() as t:
  p=Path(t);(p/'test.cpp').write_text(pre+s+main)
  subprocess.run(['g++','-std=c++17','-O2',str(p/'test.cpp'),'-o',str(p/'test')],check=True,stderr=subprocess.PIPE)
  subprocess.run([str(p/'test')],check=True)
+# Check the direct material-alpha variant against independent quadrature.
+material_expected=expected.copy()
+material_expected[0]=ux*.04*rc+uy*.01
+material_loads=np.einsum('ai,bj,ck,fabc->fijk',I,I,I,material_expected*weights)
+material_nodal=material_loads/mass
+material_main=main.replace(array('expected',expected_nodal),array('expected',material_nodal))
+material_main=material_main.replace('gasCubatureProducts(', 'gasMaterialCubatureProducts(')
+with tempfile.TemporaryDirectory() as t:
+ p=Path(t);(p/'test.cpp').write_text(pre+s+material_main)
+ subprocess.run(['g++','-std=c++17','-O2',str(p/'test.cpp'),'-o',str(p/'test')],check=True,stderr=subprocess.PIPE)
+ subprocess.run([str(p/'test')],check=True)
+print('Direct material-alpha cubature kernel matches independent polynomial quadrature.')
 # Integral of conservative alpha operator equals boundary gas flux on affine box.
 volume=np.sum((expected[0]+ux*.04*rc+uy*.01)*weights)
 def flux_at(r,s,t):

@@ -39,13 +39,33 @@ once. Its BDF history load and native HPFRT contribution are saved before
 native history lagging; no second lag or forcing-history update occurs.
 This split does not establish second-order coupled accuracy despite BDF2.
 
-The relative-flux pressure divergence target uses the same new-UG transport
-as alpha. Native UM retains its own momentum equation, density, mixture
-viscosity, gravity and drift-stress forcing. UM is never reset during stepping.
-Alpha retains native numerical diffusion, HPFRT and post-solve clipping.
-`alphaCompressionEnabled=0` removes alpha*div(UG), changing the conservation
-law. The reduced pressure target still omits HPFRT/clipping rates.
-Custom alpha stabilization remains absent.
+The pressure divergence target is computed explicitly after alpha:
+
+\[
+(\nabla\cdot\mathbf u_m)_{\rm target}=
+\frac{\rho_l-\rho_g}{\rho_m^{n+1}}
+\left(D_t^{\rm BDF}\alpha^{n+1}
++\mathbf u_m^{\rm EXT}\cdot\nabla\alpha^{n+1}\right).
+\]
+
+UM_EXT is copied from native `fluid->o_Ue` at source time, after native velocity
+extrapolation and before boundary updates/pressure. It uses native startup,
+order and variable-step coefficients. The material alpha advection is evaluated
+directly at cubature points and projected/assembled. No extrapolation of the
+resulting divergence is applied. The weighted alpha history is captured
+before native lagging, so BDF2 never reads a discarded oldest history slot.
+
+This target uses the actual postprocessed alpha change, including its HPFRT,
+clipping and boundary effects. Alpha diffusion is already present in that
+change and is not added again. It replaces the previous relative-flux target.
+Even when alphaCompressionEnabled=0, this still enforces the mixture mass
+identity for the modified alpha equation; phase gas-volume conservation is
+not thereby restored. No unknown current UM appears on the RHS.
+
+Native UM retains its momentum equation and properties and is never reset.
+Alpha retains native diffusion, HPFRT and clipping. Custom stabilization
+remains absent. The explicit UM extrapolation is a temporal split; this does
+not guarantee removal of stripes or exact nonlinear final-UM continuity.
 
 ## Parameters and output
 
@@ -55,7 +75,7 @@ previous seven-scalar implementation.
 
 At the configured diagnostic interval, logs show:
 `UG_BEGIN -> UG_DONE -> ALPHA_BEGIN_NEW_UG -> ALPHA_DONE ->
-NATIVE_PRESSURE_UM_BEGIN -> NATIVE_PRESSURE_UM_DONE`.
+DIV_UM_EXPLICIT_UM_EXT -> NATIVE_PRESSURE_UM_BEGIN -> NATIVE_PRESSURE_UM_DONE`.
 
 The single auxiliary checkpoint `diag` is unchanged:
 
@@ -71,7 +91,8 @@ residual and pressure linear-solver residual.
 ## Verification
 
 Run tests `phase_momentum.py`, `phase_alpha_order.py`, `ug_virtual_mass.py`,
-`ug_liquid_acceleration_ext.py` and `scalar_time_treatment.py` under `tests/`.
+`ug_liquid_acceleration_ext.py`, `explicit_divergence.py`,
+`cubature_transport.py` and `scalar_time_treatment.py` under `tests/`.
 These check reconstruction kernels, deferred-alpha host scheduling, gas VM
 and drag, liquid-acceleration extrapolation, and native forcing algebra.
 A full GPU/MPI run with the original mesh is still needed to assess stripes.

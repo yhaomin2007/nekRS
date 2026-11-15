@@ -498,3 +498,19 @@
     divergence[n] = (rhoLiquid - rhoGas) / rhoLiquid * (relativeRhs[n] + diffusion[n]);
   }
 }
+
+// Pressure target from already solved alpha and a fully known UM advector.
+@kernel void buildExplicitMixtureDivergence(const dlong N,
+    const dfloat rhoLiquid, const dfloat rhoGas, const dfloat g0idt,
+    @ restrict const dfloat *alpha,
+    @ restrict const dfloat *alphaBdfHistory,
+    @ restrict const dfloat *mixtureAlphaAdvection,
+    @ restrict dfloat *target)
+{
+  for (dlong n=0; n<N; ++n; @tile(p_blockSize, @outer, @inner)) {
+    const dfloat a=alpha[n]; // active alpha is already postprocessed to [0,1]
+    const dfloat rho=(1.0-a)*rhoLiquid+a*rhoGas;
+    const dfloat dtAlpha=g0idt*a-alphaBdfHistory[n];
+    target[n]=(rhoLiquid-rhoGas)/rho*(dtAlpha+mixtureAlphaAdvection[n]);
+  }
+}

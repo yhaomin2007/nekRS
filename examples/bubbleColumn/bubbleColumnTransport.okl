@@ -309,3 +309,39 @@
     }
   }
 }
+
+// Material-alpha variant for the explicitly extrapolated mixture advector.
+@kernel void gasMaterialCubatureProducts(const dlong Nelements, const dlong cubOffset,
+                                 @ restrict const dfloat *D,
+                                 @ restrict const dfloat *vgeo,
+                                 @ restrict const dfloat *cube,
+                                 @ restrict dfloat *products)
+{
+  for (dlong e=0;e<Nelements;++e;@outer(0)) {
+    for (int j=0;j<p_cubNq;++j;@inner(1)) {
+      for (int i=0;i<p_cubNq;++i;@inner(0)) {
+        for (int k=0;k<p_cubNq;++k) {
+          const dlong id=e*p_cubNp+k*p_cubNq*p_cubNq+j*p_cubNq+i;
+          const dlong g=e*p_cubNp*p_Nvgeo+k*p_cubNq*p_cubNq+j*p_cubNq+i;
+          const dfloat ux=cube[id+cubOffset];
+          const dfloat uy=cube[id+2*cubOffset];
+          const dfloat uz=cube[id+3*cubOffset];
+          const dfloat JW=vgeo[g+p_JWID*p_cubNp];
+          for (int field=0;field<4;++field) {
+            dfloat dr=0,ds=0,dt=0;
+            for (int n=0;n<p_cubNq;++n) {
+              dr+=D[i*p_cubNq+n]*cube[e*p_cubNp+k*p_cubNq*p_cubNq+j*p_cubNq+n+field*cubOffset];
+              ds+=D[j*p_cubNq+n]*cube[e*p_cubNp+k*p_cubNq*p_cubNq+n*p_cubNq+i+field*cubOffset];
+              dt+=D[k*p_cubNq+n]*cube[e*p_cubNp+n*p_cubNq*p_cubNq+j*p_cubNq+i+field*cubOffset];
+            }
+            const dfloat dx=vgeo[g+p_RXID*p_cubNp]*dr+vgeo[g+p_SXID*p_cubNp]*ds+vgeo[g+p_TXID*p_cubNp]*dt;
+            const dfloat dy=vgeo[g+p_RYID*p_cubNp]*dr+vgeo[g+p_SYID*p_cubNp]*ds+vgeo[g+p_TYID*p_cubNp]*dt;
+            const dfloat dz=vgeo[g+p_RZID*p_cubNp]*dr+vgeo[g+p_SZID*p_cubNp]*ds+vgeo[g+p_TZID*p_cubNp]*dt;
+            products[id+field*cubOffset]=JW*(ux*dx+uy*dy+uz*dz);
+          }
+          // Keep component zero as UM.grad(alpha), computed above.
+        }
+      }
+    }
+  }
+}

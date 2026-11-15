@@ -78,6 +78,7 @@ static deviceMemory<dfloat> o_gasCubatureProducts;
 static deviceMemory<dfloat> o_gasTransport;
 static occa::kernel gasInterpolateKernel, gasCubatureProductsKernel;
 static occa::kernel gasProjectKernel, alphaConservativeCubatureKernel;
+static occa::kernel gasMaterialCubatureProductsKernel;
 static deviceMemory<dfloat> o_gasAdvector;
 static deviceMemory<dfloat> o_scalarCoeffEXT;
 static deviceMemory<dlong> o_userAdvectionCompute;
@@ -179,6 +180,7 @@ static dfloat cumulativeQgMaskDeltaIntegral[3] = {0.0, 0.0, 0.0};
 static dfloat cumulativeQgMaskDeltaMagnitudeIntegral = 0.0;
 static bool validationInitialized = false;
 static occa::kernel addGasStressKernel;
+static occa::kernel buildExplicitMixtureDivergenceKernel;
 static occa::kernel reconstructGasVelocityKernel;
 static occa::kernel postProcessGasFluxKernel;
 static occa::kernel alphaCompressionKernel;
@@ -225,6 +227,7 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
     } else {
       gasInterpolateKernel = platform->kernelRequests.load(req, "gasInterpolate");
       gasCubatureProductsKernel = platform->kernelRequests.load(req, "gasCubatureProducts");
+      gasMaterialCubatureProductsKernel = platform->kernelRequests.load(req, "gasMaterialCubatureProducts");
       gasProjectKernel = platform->kernelRequests.load(req, "gasProject");
       alphaConservativeCubatureKernel = platform->kernelRequests.load(req, "alphaConservativeCubature");
     }
@@ -237,6 +240,7 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
     platform->kernelRequests.add(request, fileName, kernelInfo);
   } else {
     addGasStressKernel = platform->kernelRequests.load(request, "addGasStress");
+    buildExplicitMixtureDivergenceKernel = platform->kernelRequests.load(request, "buildExplicitMixtureDivergence");
     reconstructGasVelocityKernel =
         platform->kernelRequests.load(request, "reconstructGasVelocity");
     postProcessGasFluxKernel =
@@ -584,7 +588,7 @@ inline void reconstructLiquidVelocity()
       nrs->fluid->o_U,o_qg,o_ul);
 }
 
-inline void evaluateGasCubatureTransport(bool conservativeAlpha = false)
+inline void evaluateGasCubatureTransport(bool conservativeAlpha = false, bool materialAlpha = false)
 {
   auto mesh = nrs->meshV;
   const dlong offset = nrs->fieldOffset;
@@ -598,6 +602,9 @@ inline void evaluateGasCubatureTransport(bool conservativeAlpha = false)
   if (conservativeAlpha) {
     alphaConservativeCubatureKernel(mesh->Nelements, cubOffset, mesh->o_cubD,
         mesh->o_cubvgeo, o_gasCubatureFields, o_gasCubatureProducts);
+  } else if (materialAlpha) {
+    gasMaterialCubatureProductsKernel(mesh->Nelements, cubOffset, mesh->o_cubD,
+        mesh->o_cubvgeo, o_gasCubatureFields, o_gasCubatureProducts);
   } else {
     gasCubatureProductsKernel(mesh->Nelements, cubOffset, mesh->o_cubD,
         mesh->o_cubvgeo, o_gasCubatureFields, o_gasCubatureProducts);
@@ -608,7 +615,7 @@ inline void evaluateGasCubatureTransport(bool conservativeAlpha = false)
   platform->linAlg->axmyMany(mesh->Nlocal, 4, offset, 0, 1.0, mesh->o_LMM, o_gasTransport);
   oogs::startFinish(o_gasTransport, 4, offset, ogsDfloat, ogsAdd, mesh->oogs);
   platform->linAlg->axmyMany(mesh->Nlocal, 4, offset, 0, 1.0, mesh->o_invLMM, o_gasTransport);
-  // Component zero is full div(alpha*UG) in conservative mode, compression otherwise.
+  // Component zero: conservative div(alpha*U), material U.grad(alpha), or compression.
 }
 
 inline void evaluateAlphaTransport()

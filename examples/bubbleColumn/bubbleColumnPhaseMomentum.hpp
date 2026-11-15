@@ -3,6 +3,7 @@
 namespace bubbleColumn { namespace phaseMomentum {
 static int interval=10;
 static deviceMemory<dfloat> mixtureDivergence,alphaHistory,alphaRegularization;
+static deviceMemory<dfloat> mixtureExtrapolated,mixtureAlphaAdvection;
 static std::vector<int> activeScalars;
 inline bool due()
 { return nrs->tstep==1 || nrs->checkpointStep || (interval>0 && nrs->tstep%interval==0); }
@@ -30,6 +31,7 @@ inline void allocate()
   }
   const dlong offset=nrs->fieldOffset;
   mixtureDivergence.resize(2*offset);
+  mixtureExtrapolated.resize(3*offset); mixtureAlphaAdvection.resize(offset);
   alphaHistory.resize(offset); alphaRegularization.resize(offset);
   activeScalars=nrs->scalar->compute;
   nekrsCheck(interval<0,comm,EXIT_FAILURE,"%s","diagnosticInterval must be nonnegative.\n");
@@ -37,6 +39,9 @@ inline void allocate()
 inline void beginStep(double time)
 {
   nrs->scalar->compute=activeScalars;
+  // Native extrapolateSolution has already constructed UM^EXT. Preserve it
+  // before any boundary updates or the native pressure/velocity solve.
+  mixtureExtrapolated.copyFrom(nrs->fluid->o_Ue,3*nrs->fieldOffset);
   // UL is reconstructed from UM, alpha and UG. The existing gas-only source
   // includes explicit drag/stress and semi-implicit VM with extrapolated UL
   // material acceleration; no liquid momentum equation is solved.
@@ -76,11 +81,6 @@ inline void postScalar(double time,int tstep)
   scalar->applyDirichlet(time);
   prepareGasAdvection(); // reads the just-solved UG, not o_Se or an EXT history
   evaluateAlphaTransport(); // alpha^n with UG^(n+1), compression switch retained
-  prepareRelativeDivergenceRhs();
-  // The pressure target must use the SAME transport flux as this alpha solve.
-  // Do not extrapolate it again or advance either explicit history a second time.
-  o_divergenceTransportEXT.copyFrom(
-      p.mixtureDivergenceForm==2?o_alphaRelativeRhs:o_alphaSource,N);
   platform->linAlg->axpby(N,1.0,o_alphaExplicitDiffusion,1.0,o_alphaSource);
   auto explicitAlpha=scalar->o_explicitTerms("alpha");
   explicitAlpha.copyFrom(o_alphaSource,N);
@@ -104,6 +104,33 @@ inline void preFluid(double,int)
   if (nrs->checkpointStep)
     mixtureDivergence.copyFrom(nrs->fluid->o_div,nrs->meshV->Nlocal);
   trace("NATIVE_PRESSURE_UM_BEGIN");
+}
+inline void properties(double)
+{
+  // Alpha has completed its solve; all inputs to the target are now known.
+  // This replaces the relative-flux target containing a lagged div(UM).
+  evaluatePointwiseTerms();
+  auto mesh=nrs->meshV;
+  const dlong N=mesh->Nlocal,offset=nrs->fieldOffset;
+  nrs->fluid->o_prop.slice(0,offset).copyFrom(o_muM);
+  nrs->fluid->o_prop.slice(offset,offset).copyFrom(o_rhoM);
+  if (nrs->tstep<=0) {
+    platform->linAlg->fill(N,0.0,o_divSource);
+    return;
+  }
+  // Evaluate UM^EXT.grad(alpha) directly at cubature points, then project
+  // and assemble with the same quadrature as gas alpha transport.
+  // Restore the gas advector afterwards; do not alter native Urst or UM.
+  o_gasAdvector.copyFrom(mixtureExtrapolated,3*offset);
+  evaluateGasCubatureTransport(false,true);
+  mixtureAlphaAdvection.copyFrom(o_gasTransport,N);
+  o_gasAdvector.copyFrom(o_ug,3*offset);
+  // Reuse the pre-lag weighted BDF history. This includes alpha's actual
+  // HPFRT/clipping/BC effects without adding any diffusion term twice.
+  buildExplicitMixtureDivergenceKernel(N,p.rhoLiquid,p.rhoGas,nrs->g0/nrs->dt[0],
+      nrs->scalar->o_solution("alpha"),alphaHistory,mixtureAlphaAdvection,o_divSource);
+  assembleDivergence(o_divSource);
+  trace("DIV_UM_EXPLICIT_UM_EXT");
 }
 inline bool singlePass(int stage)
 {

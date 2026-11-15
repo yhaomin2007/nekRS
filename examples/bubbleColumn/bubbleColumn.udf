@@ -82,7 +82,7 @@ void UDF_Setup()
   bubbleColumn::initializeHistory();
   nrs->userSource=&bubbleColumn::phaseMomentum::beginStep;
   nrs->postScalar=&bubbleColumn::phaseMomentum::postScalar;
-  nrs->userProperties=&bubbleColumn::updateProperties;
+  nrs->userProperties=&bubbleColumn::phaseMomentum::properties;
   nrs->userDivergence=&bubbleColumn::updateDivergence;
   nrs->preFluid=&bubbleColumn::phaseMomentum::preFluid;
   nrs->userConvergenceCheck=&bubbleColumn::phaseMomentum::singlePass;
@@ -90,7 +90,8 @@ void UDF_Setup()
     printf("Method1: UG -> ALPHA(new UG) -> native PRESSURE -> native UM.\n"
            "No end-step phase correction; UM is never reset; core solvers unchanged.\n"
            "Phase convection=fluid EXT; pressure=strong %s; alphaCompression=%d.\n"
-           "UL reconstructed; gas stress/drag explicit; VM uses extrapolated liquid acceleration.\n",
+           "UL reconstructed; gas stress/drag explicit; VM uses extrapolated liquid acceleration.\n"
+           "Target div(UM): explicit BDF(alpha) + UM_EXT.grad(alpha), using native UM extrapolation.\n",
         bubbleColumn::p.gasPressureGradientExtrapolation?"EXT":"latest",
         bubbleColumn::p.alphaCompressionEnabled);
 }

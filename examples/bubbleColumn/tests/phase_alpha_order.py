@@ -1,7 +1,7 @@
 """Run the production deferred-alpha host code with controlled device/solver doubles.
 
 Checks pre-lag BDF retention, latest UG, native regularization, mass weighting,
-relative-flux target, and exactly one alpha-only solve without a second lag.
+and exactly one alpha-only solve without a second lag.
 The real native Helmholtz/SEM operators still require an integration run.
 """
 from pathlib import Path
@@ -92,7 +92,7 @@ int main(){
   for(int i=0;i<N;++i){
    assert(std::abs(s.o_JwF[i]-expected[i])<1e-13);
    double transport=-(compression?2.:1.)*(.6+.1*i)*old[i];
-   assert(std::abs(o_divergenceTransportEXT[i]-(transport+(form==2?.7:0)))<1e-13);
+
    assert(s.o_S[s.fieldOffsetSum+i]==old[i]);
    assert(s.o_S[O+i]==.6+.1*i); // alpha solve never overwrites new UG
   }
@@ -106,4 +106,4 @@ with tempfile.TemporaryDirectory() as t:
     (d / 'check.cpp').write_text(source)
     subprocess.run(['g++', '-std=c++17', str(d/'check.cpp'), '-o', str(d/'check')], check=True)
     subprocess.run([str(d/'check')], check=True)
-print('Production deferred-alpha host path: new UG, pre-lag BDF1/BDF2, HPF once, local mass, matching pressure flux, one alpha solve, restored phase mask and unchanged histories passed.')
+print('Production deferred-alpha host path: new UG, pre-lag BDF1/BDF2, HPF once, local mass, one alpha solve, restored phase mask and unchanged histories passed.')
