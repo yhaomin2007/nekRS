@@ -117,28 +117,27 @@ alpha*div(UG), changes the equation and loses conservative alpha transport.
 `diagnosticInterval` controls order traces and componentwise global min/max:
 first step, every N steps and checkpoints (0 means first/checkpoints only).
 Check `mixtureDefectBefore` and `mixtureDefectAfter`, especially at boundaries.
-The diagnostic checkpoint files include:
+One additional checkpoint file, `diag`, is written at the existing checkpoint
+interval in FP64 with coordinates:
 
-| Prefix | Field |
+| VisIt variable | Meaning |
 | --- | --- |
-| ug, ul | Final corrected phase velocities |
-| deltaUg, deltaUl | End-of-step phase corrections, velocity units |
-| mixBefore, mixAfter | Native UM minus mass-weighted phase velocities |
-| divUm | Three scalars: imposed div(UM) target, actual strong div(UM), absolute difference |
-| gmr, lmr | Phase physical momentum defects on free degrees of freedom, acceleration units |
-| gpr, ggr, gdr, gvs, gvm, gcv | Gas pressure, gravity, drag, physical viscosity, VM and convection terms |
+| s1 (`scalar00`) | Imposed target div(UM), in 1/s |
+| s2 (`scalar01`) | Actual assembled strong div(UM), in 1/s |
+| Velocity vector / x_velocity, y_velocity, z_velocity | Latest strong grad(P), in pressure/length units |
 
-In the `divUm` checkpoint file, VisIt variables `s1`, `s2`, `s3` correspond to
-`scalar00` = target, `scalar01` = actual, `scalar02` = abs(actual-target),
-respectively, all in inverse seconds. The target is copied directly from
-`fluid->o_div` in preFluid, immediately before native pressure/UM solve;
-it is not recomputed from final alpha. Actual divergence is computed from all
-three components of final native UM with assembled SEM strong divergence.
-The absolute difference is pointwise, not a relative error or global norm.
-This strong-divergence comparison is distinct from the weak discrete
-continuity residual and the pressure linear solver residual. Export occurs
-only at the existing checkpoint interval, in FP64 with coordinates; no new
-par options are required.
+The vector in `diag` represents the pressure gradient, not a velocity.
+The target is copied directly from `fluid->o_div` in preFluid, immediately
+before the native pressure/UM solve. Actual divergence is computed from all
+three components of final native UM. The gradient uses the latest completed
+native pressure, rather than the older/extrapolated gradient used in phase
+source assembly. This strong-divergence comparison is distinct from the weak
+discrete continuity residual and the pressure linear-solver residual.
+
+The separate phase, correction, momentum-term, momentum-defect and `divUm`
+field exports are no longer written. The normal native case checkpoint remains
+unchanged. Existing files from previous runs are not deleted. The following
+term and momentum-defect statistics remain available in the terminal log.
 
 Gas equation term snapshots are frozen at source assembly and reported in
 acceleration units after division by rhoG. Their sum is the **physical

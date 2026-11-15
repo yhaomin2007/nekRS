@@ -4,7 +4,6 @@ namespace bubbleColumn { namespace phaseMomentum {
 static const char *gasNames[]={"ugx","ugy","ugz"};
 static const char *liquidNames[]={"ulx","uly","ulz"};
 static const char *termNames[]={"pressure","gravity","drag","viscosity","virtual_mass","convection_EXT"};
-static const char *termFiles[]={"gpr","ggr","gdr","gvs","gvm","gcv"};
 static int interval=10;
 static bool masksReady=false;
 static double sourceTime=0;
@@ -13,7 +12,6 @@ static deviceMemory<dfloat> stress,divStress,convection,convectionEXT,rhs,terms;
 static deviceMemory<dfloat> freeG,freeL,deltaG,deltaL,before,after;
 static deviceMemory<dfloat> bad;
 static deviceMemory<dfloat> mixtureDivergence;
-static occa::kernel divergenceDifferenceKernel;
 static deviceMemory<dfloat> sourceAlpha,sourceRhsG,historyG,historyL,defectG,defectL;
 static ExplicitHistory convectionHistory;
 
@@ -30,7 +28,6 @@ inline void registerKernels(deviceKernelProperties &info)
     correctKernel=platform->kernelRequests.load(request,"phaseCorrect");
     nonfiniteKernel=platform->kernelRequests.load(request,"phaseNonfinite");
     defectKernel=platform->kernelRequests.load(request,"phaseMomentumDefect");
-    divergenceDifferenceKernel=platform->kernelRequests.load(request,"mixtureDivergenceDifference");
   }
 }
 inline bool due()
@@ -65,7 +62,7 @@ inline void allocate()
   deltaG.resize(3*offset); deltaL.resize(3*offset);
   before.resize(3*offset); after.resize(3*offset);
   bad.resize(offset);
-  mixtureDivergence.resize(3*offset);
+  mixtureDivergence.resize(2*offset);
   sourceAlpha.resize(offset); sourceRhsG.resize(3*offset);
   historyG.resize(3*offset); historyL.resize(3*offset);
   defectG.resize(3*offset); defectL.resize(3*offset);
@@ -200,17 +197,12 @@ inline void reportVector(const char *name,deviceMemory<dfloat> v)
           nrs->tstep,sourceTime,name,c,lo,hi,int(invalid));
   }
 }
-inline void writeVector(const char *name,double time,deviceMemory<dfloat> v)
-{
-  const dlong offset=nrs->fieldOffset,N=nrs->meshV->Nlocal;
-  nrs->writeToFile(name,time,nrs->meshV,{{"velocity",
-      {v.slice(0,N),v.slice(offset,N),v.slice(2*offset,N)}}});
-}
 inline void diagnostics(double time)
 {
   if (due()) {
+    // Latest completed pressure, including at an initial checkpoint.
+    opSEM::strongGrad(nrs->meshV,nrs->fieldOffset,nrs->fluid->o_P,o_gradPStrong);
     if (nrs->tstep>0) {
-      opSEM::strongGrad(nrs->meshV,nrs->fieldOffset,nrs->fluid->o_P,o_gradPStrong);
       defectKernel(nrs->meshV->Nlocal,nrs->fieldOffset,p.rhoGas,p.rhoLiquid,
           p.virtualMassEnabled*p.virtualMassCoefficient,p.alphaFloor,nrs->g0/nrs->dt[0],
           sourceAlpha,o_ug,o_ul,historyG,historyL,sourceRhsG,rhs,terms,
@@ -227,18 +219,12 @@ inline void diagnostics(double time)
   const dlong N=nrs->meshV->Nlocal,offset=nrs->fieldOffset;
   auto target=mixtureDivergence.slice(0,N);
   auto actual=mixtureDivergence.slice(offset,N);
-  auto difference=mixtureDivergence.slice(2*offset,N);
   // Full three-component divergence of the final native UM, assembled at CG nodes.
   opSEM::strongDivergence(nrs->meshV,offset,nrs->fluid->o_U,actual,true);
-  divergenceDifferenceKernel(N,target,actual,difference);
-  nrs->writeToFile("divUm",time,nrs->meshV,
-      {{"scalar00",{target}},{"scalar01",{actual}},{"scalar02",{difference}}},
-      true,true); // include coordinates and preserve FP64 diagnostic precision
-  writeVector("ug",time,o_ug); writeVector("ul",time,o_ul);
-  writeVector("deltaUg",time,deltaG); writeVector("deltaUl",time,deltaL);
-  writeVector("mixBefore",time,before); writeVector("mixAfter",time,after);
-  writeVector("gmr",time,defectG); writeVector("lmr",time,defectL);
-  for (int t=0;t<6;++t)
-    writeVector(termFiles[t],time,terms.slice(3*t*nrs->fieldOffset,3*nrs->fieldOffset));
+  // One auxiliary checkpoint: vector=latest strong grad(P), s1=target, s2=actual.
+  nrs->writeToFile("diag",time,nrs->meshV,
+      {{"velocity",{o_gradPStrong.slice(0,N),o_gradPStrong.slice(offset,N),o_gradPStrong.slice(2*offset,N)}},
+       {"scalar00",{target}},{"scalar01",{actual}}},
+      true,true); // coordinates and FP64 diagnostic precision
 }
 } } // namespace bubbleColumn::phaseMomentum
