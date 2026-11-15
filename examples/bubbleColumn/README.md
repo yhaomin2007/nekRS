@@ -5,6 +5,50 @@ The solve order is **UG -> ALPHA(new UG) -> native pressure -> native UM**.
 There is no independent liquid momentum solve or end-step phase correction.
 No NekRS core files are changed.
 
+## Initial condition and inlet ramp
+
+The supplied par defaults to a fresh zero-field startup:
+
+```ini
+[CASEDATA]
+startupMode = 1
+inletRampStartTime = 0.0
+alphaInletRampDuration = 0.1
+gasInletRampDuration = 0.1
+alphaInlet = 0.016667
+gasInletVelocity = 0.3
+```
+
+`startupMode=1` initializes alpha, all UG components and UM to exactly zero;
+reconstructed UL is zero as well. At the inlet, alpha and vertical gas
+velocity use independent quintic smoothstep ramps to the specified final
+values. All times are physical seconds. For either duration T,
+
+\[
+s=\operatorname{clamp}((t-t_{start})/T,0,1),\qquad
+r(s)=6s^5-15s^4+10s^3.
+\]
+
+Thus alpha_in(t)=alphaInlet*r_alpha(t) and UGz_in(t)=gasInletVelocity*r_g(t),
+with the existing wall-precedence mask applied to gas velocity. Each ramp
+has zero first and second derivatives at its endpoints. The initial 0.1 s
+values are diagnostic settings, not a calibrated physical injection model.
+
+The inlet liquid remains stationary. Native UM uses the same instantaneous
+alpha and UG through UMz_in=alpha_in*rhoG*UGz_in/rhoM_in, including the same
+velocity mask. With equal durations the injected gas volume flux scales as
+r(t)^2; alpha and UG are both ramped, rather than the flux alone.
+
+Set `startupMode=0` to restore the original tanh plume and constant inlet.
+`initialPlumeHeight` and `initialPlumeThickness` retain their original meanings;
+the three ramp-time parameters are ignored in this mode. Omitting startupMode
+also retains the original mode for older par files.
+
+Restart preserves the checkpoint fields and uses absolute simulation time
+for the inlet ramp; it does not zero the solution or restart the ramp clock.
+Use a fresh run to test the zero-field startup. UG still evolves everywhere
+under the existing gas momentum equation even in regions with alpha=0.
+
 ## Liquid velocity and gas momentum
 
 Liquid velocity is reconstructed using the density-averaged mixture identity:
@@ -17,7 +61,7 @@ Liquid velocity is reconstructed using the density-averaged mixture identity:
 
 The existing denominator floor protects the vanishing-liquid limit. No UL
 scalar fields, UL boundary sections, liquid Helmholtz solves or symmetric
-phase-inertia inversion remain. The fresh-start plume helper initializes UM
+phase-inertia inversion remain. In plume mode the fresh-start helper initializes UM
 consistently with the gas field and a stationary liquid.
 
 The gas-only equation keeps explicit Schiller–Naumann drag and physical gas
@@ -90,7 +134,7 @@ residual and pressure linear-solver residual.
 
 ## Verification
 
-Run tests `phase_momentum.py`, `phase_alpha_order.py`, `ug_virtual_mass.py`,
+Run tests `inlet_startup.py`, `plume_initialization.py`, `phase_momentum.py`, `phase_alpha_order.py`, `ug_virtual_mass.py`,
 `ug_liquid_acceleration_ext.py`, `explicit_divergence.py`,
 `cubature_transport.py` and `scalar_time_treatment.py` under `tests/`.
 These check reconstruction kernels, deferred-alpha host scheduling, gas VM

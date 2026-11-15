@@ -47,5 +47,7 @@ udf = (root / "bubbleColumn.udf").read_text()
 assert "initialconditionmode" not in udf
 assert "initializeUniform" not in udf+source
 assert "p.initialPlumeThickness," in udf
-print("Plume-only initialization: signed speed, stationary liquid, "
+assert "if (p.startupMode==1)" in udf
+assert 'fill(3*nrs->fieldOffset,0.0,nrs->fluid->o_U)' in udf
+print("Retained plume initialization: signed speed, stationary liquid, "
       "density-averaged mixture velocity and padding passed.")

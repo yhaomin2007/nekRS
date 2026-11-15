@@ -1,15 +1,27 @@
 void udfDirichlet(bcData *bc)
 {
+  dfloat alphaInlet=p_ALPHA_INLET;
+  dfloat gasInlet=p_UG_INLET;
+#if p_STARTUP_MODE == 1
+  const dfloat elapsed=bc->time-p_INLET_RAMP_START;
+  const dfloat ta=elapsed/p_ALPHA_RAMP_DURATION;
+  const dfloat tg=elapsed/p_UG_RAMP_DURATION;
+  const dfloat sa=(ta<0.0)?0.0:((ta>1.0)?1.0:ta);
+  const dfloat sg=(tg<0.0)?0.0:((tg>1.0)?1.0:tg);
+  // Quintic smoothstep: value, slope and curvature match the endpoint plateaus.
+  alphaInlet*=sa*sa*sa*(10.0+sa*(-15.0+6.0*sa));
+  gasInlet*=sg*sg*sg*(10.0+sg*(-15.0+6.0*sg));
+#endif
   if (isField("fluid velocity")) {
     if (bc->id == 1) {
-      const dfloat rhoM = (1.0 - p_ALPHA_INLET) * p_RHO_LIQUID
-                          + p_ALPHA_INLET * p_RHO_GAS;
+      const dfloat rhoM = (1.0 - alphaInlet) * p_RHO_LIQUID
+                          + alphaInlet * p_RHO_GAS;
       // Density-averaged inlet velocity; the liquid inlet velocity is zero.
       bc->uxFluid = 0.0;
       bc->uyFluid = 0.0;
       // Uniform inlet; shared inlet/wall rim nodes retain wall precedence.
       bc->uzFluid = bc->usrwrk[bc->idxVol]
-                    * p_ALPHA_INLET * p_RHO_GAS * p_UG_INLET / rhoM;
+                    * alphaInlet * p_RHO_GAS * gasInlet / rhoM;
     } else if (bc->id == 3) {
       bc->uxFluid = 0.0;
       bc->uyFluid = 0.0;
@@ -21,13 +33,13 @@ void udfDirichlet(bcData *bc)
     const dfloat s0 = 0.5 * (1.0 - tanh(un * iU0delta));
     bc->pFluid = -0.5 * (bc->uxFluid * bc->uxFluid + bc->uyFluid * bc->uyFluid + bc->uzFluid * bc->uzFluid) * s0;
   } else if (isField("scalar alpha")) {
-    bc->sScalar = p_ALPHA_INLET;
+    bc->sScalar = alphaInlet;
   } else if (isField("scalar ugx")) {
     bc->sScalar = 0.0;
   } else if (isField("scalar ugy")) {
     bc->sScalar = 0.0;
   } else if (isField("scalar ugz")) {
     bc->sScalar = (bc->id == 1)
-        ? bc->usrwrk[bc->idxVol] * p_UG_INLET : 0.0;
+        ? bc->usrwrk[bc->idxVol] * gasInlet : 0.0;
   }
 }

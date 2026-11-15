@@ -67,6 +67,13 @@ muLiquid = 1e-3
 muGas = 1.8e-5
 alphaInlet = 0.016667
 gasInletVelocity = 0.3
+# 0: original plume + steady inlet; 1: zero alpha/UG/UM + smooth inlet ramp.
+startupMode = 1
+# Physical times in seconds; alpha and UG durations can differ.
+inletRampStartTime = 0.0
+alphaInletRampDuration = 0.1
+gasInletRampDuration = 0.1
+# Used only when startupMode=0.
 initialPlumeHeight = 0.05
 initialPlumeThickness = 0.01
 gravityZ = -9.81

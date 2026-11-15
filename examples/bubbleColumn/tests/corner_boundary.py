@@ -12,6 +12,7 @@ using dfloat=double;
 #define p_RHO_LIQUID 998.2
 #define p_RHO_GAS 1.2
 #define p_UG_INLET .3
+#define p_STARTUP_MODE 0
 struct bcData { const char *fieldName; int id,idxVol; double *usrwrk;
  double uxFluid,uyFluid,uzFluid,nx,ny,nz,pFluid,sScalar; };
 #define isField(name) (!strcmp(bc->fieldName,name))

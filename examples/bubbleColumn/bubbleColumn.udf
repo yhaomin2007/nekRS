@@ -12,6 +12,10 @@ void UDF_LoadKernels(deviceKernelProperties &info)
   info.define("p_RHO_GAS")=bubbleColumn::p.rhoGas;
   info.define("p_ALPHA_INLET")=bubbleColumn::p.alphaInlet;
   info.define("p_UG_INLET")=bubbleColumn::p.ugInlet;
+  info.define("p_STARTUP_MODE")=bubbleColumn::p.startupMode;
+  info.define("p_INLET_RAMP_START")=bubbleColumn::p.inletRampStartTime;
+  info.define("p_ALPHA_RAMP_DURATION")=bubbleColumn::p.alphaInletRampDuration;
+  info.define("p_UG_RAMP_DURATION")=bubbleColumn::p.gasInletRampDuration;
   bubbleColumn::registerKernels(info);
 }
 
@@ -48,6 +52,10 @@ void UDF_Setup0(MPI_Comm,setupAide &)
   p.ugInitial=p.ugInlet;
   read("initialplumeheight",p.initialPlumeHeight);
   read("initialplumethickness",p.initialPlumeThickness);
+  read("startupmode",p.startupMode);
+  read("inletrampstarttime",p.inletRampStartTime);
+  read("alphainletrampduration",p.alphaInletRampDuration);
+  read("gasinletrampduration",p.gasInletRampDuration);
   read("gravityz",p.gravity[2]); read("bubblediameter",p.bubbleDiameter);
   read("virtualmasscoefficient",p.virtualMassCoefficient);
   read("gaspressuregradientextrapolation",p.gasPressureGradientExtrapolation);
@@ -62,7 +70,11 @@ void UDF_Setup0(MPI_Comm,setupAide &)
       std::isfinite(p.ugInlet) && std::isfinite(p.gravity[2]) &&
       std::isfinite(p.initialPlumeHeight) && p.initialPlumeHeight>=0 &&
       std::isfinite(p.initialPlumeThickness) && p.initialPlumeThickness>0) ||
-      (p.alphaCompressionEnabled!=0 && p.alphaCompressionEnabled!=1),
+      (p.alphaCompressionEnabled!=0 && p.alphaCompressionEnabled!=1) ||
+      (p.startupMode!=0 && p.startupMode!=1) ||
+      !std::isfinite(p.inletRampStartTime) || p.inletRampStartTime<0 ||
+      !std::isfinite(p.alphaInletRampDuration) || p.alphaInletRampDuration<=0 ||
+      !std::isfinite(p.gasInletRampDuration) || p.gasInletRampDuration<=0,
       platform->comm.mpiComm(),EXIT_FAILURE,"%s","Invalid Method1 physical parameters.\n");
 }
 
@@ -72,12 +84,18 @@ void UDF_Setup()
   bubbleColumn::phaseMomentum::allocate();
   if (platform->options.getArgs("RESTART FILE NAME").empty()) {
     const auto &p=bubbleColumn::p;
-    bubbleColumn::initializePlumeKernel(nrs->meshV->Nlocal,nrs->fieldOffset,
-        p.rhoLiquid,p.rhoGas,p.alphaInlet,p.ugInitial,
-        p.initialPlumeHeight,p.initialPlumeThickness,nrs->meshV->o_z,
-        nrs->scalar->o_solution("alpha"),nrs->scalar->o_solution("ugx"),
-        nrs->scalar->o_solution("ugy"),nrs->scalar->o_solution("ugz"),nrs->fluid->o_U);
-    // The plume helper initializes UM for a stationary reconstructed liquid.
+    if (p.startupMode==1) {
+      for (const char *name:{"alpha","ugx","ugy","ugz"})
+        platform->linAlg->fill(nrs->fieldOffset,0.0,nrs->scalar->o_solution(name));
+      platform->linAlg->fill(3*nrs->fieldOffset,0.0,nrs->fluid->o_U);
+    } else {
+      bubbleColumn::initializePlumeKernel(nrs->meshV->Nlocal,nrs->fieldOffset,
+          p.rhoLiquid,p.rhoGas,p.alphaInlet,p.ugInitial,
+          p.initialPlumeHeight,p.initialPlumeThickness,nrs->meshV->o_z,
+          nrs->scalar->o_solution("alpha"),nrs->scalar->o_solution("ugx"),
+          nrs->scalar->o_solution("ugy"),nrs->scalar->o_solution("ugz"),nrs->fluid->o_U);
+      // The plume helper initializes UM for a stationary reconstructed liquid.
+    }
   }
   bubbleColumn::initializeHistory();
   nrs->userSource=&bubbleColumn::phaseMomentum::beginStep;
@@ -94,6 +112,12 @@ void UDF_Setup()
            "Target div(UM): explicit BDF(alpha) + UM_EXT.grad(alpha), using native UM extrapolation.\n",
         bubbleColumn::p.gasPressureGradientExtrapolation?"EXT":"latest",
         bubbleColumn::p.alphaCompressionEnabled);
+  if (platform->comm.mpiRank()==0) {
+    const auto &p=bubbleColumn::p;
+    printf("Method1 startupMode=%d (0=plume/steady, 1=zero/ramped) "
+           "rampStart=%.8e alphaRampDuration=%.8e gasRampDuration=%.8e seconds\n",
+        p.startupMode,p.inletRampStartTime,p.alphaInletRampDuration,p.gasInletRampDuration);
+  }
 }
 
 void UDF_ExecuteStep(double time,int tstep)
