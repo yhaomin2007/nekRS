@@ -1,0 +1,21 @@
+void udfDirichlet(bcData *bc)
+{
+  if (isField("fluid velocity")) {
+    const dfloat raw=bc->usrwrk[bc->idxVol];
+    const dfloat a=(raw<0.0)?0.0:((raw>1.0)?1.0:raw);
+    const dfloat rhoM=(1.0-a)*p_RHO_LIQUID+a*p_RHO_GAS;
+    bc->uxFluid=0.0;
+    bc->uyFluid=0.0;
+    bc->uzFluid=a*p_RHO_GAS*p_UG_INLET/rhoM;
+  } else if (isField("fluid pressure")) {
+    bc->pFluid=0.0;
+  } else if (isField("scalar alpha")) {
+    // Dirichlet only on the bottom; gas enters through an internal source.
+    bc->sScalar=0.0;
+  } else if (isField("scalar ugx") || isField("scalar ugy")) {
+    bc->sScalar=0.0;
+  } else if (isField("scalar ugz")) {
+    // Paper's prescribed dispersed velocity on vertical AND bottom walls.
+    bc->sScalar=p_UG_INLET;
+  }
+}

@@ -1,0 +1,106 @@
+#include "bubbleColumnTerms.hpp"
+#include "bubbleColumnCubature.hpp"
+#include "referenceCase.hpp"
+#include "bubbleColumnPhaseMomentum.hpp"
+
+#ifdef __okl__
+#include "bubbleColumnFazeli.oudf"
+#endif
+
+void UDF_LoadKernels(deviceKernelProperties &info)
+{
+  info.define("p_RHO_LIQUID")=bubbleColumn::p.rhoLiquid;
+  info.define("p_RHO_GAS")=bubbleColumn::p.rhoGas;
+  info.define("p_UG_INLET")=bubbleColumn::referenceCase::injectionVelocity;
+  bubbleColumn::referenceCase::registerKernels(info);
+  bubbleColumn::registerKernels(info);
+}
+
+void UDF_Setup0(MPI_Comm,setupAide &)
+{
+  platform->options.setArgs("LOWMACH","FALSE");
+  platform->options.setArgs("FLUID PRESSURE ELLIPTIC COEFF FIELD","TRUE");
+  int N=0,cubN=0;
+  platform->options.getArgs("POLYNOMIAL DEGREE",N);
+  platform->options.getArgs("CUBATURE POLYNOMIAL DEGREE",cubN);
+  const auto header=bubbleColumn::missingCubatureInterpolationHeader(N,cubN);
+  if (!header.empty()) {
+    platform->kernelInfo["headers"].asArray();
+    platform->kernelInfo["headers"]+=header;
+  }
+  auto &p=bubbleColumn::p;
+  p.rhoLiquid=1000.0; p.rhoGas=1.2; p.muLiquid=8.9e-4; p.muGas=0.0;
+  p.alphaInlet=0.0; p.gravity[2]=-9.81; p.alphaFloor=1e-6;
+  p.alphaClippingEnabled=0; p.alphaMinimum=0; p.alphaMaximum=1;
+  p.zRampBottom=0.40; p.zRampTop=0.45; p.outletDampingFactor=1;
+  p.gasMomentumCutoff=1e-4; p.gasMomentumFullyActive=1e-3;
+  p.gasPressureEnabled=1; p.dragEnabled=1; p.bubbleDiameter=0.003;
+  p.driftStressEnabled=1; p.virtualMassEnabled=1; p.virtualMassCoefficient=0.5;
+  p.laminarDispersionEnabled=1; p.laminarDispersionCoefficient=3.2;
+  p.liftEnabled=1; p.liftCoefficient=1.0; // multiplier of Tomiyama CL
+  p.mixtureDivergenceForm=2; p.divergenceFilterStrength=0;
+  p.divergenceComparisonInterval=100; p.validationOutputInterval=100;
+  auto read=[&](const char *key,auto &value) { platform->par->extract("casedata",key,value); };
+  read("rholiquid",p.rhoLiquid); read("rhogas",p.rhoGas); read("muliquid",p.muLiquid);
+  read("gravityz",p.gravity[2]); read("bubblediameter",p.bubbleDiameter);
+  read("virtualmasscoefficient",p.virtualMassCoefficient);
+  read("laminardispersionenabled",p.laminarDispersionEnabled);
+  read("laminardispersioncoefficient",p.laminarDispersionCoefficient);
+  read("liftenabled",p.liftEnabled); read("liftscale",p.liftCoefficient);
+  read("gaspressuregradientextrapolation",p.gasPressureGradientExtrapolation);
+  read("diagnosticinterval",bubbleColumn::phaseMomentum::interval);
+  nekrsCheck(!std::isfinite(p.rhoLiquid) || p.rhoLiquid<=0 ||
+      !std::isfinite(p.rhoGas) || p.rhoGas<=0 ||
+      !std::isfinite(p.muLiquid) || p.muLiquid<=0 ||
+      !std::isfinite(p.gravity[2]) || p.gravity[2]>=0 ||
+      !std::isfinite(p.bubbleDiameter) || p.bubbleDiameter<=0 ||
+      !std::isfinite(p.virtualMassCoefficient) || p.virtualMassCoefficient<0 ||
+      !std::isfinite(p.laminarDispersionCoefficient) || p.laminarDispersionCoefficient<0 ||
+      !std::isfinite(p.liftCoefficient) ||
+      (p.laminarDispersionEnabled!=0 && p.laminarDispersionEnabled!=1) ||
+      (p.liftEnabled!=0 && p.liftEnabled!=1) ||
+      (p.gasPressureGradientExtrapolation!=0 && p.gasPressureGradientExtrapolation!=1),
+      platform->comm.mpiComm(),EXIT_FAILURE,"%s","Invalid Fazeli physical parameters.\n");
+  bubbleColumn::referenceCase::configure();
+}
+
+void UDF_Setup()
+{
+  bubbleColumn::allocate();
+  bubbleColumn::phaseMomentum::allocate();
+  bubbleColumn::referenceCase::allocate();
+  if (platform->options.getArgs("RESTART FILE NAME").empty()) {
+    for (const char *name:{"alpha","ugx","ugy"})
+      platform->linAlg->fill(nrs->fieldOffset,0.0,nrs->scalar->o_solution(name));
+    platform->linAlg->fill(nrs->fieldOffset,bubbleColumn::referenceCase::injectionVelocity,
+        nrs->scalar->o_solution("ugz"));
+    platform->linAlg->fill(3*nrs->fieldOffset,0.0,nrs->fluid->o_U);
+    bubbleColumn::referenceCase::initializePressureKernel(nrs->meshV->Nlocal,
+        bubbleColumn::p.rhoLiquid,std::abs(bubbleColumn::p.gravity[2]),0.45,
+        nrs->meshV->o_z,nrs->fluid->o_P);
+  }
+  bubbleColumn::initializeHistory();
+  nrs->userSource=&bubbleColumn::phaseMomentum::beginStep;
+  nrs->postScalar=&bubbleColumn::phaseMomentum::postScalar;
+  nrs->userProperties=&bubbleColumn::phaseMomentum::properties;
+  nrs->userDivergence=&bubbleColumn::updateDivergence;
+  nrs->preFluid=&bubbleColumn::phaseMomentum::preFluid;
+  nrs->userConvergenceCheck=&bubbleColumn::phaseMomentum::singlePass;
+  if (platform->comm.mpiRank()==0)
+    printf("Fazeli physical benchmark / Method1: UG -> ALPHA(new UG) -> native P/UM.\n"
+           "Internal volume injection; no boundary gas inlet or inlet ramp.\n"
+           "Tomiyama drag/lift, MP-LD, VM; liquid-only weak viscous stress.\n"
+           "Native UM viscosity=0; liquid stress explicit. No core changes.\n"
+           "divUM=[(rhoL-rhoG)*(BDF(alpha)+UM_EXT.grad(alpha))+rhoG*S]/rhoM.\n"
+           "This is a SEM/Method1 adaptation, not a reproduction of the paper's IP-DG solver.\n");
+}
+
+void UDF_ExecuteStep(double time,int tstep)
+{
+  if (tstep>0) bubbleColumn::phaseMomentum::trace("NATIVE_PRESSURE_UM_DONE");
+  bubbleColumn::reconstructGasVelocity();
+  bubbleColumn::reconstructLiquidVelocity();
+  if (tstep>0) bubbleColumn::updateVirtualMassHistory();
+  bubbleColumn::phaseMomentum::diagnostics(time);
+  if (bubbleColumn::phaseMomentum::due()) bubbleColumn::referenceCase::diagnostics();
+}

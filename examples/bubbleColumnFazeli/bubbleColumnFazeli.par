@@ -1,0 +1,83 @@
+userSections = CASEDATA
+
+[GENERAL]
+polynomialOrder = 3
+cubaturePolynomialOrder = 6
+stopAt = endTime
+endTime = 250
+dt = 1e-4
+timeStepper = tombo1
+checkpointInterval = 1000
+scalars = ALPHA, UGX, UGY, UGZ
+# UDF order: UG -> ALPHA(new UG) -> native pressure/UM.
+# Physical benchmark adaptation; numerical method differs from the paper.
+
+[MESH]
+file = bubbleColumnFazeli.re2
+
+[FLUID PRESSURE]
+initialGuess = previous
+residualTol = 1e-8
+
+[FLUID VELOCITY]
+initialGuess = previous
+boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
+residualTol = 1e-8
+rho = 1000
+# No duplicate UM stress. Explicit UDF weak liquid stress uses muLiquid below.
+viscosity = 0
+
+[SCALAR ALPHA]
+initialGuess = previous
+boundaryTypeMap = udfDirichlet, zeroNeumann, zeroNeumann
+residualTol = 1e-8
+transportCoeff = 1
+# No additional alpha diffusion or filtering in this reference configuration.
+diffusionCoeff = 0
+
+[SCALAR UGX]
+initialGuess = previous
+boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
+residualTol = 1e-8
+transportCoeff = 1
+diffusionCoeff = 0
+
+[SCALAR UGY]
+initialGuess = previous
+boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
+residualTol = 1e-8
+transportCoeff = 1
+diffusionCoeff = 0
+
+[SCALAR UGZ]
+initialGuess = previous
+boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
+residualTol = 1e-8
+transportCoeff = 1
+diffusionCoeff = 0
+
+[CASEDATA]
+rhoLiquid = 1000
+rhoGas = 1.2
+muLiquid = 8.9e-4
+surfaceTension = 0.072
+gravityZ = -9.81
+bubbleDiameter = 0.003
+gasFlowLph = 48
+# x=width, y=depth, z=vertical; box volume = 3.6e-5 m3.
+# Extents inferred to match the paper's Q and S; see README for ambiguity.
+# Changing edges requires a matching mesh (source allocation checks alignment).
+sourceXMin = 0.08
+sourceXMax = 0.12
+sourceYMin = 0.01
+sourceYMax = 0.04
+sourceZMin = 0.01
+sourceZMax = 0.04
+virtualMassCoefficient = 0.5
+laminarDispersionEnabled = 1
+laminarDispersionCoefficient = 3.2
+liftEnabled = 1
+# Multiplier of spatially evaluated Tomiyama CL, NOT a constant lift coefficient.
+liftScale = 1
+gasPressureGradientExtrapolation = 0
+diagnosticInterval = 1000

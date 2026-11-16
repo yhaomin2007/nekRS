@@ -1,0 +1,64 @@
+// Additional terms for a gas VOLUME source, not a boundary inlet.
+@kernel void initializeReferencePressure(const dlong N, const dfloat rhoL,
+    const dfloat g, const dfloat height,
+    @ restrict const dfloat *z, @ restrict dfloat *pressure)
+{
+  for (dlong n=0;n<N;++n; @tile(p_blockSize, @outer, @inner))
+    pressure[n]=rhoL*g*(height-z[n]);
+}
+
+@kernel void injectionMomentum(const dlong N, const dlong offset,
+    const dfloat rhoL, const dfloat rhoG, const dfloat cvm,
+    const dfloat alphaFloor, const dfloat injectionVelocity,
+    @ restrict const dfloat *alpha, @ restrict const dfloat *source,
+    @ restrict const dfloat *um, @ restrict dfloat *rate,
+    @ restrict dfloat *gasSource, @ restrict dfloat *mixtureSource)
+{
+  for (dlong n=0;n<N;++n; @tile(p_blockSize, @outer, @inner)) {
+    const dfloat a=(alpha[n]<0.0)?0.0:((alpha[n]>1.0)?1.0:alpha[n]);
+    const dfloat safe=(a>alphaFloor)?a:alphaFloor;
+    const dfloat rhoM=(1.0-a)*rhoL+a*rhoG;
+    // lambda*UG is implicit. Only lambda*Uinj goes into the explicit RHS.
+    // This treatment avoids an explicit 1/alpha startup restriction.
+    const dfloat lambda=rhoG*source[n]/(safe*(rhoG+cvm*rhoL));
+    rate[n]=lambda;
+    gasSource[n+2*offset]+=lambda*injectionVelocity;
+    for (int i=0;i<3;++i) {
+      const dfloat injected=(i==2)?injectionVelocity:0.0;
+      mixtureSource[n+i*offset]+=rhoG*source[n]/rhoM*(injected-um[n+i*offset]);
+    }
+  }
+}
+
+@kernel void addInjectionDivergence(const dlong N,
+    const dfloat rhoL, const dfloat rhoG,
+    @ restrict const dfloat *alpha, @ restrict const dfloat *source,
+    @ restrict dfloat *divergence)
+{
+  for (dlong n=0;n<N;++n; @tile(p_blockSize, @outer, @inner)) {
+    const dfloat a=(alpha[n]<0.0)?0.0:((alpha[n]>1.0)?1.0:alpha[n]);
+    // BDF(alpha) already contains the volume source. Add ONLY injected mass.
+    divergence[n]+=rhoG*source[n]/((1.0-a)*rhoL+a*rhoG);
+  }
+}
+
+@kernel void liquidStress(const dlong N, const dlong offset, const dfloat muL,
+    @ restrict const dfloat *gradUL, @ restrict dfloat *stress)
+{
+  for (dlong n=0;n<N;++n; @tile(p_blockSize, @outer, @inner)) {
+    const dfloat trace=(2.0/3.0)*(gradUL[n]+gradUL[n+4*offset]+gradUL[n+8*offset]);
+    for (int i=0;i<3;++i)
+      for (int j=0;j<3;++j)
+        stress[n+(3*i+j)*offset]=muL*(gradUL[n+(3*i+j)*offset]+
+            gradUL[n+(3*j+i)*offset]-((i==j)?trace:0.0));
+  }
+}
+
+@kernel void addLiquidStressForce(const dlong N,
+    @ restrict const dfloat *rhoM, @ restrict const dfloat *weakStress,
+    @ restrict dfloat *mixtureSource)
+{
+  for (dlong n=0;n<N;++n; @tile(p_blockSize, @outer, @inner))
+    // weakStress = M^-1 integral grad(w).tauL. The force has the MINUS sign.
+    mixtureSource[n]-=weakStress[n]/rhoM[n];
+}
