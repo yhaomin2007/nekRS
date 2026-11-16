@@ -1,13 +1,15 @@
 #pragma once
 #include "mesh3D.h"
 #include <limits>
+#include <cctype>
 
 namespace bubbleColumn { namespace alphaDG {
 static dfloat cfl=0.1,backflow=0.0;
-static int maxSubsteps=10000,limiter=1;
+static int maxSubsteps=10000,limiter=0,fluxType=1;
+static std::string fluxName="upwind";
 static dlong nf=0;
 static ogs_t *faceOgs=nullptr;
-static deviceMemory<dfloat> solution,old,flux,rhs,trace,traceSum,surface,boundary;
+static deviceMemory<dfloat> solution,old,increment,flux,rhs,trace,traceSum,surface,boundary;
 static deviceMemory<dfloat> rate,badMean,limited;
 static deviceMemory<dlong> incidence;
 static deviceMemory<int> boundaryIds;
@@ -22,7 +24,12 @@ inline void configure()
   platform->par->extract("casedata","alphadgmaxsubsteps",maxSubsteps);
   platform->par->extract("casedata","alphadglimiter",limiter);
   platform->par->extract("casedata","alphadgbackflowvalue",backflow);
+  platform->par->extract("casedata","alphadgflux",fluxName);
+  for(auto &c:fluxName) c=static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  if(fluxName=="center") fluxName="central";
+  fluxType=fluxName=="central"?0:(fluxName=="upwind"?1:(fluxName=="lf"?2:-1));
   const auto comm=platform->comm.mpiComm();
+  nekrsCheck(fluxType<0,comm,EXIT_FAILURE,"%s","alphaDGFlux must be central (or center), upwind, or lf.\n");
   nekrsCheck(!std::isfinite(cfl) || cfl<=0 || cfl>0.5 || maxSubsteps<1 ||
       (limiter!=0 && limiter!=1) || !std::isfinite(backflow) || backflow<0 || backflow>1,
       comm,EXIT_FAILURE,"%s","Invalid alpha DG parameters.\n");
@@ -74,7 +81,7 @@ inline void allocate()
   const auto d=nrs->scalar->o_diffusionCoeff("alpha");
   nekrsCheck(platform->linAlg->max(N,d,comm)!=0 || platform->linAlg->min(N,d,comm)!=0,
       comm,EXIT_FAILURE,"%s","DG alpha diffusion must be zero; no DG viscous operator is implemented.\n");
-  solution.resize(offset);old.resize(offset);rhs.resize(offset);flux.resize(3*offset);
+  solution.resize(offset);old.resize(offset);increment.resize(offset);rhs.resize(offset);flux.resize(3*offset);
   trace.resize(2*nf);traceSum.resize(2*nf);surface.resize(nf);boundary.resize(nf);
   rate.resize(offset);badMean.resize(m->Nelements);limited.resize(m->Nelements);
   boundaryIds.resize(m->Nelements*6);boundaryIds.copyFrom(m->EToB,m->Nelements*6);
@@ -114,9 +121,9 @@ inline void allocate()
   project();
   nrs->scalar->compute[nrs->scalar->nameToIndex.at("alpha")]=0;
   if(platform->comm.mpiRank()==0)
-    printf("alphaDG: face-pair communication validated; LD OFF; SSPRK3, CFL=%g, limiter=%d.\n"
+    printf("alphaDG: face-pair communication validated; LD OFF; RK4, flux=%s, CFL=%g, limiter=%d.\n"
            "Native alpha solve OFF. Native alpha scalar stores only the conservative CG projection.\n",
-        cfl,limiter);
+        fluxName.c_str(),cfl,limiter);
 }
 inline dfloat inletValue(double time)
 {
@@ -134,7 +141,7 @@ inline dfloat evaluate(double time)
   traceKernel(nf,O,m->o_vmapM,m->o_sgeo,solution,o_ug,trace);
   traceSum.copyFrom(trace,2*nf);
   ogsGatherScatterMany(traceSum,2,nf,ogsDfloat,ogsAdd,faceOgs);
-  surfaceKernel(nf,inletValue(time),backflow,boundaryIds,m->o_sgeo,
+  surfaceKernel(nf,inletValue(time),backflow,fluxType,boundaryIds,m->o_sgeo,
       trace,traceSum,surface,boundary);
   liftKernel(N,incidence,m->o_LMM,surface,rhs);
   return platform->linAlg->sum(nf,boundary,platform->comm.mpiComm());
@@ -168,13 +175,16 @@ inline void advance(double endTime)
   for(int s=0;s<lastSubsteps;++s) {
     const double t=endTime-dt+s*h;
     old.copyFrom(solution,N);
+    // Classical RK4: stages at 0, 1/2, 1/2, 1; UG stays frozen.
     const dfloat b0=evaluate(t);
-    rkKernel(N,0.0,h,old,rhs,solution);limit();
-    const dfloat b1=evaluate(t+h);
-    rkKernel(N,0.75,h,old,rhs,solution);limit();
+    rkKernel(N,0,h,old,rhs,increment,solution);limit();
+    const dfloat b1=evaluate(t+0.5*h);
+    rkKernel(N,1,h,old,rhs,increment,solution);limit();
     const dfloat b2=evaluate(t+0.5*h);
-    rkKernel(N,1.0/3.0,h,old,rhs,solution);limit();
-    integrated+=h*(b0/6.0+b1/6.0+2.0*b2/3.0);
+    rkKernel(N,2,h,old,rhs,increment,solution);limit();
+    const dfloat b3=evaluate(t+h);
+    rkKernel(N,3,h,old,rhs,increment,solution);limit();
+    integrated+=h*(b0+2.0*b1+2.0*b2+b3)/6.0;
   }
   boundaryIntegral+=integrated;
   lastBalance=volume(solution)-before+integrated;
@@ -187,7 +197,7 @@ inline void diagnostics(double time)
   const dfloat hi=platform->linAlg->max(m->Nlocal,solution,comm);
   const dfloat v=volume(solution);
   if(platform->comm.mpiRank()==0)
-    printf("alphaDG time=%.9e substeps=%d CFL=%.6g min=%.9e max=%.9e V=%.12e "
+    printf("alphaDG RK4 time=%.9e substeps=%d CFL=%.6g min=%.9e max=%.9e V=%.12e "
            "stepBalance=%.3e cumulativeBalance=%.3e projectionDeltaV=%.3e limitedStages=%.0f\n",
         time,lastSubsteps,lastCfl,lo,hi,v,lastBalance,v-initialVolume+boundaryIntegral,
         lastProjectionError,lastLimited);

@@ -21,7 +21,7 @@
 }
 
 @kernel void dgSurfaceFlux(const dlong NF, const dfloat inletAlpha,
-    const dfloat backflowAlpha,
+    const dfloat backflowAlpha, const int fluxType,
     @ restrict const int *bid, @ restrict const dfloat *sgeo,
     @ restrict const dfloat *local, @ restrict const dfloat *sum,
     @ restrict dfloat *surface, @ restrict dfloat *boundary)
@@ -29,16 +29,24 @@
   for(dlong f=0;f<NF;++f; @tile(p_blockSize,@outer,@inner)) {
     const int b=bid[f/p_Nfp];
     const dfloat am=local[f];
-    dfloat ap=am,un=local[f+NF];
+    const dfloat unM=local[f+NF];
+    dfloat ap=am,un=unM,lambda=(unM<0.0)?-unM:unM;
     if(b<=0) {
       // Paired sum minus own trace gives the opposite element's trace.
       ap=sum[f]-am;
       // Opposite outward normals: canonical normal speed is (unM-unP)/2.
-      un=local[f+NF]-0.5*sum[f+NF];
-    } else if(b==1) ap=inletAlpha;
-    else if(b==2) ap=backflowAlpha;
-    else if(b==3) un=0.0; // impermeable wall, independent of roundoff in UG.n
-    const dfloat fhat=(un>=0.0)?un*am:un*ap;
+      const dfloat unP=sum[f+NF]-unM;
+      un=0.5*(unM-unP);
+      const dfloat absP=(unP<0.0)?-unP:unP;
+      lambda=(lambda>absP)?lambda:absP;
+    } else if(b==1 && un<0.0) ap=inletAlpha;
+    else if(b==2 && un<0.0) ap=backflowAlpha;
+    else if(b==3) {un=0.0;lambda=0.0;} // impermeable wall, independent of roundoff in UG.n
+    // Shared normal speed gives equal/opposite flux on the paired face.
+    // LF uses max(|unM|,|unP|); upwind uses |(unM-unP)/2|.
+    const dfloat dissipation=(fluxType==0)?0.0:
+        ((fluxType==1)?((un<0.0)?-un:un):lambda);
+    const dfloat fhat=0.5*(un*(am+ap)+dissipation*(am-ap));
     surface[f]=sgeo[f*p_Nsgeo+p_WSJID]*fhat;
     boundary[f]=(b>0)?surface[f]:0.0;
   }
@@ -59,12 +67,16 @@
   }
 }
 
-@kernel void dgRK(const dlong N,const dfloat oldWeight,const dfloat h,
+@kernel void dgRK(const dlong N,const int stage,const dfloat h,
     @ restrict const dfloat *old, @ restrict const dfloat *rhs,
-    @ restrict dfloat *a)
+    @ restrict dfloat *increment, @ restrict dfloat *a)
 {
-  for(dlong n=0;n<N;++n; @tile(p_blockSize,@outer,@inner))
-    a[n]=oldWeight*old[n]+(1.0-oldWeight)*(a[n]+h*rhs[n]);
+  for(dlong n=0;n<N;++n; @tile(p_blockSize,@outer,@inner)) {
+    if(stage==0) increment[n]=h*rhs[n]/6.0;
+    else increment[n]+=h*rhs[n]*((stage==3)?1.0/6.0:1.0/3.0);
+    if(stage==3) a[n]=old[n]+increment[n];
+    else a[n]=old[n]+((stage==2)?h:0.5*h)*rhs[n];
+  }
 }
 
 @kernel void dgRate(const dlong N,const dlong offset,const dfloat inverseMinWeight,

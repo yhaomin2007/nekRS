@@ -45,8 +45,12 @@ M_K\dot\alpha_K=D_K^T M_K(\alpha u_g)-B_K\widehat F_n.
 
 Volume fluxes use GLL collocation (no dealiasing in this first DG version).
 The native `opSEM::divergence` supplies the **unassembled weak** volume load.
-The surface kernel uses upwind flux `un*alpha_upwind`; interior `un` is the
-average of the two normal speeds expressed in a common orientation. Local
+The surface kernel offers `alphaDGFlux=central/upwind/lf` (default upwind;
+`center` aliases central). With a shared normal speed `un=(unM-unP)/2`,
+the flux is `0.5*(un*(alphaM+alphaP)+lambda*(alphaM-alphaP))`.
+Here lambda is zero for central, |un| for upwind, and
+max(|unM|,|unP|) for local Lax-Friedrichs. LF and upwind coincide for
+continuous normal velocity. All three fluxes cancel on paired faces. Local
 mass inversion uses **element** `mesh->o_LMM`, not assembled `o_invLMM`.
 There is no additional alpha*div(UG) source: it is already in conservative
 div(alpha*UG). Nonzero div(UG) is supported.
@@ -58,7 +62,7 @@ averaging. Setup checks two participants per interior face node, one per
 boundary face node, opposite normals and equal surface quadrature weights.
 Face IDs distinguish incident faces even at edges/corners.
 
-The alpha update uses SSP-RK3 with frozen newly solved UG. A metric/GLL-weight
+The alpha update uses classical RK4 with frozen newly solved UG. A metric/GLL-weight
 estimate chooses substeps using `alphaDGCfl`. Its default 0.1 is conservative,
 but is not a rigorous stability bound for arbitrary distorted geometries.
 The whole coupled method remains first-order in time: `tombo1` is required.
@@ -72,9 +76,12 @@ fluid-step value, so coupled startup accuracy is first-order.
 
 DG alpha BCs are flux conditions:
 
-* Inlet: prescribed ramped alpha for **inflow**, interior alpha for outflow.
-* Top: interior alpha for outflow; `alphaDGBackflowValue` for backflow (default 0).
+* Inlet: prescribed ramped exterior alpha for **inflow**, interior alpha for outflow.
+* Top: interior alpha for outflow; exterior `alphaDGBackflowValue` for backflow (default 0).
 * Walls: exactly zero normal gas flux.
+
+The selected flux is also used at open boundaries. Central averages interior
+and prescribed exterior states on inflow; upwind/LF use the prescribed state.
 
 CG velocity BCs retain the original case, including zero UG and UM on walls.
 The CG alpha projection is not overwritten with an inlet Dirichlet value:
@@ -108,14 +115,18 @@ This retains Method1's approximate CG pressure constraint; local conservative
 DG alpha transport does not make the full split two-fluid method exactly
 phase-consistent or cure its possible short-wave instabilities.
 
-Default `alphaDGLimiter=1` applies a quadrature-weighted element-mean-preserving
+Default `alphaDGLimiter=0` disables limiting. Opt-in `alphaDGLimiter=1` applies a quadrature-weighted element-mean-preserving
 scaling limiter after each RK stage. It contracts nodal values toward their
 element mean to keep them in [0,1], up to roundoff. It introduces nonlinear
 numerical dissipation. It does **not** clip an inadmissible element average.
 The run stops if a mean exceeds [0,1] by more than 1e-12, or values become
 nonfinite; reduce alpha CFL or fluid dt in that case. This is not a proof of
 boundedness for arbitrary compressive UG. Setting the limiter to 0 isolates
-plain upwind DG, while retaining nonfinite checks.
+unlimited DG with the selected flux, while retaining nonfinite checks.
+
+Classical RK4 is not SSP; enabling the limiter does not guarantee boundedness.
+Unlimited central/upwind/LF DG can overshoot sharp fronts. RK4 accuracy refers
+to the frozen-UG alpha subproblem, not the full split coupled scheme.
 
 Alpha numerical diffusion must be zero; no DG diffusion operator is included.
 Native alpha HPF/AVM options are not applied because the native alpha solver
@@ -129,7 +140,8 @@ original numerical diffusion/HPF settings, explicitly visible in the par.
 | laminarDispersionEnabled | 0 | Required; LD disabled |
 | alphaDGCfl | 0.1 | Substep stability scale |
 | alphaDGMaxSubsteps | 10000 | Abort if more substeps are required |
-| alphaDGLimiter | 1 | Element-mean-preserving nodal bounds limiter |
+| alphaDGFlux | upwind | central (alias center), upwind, or lf |
+| alphaDGLimiter | 0 | Element-mean-preserving nodal bounds limiter |
 | alphaDGBackflowValue | 0 | Top inflow alpha |
 
 Default checkpoint s1 is **projected CG alpha**; s2–s4 are CG UG components.
@@ -141,7 +153,7 @@ target/actual div(UM).
 `alphaDG` log entries report substeps, estimated CFL, raw DG alpha min/max,
 gas volume, per-step and cumulative gas-volume balance, projection volume
 error and the count of limited element-stages. Boundary fluxes are integrated
-with the same SSP-RK3 weights (1/6,1/6,2/3). With no mass source,
+with the same SSP-RK3 weights (1/6,1/3,1/3,1/6), at times (0,1/2,1/2,1) of each substep. With no mass source,
 `Vnew - Vold + integrated_outward_boundary_flux` should be near roundoff.
 
 **Fresh starts only:** this first version rejects restart files. Ordinary
@@ -158,8 +170,8 @@ The harness executes the production DG kernels and native weak-divergence
 kernel with OCCA Serial at polynomial degrees 2, 3 and 7. It checks all
 three spatial derivative directions, constant-state preservation, periodic
 smooth advection convergence, nonzero-divergence transport, inlet/backflow
-fluxes, sharp-packet bounds, element-mean preservation,
-and boundary/global volume cancellation on 1 and 2 MPI ranks. The test uses
+fluxes, unlimited sharp-packet mass conservation, element-mean preservation,
+and RK4 boundary/global volume cancellation for all three fluxes on 1 and 2 MPI ranks. The test uses
 a dense MPI trace exchange for its synthetic mesh; the production sparse OGS
 mapping is separately checked at case setup. CUDA translation is checked;
 this is not a GPU execution test. Full coupled NekRS MPI/GPU operation and
@@ -170,6 +182,7 @@ the Fazeli paper's IP-DG solver. Remaining work includes dealiased volume
 fluxes, scalable/performance testing, exact DG restart, and a more systematic
 assessment of the DG-to-CG momentum/pressure coupling.
 
+**Historical SSPRK3 baseline (not validation of this RK4 revision):**
 Development checks passed with 1/2 ranks: degree-2 periodic smooth-transport
 L2 errors were 4.85184e-3 (4 elements in x) and 6.30990e-4 (8 elements),
 identical across the two process counts. Mass-balance assertions used 1e-12
@@ -181,3 +194,16 @@ Repeat audit: degree-3 smooth-transport L2 errors were 4.54952e-4 and
 between 1 and 2 ranks. The degree-3 check covers the supplied case order.
 These tests use affine elements; rotated/curved production meshes and the
 full DG/CG pressure coupling still need integration testing.
+
+### RK4 revision validation
+
+The RK4/flux changes were reviewed and their scalar kernel arithmetic was
+checked in a JavaScript runtime (RK4 order, paired flux cancellation, wall
+and inflow/outflow behavior). The updated OCCA/MPI harness has **not** been
+run for this revision because the editing session had no execution host.
+Run `OCCA_DIR=/path/to/built/occa python3 tests/run.py` on the target install.
+No full coupled MPI/GPU validation is claimed for this revision.
+
+The lightweight arithmetic audit can be repeated with `node tests/arithmetic.cjs`.
+It extracts the RK4 and surface-flux bodies from `alphaDG.okl`; it does not
+validate OCCA compilation, device execution, or the full DG spatial operator.

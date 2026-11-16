@@ -33,6 +33,7 @@ int main(int argc,char **argv){
  }
  for(int i=0;i<nq;++i)for(int j=0;j<nq;++j)if(i!=j)bary[i]/=nodes[i]-nodes[j];
  for(int i=0;i<nq;++i)for(int j=0;j<nq;++j)if(i!=j){deriv[i*nq+j]=bary[j]/bary[i]/(nodes[i]-nodes[j]);deriv[i*nq+i]-=deriv[i*nq+j];}
+ for(int fluxType=0;fluxType<3;++fluxType){
  double errors[2]={};
  for(int level=0;level<2;++level){
   const int nx=4*(1<<level),ne=nx/size,N=ne*np,NF=ne*6*nfp,GN=nx*nfp;
@@ -59,7 +60,7 @@ int main(int argc,char **argv){
     if(f==2 || f==4){bid[e*6+f]=0;ids[fn]=((eg+(f==2))%nx)*nfp+v;}
    }
   }
-  auto A=d.malloc<double>(N),Old=d.malloc<double>(N),U=d.malloc<double>(3*N,u.data()),
+  auto A=d.malloc<double>(N),Old=d.malloc<double>(N),Increment=d.malloc<double>(N),U=d.malloc<double>(3*N,u.data()),
    M=d.malloc<double>(N,mass.data()),VG=d.malloc<double>(vg.size(),vg.data()),SG=d.malloc<double>(sg.size(),sg.data()),
    D=d.malloc<double>(nq*nq,deriv.data()),F=d.malloc<double>(3*N),R=d.malloc<double>(N),T=d.malloc<double>(2*NF),
    S=d.malloc<double>(2*NF),Face=d.malloc<double>(NF),B=d.malloc<double>(NF),Bad=d.malloc<double>(ne),Limited=d.malloc<double>(ne);
@@ -71,10 +72,11 @@ int main(int argc,char **argv){
    for(int i=0;i<NF;++i)if(ids[i]>=0)for(int c=0;c<2;++c)send[ids[i]+c*GN]+=t[i+c*NF];
    MPI_Allreduce(send.data(),recv.data(),2*GN,MPI_DOUBLE,MPI_SUM,MPI_COMM_WORLD);
    for(int i=0;i<NF;++i)for(int c=0;c<2;++c)sum[i+c*NF]=ids[i]>=0?recv[ids[i]+c*GN]:t[i+c*NF];
-   S.copyFrom(sum.data());sf(NF,inlet,backflow,Bid,SG,T,S,Face,B);lift(N,Inc,M,Face,R);
+   S.copyFrom(sum.data());sf(NF,inlet,backflow,fluxType,Bid,SG,T,S,Face,B);lift(N,Inc,M,Face,R);
    V r(N),b(NF);R.copyTo(r.data());B.copyTo(b.data());double balance=0;
    for(int i=0;i<N;++i)balance+=mass[i]*r[i];for(double v:b)balance+=v;
    assert(std::abs(globalSum(balance))<2e-12);
+   double net=0;for(double v:b)net+=v;return globalSum(net);
   };
   auto limit=[&](){lim(ne,1,M,A,Bad,Limited);V bad(ne);Bad.copyTo(bad.data());for(double v:bad)assert(v==0);};
   // Constant-state preservation catches wrong derivative transpose / face sign.
@@ -101,18 +103,28 @@ int main(int argc,char **argv){
   if(rank==size-1)bid[(ne-1)*6+2]=2;
   Bid.copyFrom(bid.data());std::fill(a.begin(),a.end(),0);A.copyFrom(a.data());eval(.2);
   V bd(NF);B.copyTo(bd.data());double net=0;for(double v:bd)net+=v;
-  assert(std::abs(globalSum(net)+.2)<1e-12);
+  assert(std::abs(globalSum(net)+(fluxType==0?.1:.2))<1e-12);
   std::fill(u.begin(),u.begin()+N,-1.0);U.copyFrom(u.data());eval(.2,.1);
-  B.copyTo(bd.data());net=0;for(double v:bd)net+=v;assert(std::abs(globalSum(net)+.1)<1e-12);
+  B.copyTo(bd.data());net=0;for(double v:bd)net+=v;assert(std::abs(globalSum(net)+(fluxType==0?.05:.1))<1e-12);
+  // Nonautonomous inlet and open-boundary RK4 mass balance.
+  std::fill(u.begin(),u.begin()+N,1.0);U.copyFrom(u.data());
+  double before=vol(),integrated=0,h=.0001;
+  Old.copyFrom(A);
+  for(int stage=0;stage<4;++stage){
+   double t=h*(stage==0?0:(stage==3?1:.5));
+   double boundaryFlux=eval(.2+t*t*t,.1);
+   integrated+=h*(stage==0 || stage==3?1./6:1./3)*boundaryFlux;
+   rk(N,stage,h,Old,R,Increment,A);
+  }
+  assert(std::abs(vol()-before+integrated)<2e-12);
   if(rank==0)bid[4]=0;if(rank==size-1)bid[(ne-1)*6+2]=0;
   Bid.copyFrom(bid.data());std::fill(u.begin(),u.begin()+N,1.0);U.copyFrom(u.data());
   // Smooth periodic advection: accuracy must improve with refinement.
   for(int i=0;i<N;++i)a[i]=.3+.1*std::sin(2*pi*x[i]);A.copyFrom(a.data());double initial=vol();
   const double end=.2;int steps=std::ceil(end/(.005*dx));double dt=end/steps;
   for(int step=0;step<steps;++step){
-   Old.copyFrom(A);eval();rk(N,0.,dt,Old,R,A);limit();
-   eval();rk(N,.75,dt,Old,R,A);limit();
-   eval();rk(N,1./3,dt,Old,R,A);limit();
+   Old.copyFrom(A);
+   for(int stage=0;stage<4;++stage){eval();rk(N,stage,dt,Old,R,Increment,A);}
   }
   double final=vol();assert(std::abs(final-initial)<1e-12);
   double err=0;for(int i=0;i<N;++i)err+=mass[i]*std::pow(a[i]-(.3+.1*std::sin(2*pi*(x[i]-end))),2);
@@ -121,17 +133,17 @@ int main(int argc,char **argv){
   std::fill(a.begin(),a.end(),.2);for(int e=0;e<ne;++e){a[e*np]=-.1;a[e*np+np-1]=1.1;}
   A.copyFrom(a.data());initial=vol();limit();final=vol();assert(std::abs(final-initial)<1e-13);
   for(double v:a)assert(v>=-1e-14 && v<=1+1e-14);
-  // Sharp periodic packet: boundedness and global volume with limiter active.
+  // Unlimited sharp packet: mass conservation, with no boundedness claim for RK4.
   for(int i=0;i<N;++i)a[i]=(x[i]>.2 && x[i]<.55)?.5:0;
   A.copyFrom(a.data());initial=vol();
   for(int step=0;step<40;++step){
-   Old.copyFrom(A);eval();rk(N,0.,dt,Old,R,A);limit();
-   eval();rk(N,.75,dt,Old,R,A);limit();
-   eval();rk(N,1./3,dt,Old,R,A);limit();
+   Old.copyFrom(A);
+   for(int stage=0;stage<4;++stage){eval();rk(N,stage,dt,Old,R,Increment,A);}
   }
-  final=vol();assert(std::abs(final-initial)<1e-12);for(double v:a)assert(v>=-1e-12 && v<=1+1e-12);
+  final=vol();assert(std::abs(final-initial)<1e-12);for(double v:a)assert(std::isfinite(v));
  }
  assert(errors[1]<errors[0]/3);
- if(rank==0)std::cout<<"PASS degree="<<degree<<" ranks="<<size<<" smooth L2="<<errors[0]<<","<<errors[1]<<"; constant state, periodic mass, sharp packet, limiter mean preservation\n";
+ if(rank==0)std::cout<<"PASS degree="<<degree<<" flux="<<fluxType<<" ranks="<<size<<" smooth L2="<<errors[0]<<","<<errors[1]<<"; constant state, periodic mass, sharp packet, limiter mean preservation\n";
+ }
  MPI_Finalize();
 }

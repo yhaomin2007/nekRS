@@ -10,7 +10,7 @@ timeStepper = tombo1
 checkpointInterval = 1000
 scalars = ALPHA, UGX, UGY, UGZ
 # ALPHA scalar is CG coupling/output storage only; alphaDG owns the DG solution.
-# Fresh start, or a checkpoint with all four scalars.
+# Fresh starts only: CG checkpoints cannot restore the DG state.
 # Target div(UM) is explicit from solved alpha and native extrapolated UM.
 
 [MESH]
@@ -94,9 +94,11 @@ gasPressureGradientExtrapolation = 0
 # First step, every N steps, and checkpoints; 0: first/checkpoints only.
 diagnosticInterval = 10
 
-# Explicit DG alpha: upwind flux, SSP-RK3 substeps, frozen newly solved UG.
+# Explicit DG alpha: classical RK4 substeps, frozen newly solved UG.
+# central (alias center), upwind, or local Lax-Friedrichs (lf).
+alphaDGFlux = upwind
 alphaDGCfl = 0.1
 alphaDGMaxSubsteps = 10000
-alphaDGLimiter = 1
+alphaDGLimiter = 0
 # Alpha imposed only on top BACKFLOW (outflow takes the interior state).
 alphaDGBackflowValue = 0
