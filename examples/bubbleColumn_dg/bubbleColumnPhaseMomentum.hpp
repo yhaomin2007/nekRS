@@ -92,7 +92,8 @@ inline void properties(double)
     return;
   }
   // Evaluate UM^EXT.grad(alpha) directly at cubature points, then project
-  // and assemble with the same quadrature as gas alpha transport.
+  // and assemble using the inherited CG cubature operator. This target
+  // uses projected alpha; DG transport itself uses collocated GLL fluxes.
   // Restore the gas advector afterwards; do not alter native Urst or UM.
   o_gasAdvector.copyFrom(mixtureExtrapolated,3*offset);
   evaluateGasCubatureTransport(false,true);

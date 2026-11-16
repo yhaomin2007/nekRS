@@ -8,7 +8,10 @@
 #include <iostream>
 #include <vector>
 using V=std::vector<double>;
-constexpr int nq=3,np=27,nfp=9,ns=19,nv=12;
+#ifndef DG_NQ
+#define DG_NQ 3
+#endif
+constexpr int nq=DG_NQ,np=nq*nq*nq,nfp=nq*nq,ns=19,nv=12;
 constexpr double pi=3.14159265358979323846;
 double globalSum(double v){double s;MPI_Allreduce(&v,&s,1,MPI_DOUBLE,MPI_SUM,MPI_COMM_WORLD);return s;}
 int main(int argc,char **argv){
@@ -20,27 +23,36 @@ int main(int argc,char **argv){
  sf=d.buildKernel(argv[1],"dgSurfaceFlux",props),lift=d.buildKernel(argv[1],"dgLift",props),
  rk=d.buildKernel(argv[1],"dgRK",props),lim=d.buildKernel(argv[1],"dgLimit",props),
  weak=d.buildKernel(argv[2],"wDivergenceVolumeHex3D",props);
+ V nodes(nq),weights(nq),deriv(nq*nq),bary(nq,1.);
+ const int degree=nq-1;
+ auto legendre=[&](double x){double a=1,b=x;for(int k=2;k<=degree;++k){double c=((2*k-1)*x*b-(k-1)*a)/k;a=b;b=c;}return std::pair<double,double>(b,a);};
+ for(int i=0;i<nq;++i){
+  double x=-std::cos(pi*i/degree);
+  if(i>0 && i<degree)for(int it=0;it<30;++it){auto pp=legendre(x);x-=(x*pp.first-pp.second)/((degree+1)*pp.first);}
+  nodes[i]=x;double pn=legendre(x).first;weights[i]=2./(degree*(degree+1)*pn*pn);
+ }
+ for(int i=0;i<nq;++i)for(int j=0;j<nq;++j)if(i!=j)bary[i]/=nodes[i]-nodes[j];
+ for(int i=0;i<nq;++i)for(int j=0;j<nq;++j)if(i!=j){deriv[i*nq+j]=bary[j]/bary[i]/(nodes[i]-nodes[j]);deriv[i*nq+i]-=deriv[i*nq+j];}
  double errors[2]={};
  for(int level=0;level<2;++level){
   const int nx=4*(1<<level),ne=nx/size,N=ne*np,NF=ne*6*nfp,GN=nx*nfp;
   assert(nx%size==0);double dx=1.0/nx;
-  V a(N),u(3*N),mass(N),vg(ne*np*nv),sg(NF*ns),x(N),weights={1./3,4./3,1./3};
-  V deriv={-1.5,2,-.5,-.5,0,.5,.5,-2,1.5};
+  V a(N),u(3*N),mass(N),vg(ne*np*nv),sg(NF*ns),x(N);
   std::vector<int> map(NF),inc(6*N,-1),bid(6*ne,3),ids(NF,-1);
   for(int e=0;e<ne;++e){
    int eg=rank*ne+e;
    for(int k=0;k<nq;++k)for(int j=0;j<nq;++j)for(int i=0;i<nq;++i){
     int l=i+nq*(j+nq*k),n=e*np+l,b=e*np*nv+l;
-    x[n]=(eg+.5*i)*dx;mass[n]=dx/8*weights[i]*weights[j]*weights[k];
+    x[n]=(eg+.5*(nodes[i]+1))*dx;mass[n]=dx/8*weights[i]*weights[j]*weights[k];
     vg[b]=2/dx;vg[b+4*np]=2;vg[b+8*np]=2;vg[b+10*np]=mass[n];u[n]=1;
    }
    for(int f=0;f<6;++f)for(int v=0;v<nfp;++v){
     int i=v%nq,j=v/nq,l=0,axis=0;double normal=0,sj=0;
     if(f==0){l=i+nq*j;axis=2;normal=-1;sj=dx/4;}
-    if(f==5){l=i+nq*(j+nq*2);axis=2;normal=1;sj=dx/4;}
+    if(f==5){l=i+nq*(j+nq*(nq-1));axis=2;normal=1;sj=dx/4;}
     if(f==1){l=i+nq*nq*j;axis=1;normal=-1;sj=dx/4;}
-    if(f==3){l=i+nq*(2+nq*j);axis=1;normal=1;sj=dx/4;}
-    if(f==2){l=2+nq*(i+nq*j);axis=0;normal=1;sj=.25;}
+    if(f==3){l=i+nq*((nq-1)+nq*j);axis=1;normal=1;sj=dx/4;}
+    if(f==2){l=(nq-1)+nq*(i+nq*j);axis=0;normal=1;sj=.25;}
     if(f==4){l=nq*(i+nq*j);axis=0;normal=-1;sj=.25;}
     int fn=(e*6+f)*nfp+v;map[fn]=e*np+l;inc[6*map[fn]+f]=fn;
     sg[fn*ns+axis]=normal;sg[fn*ns+10]=sj*weights[i]*weights[j];
@@ -49,7 +61,7 @@ int main(int argc,char **argv){
   }
   auto A=d.malloc<double>(N),Old=d.malloc<double>(N),U=d.malloc<double>(3*N,u.data()),
    M=d.malloc<double>(N,mass.data()),VG=d.malloc<double>(vg.size(),vg.data()),SG=d.malloc<double>(sg.size(),sg.data()),
-   D=d.malloc<double>(9,deriv.data()),F=d.malloc<double>(3*N),R=d.malloc<double>(N),T=d.malloc<double>(2*NF),
+   D=d.malloc<double>(nq*nq,deriv.data()),F=d.malloc<double>(3*N),R=d.malloc<double>(N),T=d.malloc<double>(2*NF),
    S=d.malloc<double>(2*NF),Face=d.malloc<double>(NF),B=d.malloc<double>(NF),Bad=d.malloc<double>(ne),Limited=d.malloc<double>(ne);
   auto Map=d.malloc<int>(NF,map.data()),Inc=d.malloc<int>(6*N,inc.data()),Bid=d.malloc<int>(6*ne,bid.data());
   auto vol=[&](){A.copyTo(a.data());double v=0;for(int i=0;i<N;++i)v+=mass[i]*a[i];return globalSum(v);};
@@ -71,10 +83,18 @@ int main(int argc,char **argv){
   // -alpha*div(u), with no separately added compression source.
   for(int i=0;i<N;++i)u[i]=1+.1*std::sin(2*pi*x[i]);U.copyFrom(u.data());eval();R.copyTo(r.data());
   for(int e=0;e<ne;++e)for(int k=0;k<nq;++k)for(int j=0;j<nq;++j)for(int i=0;i<nq;++i){
-   double du=0;for(int q=0;q<nq;++q)du+=deriv[3*i+q]*u[e*np+q+nq*(j+nq*k)]*2/dx;
+   double du=0;for(int q=0;q<nq;++q)du+=deriv[nq*i+q]*u[e*np+q+nq*(j+nq*k)]*2/dx;
    assert(std::abs(r[e*np+i+nq*(j+nq*k)]+.2*du)<1e-11);
   }
-  std::fill(u.begin(),u.begin()+N,1.0);U.copyFrom(u.data());
+  // Exercise all three reference derivative directions with zero wall flux.
+  for(int e=0;e<ne;++e)for(int k=0;k<nq;++k)for(int j=0;j<nq;++j)for(int i=0;i<nq;++i){
+   int n=e*np+i+nq*(j+nq*k);double y=.5*(1+nodes[j]),z=.5*(1+nodes[k]);
+   u[n]=1;u[n+N]=y*(1-y);u[n+2*N]=z*(1-z);
+  }
+  U.copyFrom(u.data());eval();R.copyTo(r.data());
+  for(int e=0;e<ne;++e)for(int k=0;k<nq;++k)for(int j=0;j<nq;++j)for(int i=0;i<nq;++i)
+   assert(std::abs(r[e*np+i+nq*(j+nq*k)]-.2*(nodes[j]+nodes[k]))<1e-10);
+  std::fill(u.begin()+N,u.end(),0.0);U.copyFrom(u.data());
   // Physical inflow/outflow and top backflow: integrated numerical boundary
   // flux balances the change of gas volume, including across MPI partitions.
   if(rank==0)bid[4]=1;
@@ -112,6 +132,6 @@ int main(int argc,char **argv){
   final=vol();assert(std::abs(final-initial)<1e-12);for(double v:a)assert(v>=-1e-12 && v<=1+1e-12);
  }
  assert(errors[1]<errors[0]/3);
- if(rank==0)std::cout<<"PASS ranks="<<size<<" smooth L2="<<errors[0]<<","<<errors[1]<<"; constant state, periodic mass, sharp packet, limiter mean preservation\n";
+ if(rank==0)std::cout<<"PASS degree="<<degree<<" ranks="<<size<<" smooth L2="<<errors[0]<<","<<errors[1]<<"; constant state, periodic mass, sharp packet, limiter mean preservation\n";
  MPI_Finalize();
 }

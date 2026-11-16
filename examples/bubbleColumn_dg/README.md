@@ -155,7 +155,8 @@ OCCA_DIR=/path/to/built/occa python3 tests/run.py
 ```
 
 The harness executes the production DG kernels and native weak-divergence
-kernel with OCCA Serial. It checks constant-state preservation, periodic
+kernel with OCCA Serial at polynomial degrees 2, 3 and 7. It checks all
+three spatial derivative directions, constant-state preservation, periodic
 smooth advection convergence, nonzero-divergence transport, inlet/backflow
 fluxes, sharp-packet bounds, element-mean preservation,
 and boundary/global volume cancellation on 1 and 2 MPI ranks. The test uses
@@ -174,3 +175,9 @@ L2 errors were 4.85184e-3 (4 elements in x) and 6.30990e-4 (8 elements),
 identical across the two process counts. Mass-balance assertions used 1e-12
 absolute tolerance for the unit-volume synthetic problem. UDF C++ syntax
 also passed against the branch API. No full coupled GPU run has been made.
+
+Repeat audit: degree-3 smooth-transport L2 errors were 4.54952e-4 and
+2.95989e-5; degree-7 errors were 5.69873e-9 and 2.25009e-10. These matched
+between 1 and 2 ranks. The degree-3 check covers the supplied case order.
+These tests use affine elements; rotated/curved production meshes and the
+full DG/CG pressure coupling still need integration testing.
