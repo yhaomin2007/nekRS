@@ -1,3 +1,5 @@
+#include <math.h>
+
 // Explicit alpha transport history only; no HPF or BDF history load.
 @kernel void extrapolateAlphaTransportRhs(const dlong N, const dlong offset,
                                          const int order,
@@ -512,5 +514,47 @@
     const dfloat rho=(1.0-a)*rhoLiquid+a*rhoGas;
     const dfloat dtAlpha=g0idt*a-alphaBdfHistory[n];
     target[n]=(rhoLiquid-rhoGas)/rho*(dtAlpha+mixtureAlphaAdvection[n]);
+  }
+}
+
+// Fazeli et al. (2026), Eqs. (7),(8),(10): Panicker LD with SN drag.
+// h(alpha) below is H(alpha)/(alpha*(1-alpha)) in their notation.
+// F_LD,g = -alpha*(3/4)*Cd*Cdis*rhoL*h*|ur|^2*grad(alpha).
+// Classic constant-coefficient lift: F_L,g = -Cl*rhoL*alpha*(ur x curl(UL)).
+// Equal/opposite liquid reactions cancel in mixture momentum. This kernel
+// adds gas accelerations after division by alpha*(rhoG+Cvm*rhoL), consistent
+// with the existing semi-implicit gas VM equation. The alpha factor cancels
+// analytically, so no alpha division or low-alpha cutoff is introduced.
+@kernel void addDispersionLift(const dlong N, const dlong offset,
+    const dfloat rhoL, const dfloat rhoG, const dfloat muL,
+    const dfloat diameter, const dfloat cvm,
+    const int ldEnabled, const dfloat cdis,
+    const int liftEnabled, const dfloat cl,
+    @ restrict const dfloat *alpha,
+    @ restrict const dfloat *ug, @ restrict const dfloat *ul,
+    @ restrict const dfloat *gradAlpha, @ restrict const dfloat *gradUl,
+    @ restrict dfloat *gasSource)
+{
+  for (dlong n=0;n<N;++n; @tile(p_blockSize, @outer, @inner)) {
+    const dfloat a=(alpha[n]<0.0)?0.0:((alpha[n]>1.0)?1.0:alpha[n]);
+    const dfloat ux=ug[n]-ul[n];
+    const dfloat uy=ug[n+offset]-ul[n+offset];
+    const dfloat uz=ug[n+2*offset]-ul[n+2*offset];
+    const dfloat speed=sqrt(ux*ux+uy*uy+uz*uz);
+    const dfloat re=rhoL*diameter*speed/muL;
+    const dfloat cdRe=(re<1000.0)?24.0*(1.0+0.15*pow(re,0.687)):0.44*re;
+    // Cd*speed^2 without division by Re or speed; zero slip gives exactly zero.
+    const dfloat cdSpeed2=cdRe*muL*speed/(rhoL*diameter);
+    const dfloat inertia=rhoG+cvm*rhoL;
+    const dfloat ldScale=ldEnabled*0.75*cdis*rhoL*
+        (1.0-1.166*a+0.5*a*a)*cdSpeed2/inertia;
+    const dfloat liftScale=-liftEnabled*cl*rhoL/inertia;
+    // gradUl[(3*i+j)*offset+n] = derivative of UL_i with respect to x_j.
+    const dfloat wx=gradUl[n+7*offset]-gradUl[n+5*offset];
+    const dfloat wy=gradUl[n+2*offset]-gradUl[n+6*offset];
+    const dfloat wz=gradUl[n+3*offset]-gradUl[n+offset];
+    gasSource[n] += -ldScale*gradAlpha[n]+liftScale*(uy*wz-uz*wy);
+    gasSource[n+offset] += -ldScale*gradAlpha[n+offset]+liftScale*(uz*wx-ux*wz);
+    gasSource[n+2*offset] += -ldScale*gradAlpha[n+2*offset]+liftScale*(ux*wy-uy*wx);
   }
 }

@@ -49,6 +49,10 @@ struct Parameters {
   dfloat gasPressureEnabled;
   int gasPressureGradientExtrapolation = 0;
   dfloat dragEnabled;
+  int laminarDispersionEnabled = 0;
+  dfloat laminarDispersionCoefficient = 4.545;
+  int liftEnabled = 0;
+  dfloat liftCoefficient = 0.5;
   dfloat bubbleDiameter;
   dfloat driftStressEnabled;
   dfloat virtualMassEnabled;
@@ -184,6 +188,7 @@ static dfloat cumulativeQgMaskDeltaIntegral[3] = {0.0, 0.0, 0.0};
 static dfloat cumulativeQgMaskDeltaMagnitudeIntegral = 0.0;
 static bool validationInitialized = false;
 static occa::kernel addGasStressKernel;
+static occa::kernel addDispersionLiftKernel;
 static occa::kernel buildExplicitMixtureDivergenceKernel;
 static occa::kernel reconstructGasVelocityKernel;
 static occa::kernel postProcessGasFluxKernel;
@@ -244,6 +249,7 @@ inline void registerKernels(deviceKernelProperties &kernelInfo)
     platform->kernelRequests.add(request, fileName, kernelInfo);
   } else {
     addGasStressKernel = platform->kernelRequests.load(request, "addGasStress");
+    addDispersionLiftKernel = platform->kernelRequests.load(request, "addDispersionLift");
     buildExplicitMixtureDivergenceKernel = platform->kernelRequests.load(request, "buildExplicitMixtureDivergence");
     reconstructGasVelocityKernel =
         platform->kernelRequests.load(request, "reconstructGasVelocity");
@@ -725,6 +731,11 @@ inline void evaluatePointwiseTerms()
                            o_alphaSource,
                            o_ugSource,
                            o_dragLambda);
+  if (p.laminarDispersionEnabled || p.liftEnabled)
+    addDispersionLiftKernel(mesh->Nlocal,offset,p.rhoLiquid,p.rhoGas,p.muLiquid,
+        p.bubbleDiameter,p.virtualMassEnabled*p.virtualMassCoefficient,
+        p.laminarDispersionEnabled,p.laminarDispersionCoefficient,
+        p.liftEnabled,p.liftCoefficient,alpha,o_ug,o_ul,o_gradAlpha,o_gradUl,o_ugSource);
   evaluateAlphaTransport();
 
   // Smoothly increase the implicit mixture viscosity and all implicit scalar

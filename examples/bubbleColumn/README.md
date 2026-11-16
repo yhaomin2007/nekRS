@@ -85,6 +85,55 @@ and the unavailable liquid acceleration is initialized to zero.
 The gas pressure gradient remains the latest assembled strong gradient,
 with `gasPressureGradientExtrapolation=1` selecting its time extrapolation.
 
+## Laminar dispersion and classic lift
+
+Both closures are enabled in the supplied par and added explicitly to UG:
+
+```ini
+laminarDispersionEnabled = 1
+laminarDispersionCoefficient = 4.545
+liftEnabled = 1
+liftCoefficient = 0.5
+```
+
+Set either enabled switch to 0 for independent comparisons; setting both to
+0 restores the previous gas source. Older par files omitting these switches
+leave both disabled. No extra checkpoint fields or core changes are introduced.
+
+With a=alpha, ur=UG-UL and omegaL=curl(UL), the physical forces per mixture
+volume are
+
+\[
+\mathbf F_{LD,g}=-\frac34 C_D C_{dis}\rho_l\alpha
+(1-1.166\alpha+0.5\alpha^2)|\mathbf u_r|^2\nabla\alpha,
+\qquad
+\mathbf F_{L,g}=-C_L\rho_l\alpha(\mathbf u_r\times\boldsymbol\omega_l).
+\]
+
+LD is the Panicker (P-LD) closure in Fazeli et al. (2026), Eqs. (7),(8),(10),
+DOI: https://doi.org/10.1016/j.ijmultiphaseflow.2025.105590. Its Cd uses the same
+Schiller–Naumann law as current drag. Cdis=4.545 is paired with this SN law;
+the paper's modified MP-LD Cdis=3.2 is paired with Tomiyama drag and is not
+silently substituted here. Lift uses the classical constant-coefficient
+vorticity closure, default CL=0.5; it is not Tomiyama's deformable-bubble lift.
+
+Each gas force is divided by alpha*(rhoG+Cvm*rhoL), consistently with the
+existing semi-implicit gas VM inertia. The alpha factor cancels analytically,
+so the added gas acceleration stays finite as alpha tends to zero, and both
+physical mixture-volume forces vanish there. No low-alpha cutoff is added.
+Cd*|ur|^2 is evaluated without division by slip magnitude, giving zero LD at
+zero slip. Liquid vorticity uses the assembled strong gradient of reconstructed
+UL. These closures use source-time fields; they are not time-extrapolated a
+second time. The alpha equation receives no direct extra diffusion/source.
+
+The liquid reactions are equal and opposite in the two-phase force balance;
+there is no net LD/lift force to add to native mixture momentum. UL continues
+to be reconstructed instead of independently solved. The lagged liquid VM
+acceleration and existing mixture-stress approximation remain part of this
+split, so adding LD does not establish the paper's coupled stability result.
+Additional interphase coupling can impose timestep restrictions; check growth
+rates and timestep sensitivity, not only whether the column runs to completion.
+
 ## Alpha scheduling and pressure
 
 The first native scalar sweep solves only UG. In `postScalar`, the UDF builds
@@ -145,7 +194,7 @@ residual and pressure linear-solver residual.
 
 ## Verification
 
-Run tests `inlet_startup.py`, `plume_initialization.py`, `phase_momentum.py`, `phase_alpha_order.py`, `ug_virtual_mass.py`,
+Run tests `dispersion_lift.py`, `inlet_startup.py`, `plume_initialization.py`, `phase_momentum.py`, `phase_alpha_order.py`, `ug_virtual_mass.py`,
 `ug_liquid_acceleration_ext.py`, `explicit_divergence.py`,
 `cubature_transport.py` and `scalar_time_treatment.py` under `tests/`.
 These check reconstruction kernels, deferred-alpha host scheduling, gas VM

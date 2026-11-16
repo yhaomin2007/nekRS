@@ -59,6 +59,10 @@ void UDF_Setup0(MPI_Comm,setupAide &)
   read("gasinletrampduration",p.gasInletRampDuration);
   read("gravityz",p.gravity[2]); read("bubblediameter",p.bubbleDiameter);
   read("virtualmasscoefficient",p.virtualMassCoefficient);
+  read("laminardispersionenabled",p.laminarDispersionEnabled);
+  read("laminardispersioncoefficient",p.laminarDispersionCoefficient);
+  read("liftenabled",p.liftEnabled);
+  read("liftcoefficient",p.liftCoefficient);
   read("gaspressuregradientextrapolation",p.gasPressureGradientExtrapolation);
   read("alphacompressionenabled",p.alphaCompressionEnabled);
   read("diagnosticinterval",bubbleColumn::phaseMomentum::interval);
@@ -73,6 +77,10 @@ void UDF_Setup0(MPI_Comm,setupAide &)
       std::isfinite(p.initialPlumeThickness) && p.initialPlumeThickness>0) ||
       (p.alphaCompressionEnabled!=0 && p.alphaCompressionEnabled!=1) ||
       (p.startupMode<0 || p.startupMode>2) ||
+      (p.laminarDispersionEnabled!=0 && p.laminarDispersionEnabled!=1) ||
+      (p.liftEnabled!=0 && p.liftEnabled!=1) ||
+      !std::isfinite(p.laminarDispersionCoefficient) || p.laminarDispersionCoefficient<0 ||
+      !std::isfinite(p.liftCoefficient) ||
       !std::isfinite(p.inletRampStartTime) || p.inletRampStartTime<0 ||
       !std::isfinite(p.alphaInletRampDuration) || p.alphaInletRampDuration<=0 ||
       !std::isfinite(p.gasInletRampDuration) || p.gasInletRampDuration<=0,
@@ -120,6 +128,9 @@ void UDF_Setup()
     printf("Method1 startupMode=%d (0=plume, 1=zero/ramp-both, 2=uniform-UG/ramp-alpha) "
            "rampStart=%.8e alphaRampDuration=%.8e gasRampDuration=%.8e seconds initialUGz=%.8e\n",
         p.startupMode,p.inletRampStartTime,p.alphaInletRampDuration,p.gasInletRampDuration,p.ugInitial);
+    printf("Method1 interphase forces: P-LD=%d Cdis=%.8g (SN drag); "
+           "classic lift=%d Cl=%.8g; both explicit, gas VM inertia included.\n",
+        p.laminarDispersionEnabled,p.laminarDispersionCoefficient,p.liftEnabled,p.liftCoefficient);
   }
 }
 

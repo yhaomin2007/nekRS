@@ -81,6 +81,12 @@ initialPlumeThickness = 0.01
 gravityZ = -9.81
 bubbleDiameter = 3e-3
 virtualMassCoefficient = 0.5
+# Panicker LD: Fazeli et al. (2026), Eqs. (7),(8),(10), with current SN drag.
+laminarDispersionEnabled = 1
+laminarDispersionCoefficient = 4.545
+# Classic constant lift: F_g = -Cl*rhoL*alpha*((UG-UL) x curl(UL)).
+liftEnabled = 1
+liftCoefficient = 0.5
 # 0: latest strong grad(p); 1: native fluid EXT of strong gradient history.
 gasPressureGradientExtrapolation = 0
 # 0 removes alpha*div(UG) for diagnostics and changes phase conservation.
