@@ -1,0 +1,102 @@
+userSections = CASEDATA
+
+[GENERAL]
+polynomialOrder = 3
+cubaturePolynomialOrder = 6
+stopAt = numSteps
+numSteps = 100000
+dt = 1e-5
+timeStepper = tombo1
+checkpointInterval = 1000
+scalars = ALPHA, UGX, UGY, UGZ
+# ALPHA scalar is CG coupling/output storage only; alphaDG owns the DG solution.
+# Fresh start, or a checkpoint with all four scalars.
+# Target div(UM) is explicit from solved alpha and native extrapolated UM.
+
+[MESH]
+file = bubbleColumn_dg.re2
+
+[FLUID PRESSURE]
+initialGuess = previous
+residualTol = 1e-6
+
+[FLUID VELOCITY]
+initialGuess = previous
+boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
+residualTol = 1e-6
+rho = 998.2
+viscosity = 1e-3
+regularization = hpfrt + nModes=1 + scalingCoeff=10.0
+
+[SCALAR ALPHA]
+initialGuess = previous
+boundaryTypeMap = udfDirichlet, zeroNeumann, zeroNeumann
+residualTol = 1e-6
+transportCoeff = 1
+diffusionCoeff = 0
+
+[SCALAR UGX]
+initialGuess = previous
+boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
+residualTol = 1e-6
+transportCoeff = 1
+# Additional numerical diffusivity; physical stress is supplied by the UDF.
+diffusionCoeff = 1e-5
+regularization = hpfrt + nModes=1 + scalingCoeff=10.0
+
+[SCALAR UGY]
+initialGuess = previous
+boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
+residualTol = 1e-6
+transportCoeff = 1
+# Additional numerical diffusivity; physical stress is supplied by the UDF.
+diffusionCoeff = 1e-5
+regularization = hpfrt + nModes=1 + scalingCoeff=10.0
+
+[SCALAR UGZ]
+initialGuess = previous
+boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet
+residualTol = 1e-6
+transportCoeff = 1
+# Additional numerical diffusivity; physical stress is supplied by the UDF.
+diffusionCoeff = 1e-5
+regularization = hpfrt + nModes=1 + scalingCoeff=10.0
+
+[CASEDATA]
+rhoLiquid = 998.2
+rhoGas = 1.2
+muLiquid = 1e-3
+muGas = 1.8e-5
+alphaInlet = 0.016667
+gasInletVelocity = 0.3
+# 0: plume/steady inlet; 1: zero fields/ramp alpha+UG; 2: uniform UG/ramp alpha.
+startupMode = 2
+# Initial uniform UGz in mode 2 (also plume UG amplitude in mode 0).
+gasInitialVelocity = 0.3
+# Physical times in seconds; gas duration applies only to mode 1.
+inletRampStartTime = 0.0
+alphaInletRampDuration = 0.1
+gasInletRampDuration = 0.1
+# Used only when startupMode=0.
+initialPlumeHeight = 0.05
+initialPlumeThickness = 0.01
+gravityZ = -9.81
+bubbleDiameter = 3e-3
+virtualMassCoefficient = 0.5
+# LD deliberately disabled for this DG feasibility experiment.
+laminarDispersionEnabled = 0
+# Classic constant lift: F_g = -Cl*rhoL*alpha*((UG-UL) x curl(UL)).
+liftEnabled = 1
+liftCoefficient = 0.5
+# 0: latest strong grad(p); 1: native fluid EXT of strong gradient history.
+gasPressureGradientExtrapolation = 0
+# DG always transports the complete conservative alpha*UG flux.
+# First step, every N steps, and checkpoints; 0: first/checkpoints only.
+diagnosticInterval = 10
+
+# Explicit DG alpha: upwind flux, SSP-RK3 substeps, frozen newly solved UG.
+alphaDGCfl = 0.1
+alphaDGMaxSubsteps = 10000
+alphaDGLimiter = 1
+# Alpha imposed only on top BACKFLOW (outflow takes the interior state).
+alphaDGBackflowValue = 0

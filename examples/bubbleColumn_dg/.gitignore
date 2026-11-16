@@ -1,0 +1,7 @@
+__pycache__/
+tests/__pycache__/
+*.re2
+.cache/
+*.log
+*.f?????
+*.nek5000

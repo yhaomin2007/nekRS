@@ -1,0 +1,150 @@
+#include "bubbleColumnTerms.hpp"
+#include "bubbleColumnCubature.hpp"
+#include "alphaDG.hpp"
+#include "bubbleColumnPhaseMomentum.hpp"
+
+#ifdef __okl__
+#include "bubbleColumn_dg.oudf"
+#endif
+
+void UDF_LoadKernels(deviceKernelProperties &info)
+{
+  info.define("p_RHO_LIQUID")=bubbleColumn::p.rhoLiquid;
+  info.define("p_RHO_GAS")=bubbleColumn::p.rhoGas;
+  info.define("p_ALPHA_INLET")=bubbleColumn::p.alphaInlet;
+  info.define("p_UG_INLET")=bubbleColumn::p.ugInlet;
+  info.define("p_STARTUP_MODE")=bubbleColumn::p.startupMode;
+  info.define("p_INLET_RAMP_START")=bubbleColumn::p.inletRampStartTime;
+  info.define("p_ALPHA_RAMP_DURATION")=bubbleColumn::p.alphaInletRampDuration;
+  info.define("p_UG_RAMP_DURATION")=bubbleColumn::p.gasInletRampDuration;
+  bubbleColumn::registerKernels(info);
+  bubbleColumn::alphaDG::registerKernels(info);
+}
+
+void UDF_Setup0(MPI_Comm,setupAide &)
+{
+  platform->options.setArgs("LOWMACH","FALSE");
+  platform->options.setArgs("FLUID PRESSURE ELLIPTIC COEFF FIELD","TRUE");
+  int N=0,cubN=0;
+  platform->options.getArgs("POLYNOMIAL DEGREE",N);
+  platform->options.getArgs("CUBATURE POLYNOMIAL DEGREE",cubN);
+  const auto header=bubbleColumn::missingCubatureInterpolationHeader(N,cubN);
+  if (!header.empty()) {
+    platform->kernelInfo["headers"].asArray();
+    platform->kernelInfo["headers"]+=header;
+  }
+  auto &p=bubbleColumn::p;
+  // Fixed Method1 choices. Old experimental limiter/ramp/filter switches are
+  // deliberately not read from .par in this case.
+  p.rhoLiquid=998.2; p.rhoGas=1.2; p.muLiquid=1e-3; p.muGas=1.8e-5;
+  p.alphaInlet=0.016667; p.ugInlet=0.3;
+  p.gravity[2]=-9.81;
+  p.alphaFloor=1e-6; p.alphaClippingEnabled=0;
+  p.alphaMinimum=0; p.alphaMaximum=1;
+  p.zRampBottom=0.9; p.zRampTop=0.95; p.outletDampingFactor=1;
+  p.gasMomentumCutoff=1e-4; p.gasMomentumFullyActive=1e-3;
+  p.gasPressureEnabled=1; p.dragEnabled=1; p.bubbleDiameter=3e-3;
+  p.driftStressEnabled=1; p.virtualMassEnabled=1; p.virtualMassCoefficient=0.5;
+  p.mixtureDivergenceForm=2; p.divergenceFilterStrength=0;
+  p.divergenceComparisonInterval=10; p.validationOutputInterval=10;
+  auto read=[&](const char *key,auto &value) { platform->par->extract("casedata",key,value); };
+  read("rholiquid",p.rhoLiquid); read("rhogas",p.rhoGas);
+  read("muliquid",p.muLiquid); read("mugas",p.muGas);
+  read("alphainlet",p.alphaInlet); read("gasinletvelocity",p.ugInlet);
+  p.ugInitial=p.ugInlet;
+  read("gasinitialvelocity",p.ugInitial);
+  read("initialplumeheight",p.initialPlumeHeight);
+  read("initialplumethickness",p.initialPlumeThickness);
+  read("startupmode",p.startupMode);
+  read("inletrampstarttime",p.inletRampStartTime);
+  read("alphainletrampduration",p.alphaInletRampDuration);
+  read("gasinletrampduration",p.gasInletRampDuration);
+  read("gravityz",p.gravity[2]); read("bubblediameter",p.bubbleDiameter);
+  read("virtualmasscoefficient",p.virtualMassCoefficient);
+  p.laminarDispersionEnabled=0; // Disabled in this DG experiment.
+
+  read("liftenabled",p.liftEnabled);
+  read("liftcoefficient",p.liftCoefficient);
+  read("gaspressuregradientextrapolation",p.gasPressureGradientExtrapolation);
+  p.alphaCompressionEnabled=1; // DG always transports conservative alpha*UG.
+  bubbleColumn::alphaDG::configure();
+  read("diagnosticinterval",bubbleColumn::phaseMomentum::interval);
+  nekrsCheck(!(std::isfinite(p.rhoLiquid) && p.rhoLiquid>0 &&
+      std::isfinite(p.rhoGas) && p.rhoGas>0 &&
+      std::isfinite(p.muLiquid) && p.muLiquid>0 &&
+      std::isfinite(p.muGas) && p.muGas>=0 &&
+      std::isfinite(p.bubbleDiameter) && p.bubbleDiameter>0 &&
+      std::isfinite(p.alphaInlet) && p.alphaInlet>=0 && p.alphaInlet<1 &&
+      std::isfinite(p.ugInlet) && std::isfinite(p.ugInitial) && std::isfinite(p.gravity[2]) &&
+      std::isfinite(p.initialPlumeHeight) && p.initialPlumeHeight>=0 &&
+      std::isfinite(p.initialPlumeThickness) && p.initialPlumeThickness>0) ||
+      (p.alphaCompressionEnabled!=0 && p.alphaCompressionEnabled!=1) ||
+      (p.startupMode<0 || p.startupMode>2) ||
+      (p.laminarDispersionEnabled!=0 && p.laminarDispersionEnabled!=1) ||
+      (p.liftEnabled!=0 && p.liftEnabled!=1) ||
+      !std::isfinite(p.laminarDispersionCoefficient) || p.laminarDispersionCoefficient<0 ||
+      !std::isfinite(p.liftCoefficient) ||
+      !std::isfinite(p.inletRampStartTime) || p.inletRampStartTime<0 ||
+      !std::isfinite(p.alphaInletRampDuration) || p.alphaInletRampDuration<=0 ||
+      !std::isfinite(p.gasInletRampDuration) || p.gasInletRampDuration<=0,
+      platform->comm.mpiComm(),EXIT_FAILURE,"%s","Invalid Method1 physical parameters.\n");
+}
+
+void UDF_Setup()
+{
+  bubbleColumn::allocate();
+  bubbleColumn::phaseMomentum::allocate();
+  if (platform->options.getArgs("RESTART FILE NAME").empty()) {
+    const auto &p=bubbleColumn::p;
+    if (p.startupMode==1 || p.startupMode==2) {
+      for (const char *name:{"alpha","ugx","ugy","ugz"})
+        platform->linAlg->fill(nrs->fieldOffset,0.0,nrs->scalar->o_solution(name));
+      platform->linAlg->fill(3*nrs->fieldOffset,0.0,nrs->fluid->o_U);
+      if (p.startupMode==2)
+        platform->linAlg->fill(nrs->fieldOffset,p.ugInitial,nrs->scalar->o_solution("ugz"));
+    } else {
+      bubbleColumn::initializePlumeKernel(nrs->meshV->Nlocal,nrs->fieldOffset,
+          p.rhoLiquid,p.rhoGas,p.alphaInlet,p.ugInitial,
+          p.initialPlumeHeight,p.initialPlumeThickness,nrs->meshV->o_z,
+          nrs->scalar->o_solution("alpha"),nrs->scalar->o_solution("ugx"),
+          nrs->scalar->o_solution("ugy"),nrs->scalar->o_solution("ugz"),nrs->fluid->o_U);
+      // The plume helper initializes UM for a stationary reconstructed liquid.
+    }
+  }
+  bubbleColumn::alphaDG::allocate();
+  bubbleColumn::initializeHistory();
+  nrs->userSource=&bubbleColumn::phaseMomentum::beginStep;
+  nrs->postScalar=&bubbleColumn::phaseMomentum::postScalar;
+  nrs->userProperties=&bubbleColumn::phaseMomentum::properties;
+  nrs->userDivergence=&bubbleColumn::updateDivergence;
+  nrs->preFluid=&bubbleColumn::phaseMomentum::preFluid;
+  nrs->userConvergenceCheck=&bubbleColumn::phaseMomentum::singlePass;
+  if (platform->comm.mpiRank()==0)
+    printf("Method1-DG: CG UG -> DG ALPHA(new UG) -> CG projection -> native PRESSURE/UM.\n"
+           "No end-step phase correction; UM is never reset; core solvers unchanged.\n"
+           "Phase convection=fluid EXT; pressure=strong %s; alphaCompression=%d.\n"
+           "UL reconstructed; gas stress/drag explicit; VM uses extrapolated liquid acceleration.\n"
+           "Target div(UM): explicit BDF(alpha) + UM_EXT.grad(alpha), using native UM extrapolation.\n",
+        bubbleColumn::p.gasPressureGradientExtrapolation?"EXT":"latest",
+        bubbleColumn::p.alphaCompressionEnabled);
+  if (platform->comm.mpiRank()==0) {
+    const auto &p=bubbleColumn::p;
+    printf("Method1 startupMode=%d (0=plume, 1=zero/ramp-both, 2=uniform-UG/ramp-alpha) "
+           "rampStart=%.8e alphaRampDuration=%.8e gasRampDuration=%.8e seconds initialUGz=%.8e\n",
+        p.startupMode,p.inletRampStartTime,p.alphaInletRampDuration,p.gasInletRampDuration,p.ugInitial);
+    printf("Method1 interphase forces: P-LD=%d Cdis=%.8g (SN drag); "
+           "classic lift=%d Cl=%.8g; both explicit, gas VM inertia included.\n",
+        p.laminarDispersionEnabled,p.laminarDispersionCoefficient,p.liftEnabled,p.liftCoefficient);
+  }
+}
+
+void UDF_ExecuteStep(double time,int tstep)
+{
+  if (tstep>0) bubbleColumn::phaseMomentum::trace("NATIVE_PRESSURE_UM_DONE");
+  bubbleColumn::reconstructGasVelocity();
+  bubbleColumn::reconstructLiquidVelocity();
+  if (tstep>0) bubbleColumn::updateVirtualMassHistory();
+  bubbleColumn::phaseMomentum::diagnostics(time);
+  if (bubbleColumn::phaseMomentum::due()) bubbleColumn::alphaDG::diagnostics(time);
+  if (nrs->checkpointStep) bubbleColumn::alphaDG::write(time);
+}

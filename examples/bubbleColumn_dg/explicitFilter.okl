@@ -1,0 +1,103 @@
+// Ported from the user-provided fluid.oudf explicit filter.
+@kernel void filterTensor3(const dlong Nelements,
+                          @ restrict const dfloat *fMT,
+                          @ restrict dfloat *U)
+{
+  for (dlong e = 0; e < Nelements; ++e; @outer(0)) {
+    @shared dfloat s_U[p_Nq][p_Nq];
+    @shared dfloat s_FT[p_Nq][p_Nq];
+
+    @exclusive dfloat r_Un[p_Nq];
+    @exclusive dfloat r_U[p_Nq];
+
+    for (int j = 0; j < p_Nq; ++j; @inner(1)) {
+      for (int i = 0; i < p_Nq; ++i; @inner(0)) {
+        const int id = i + j * p_Nq;
+        s_FT[j][i] = fMT[id];
+
+#pragma unroll p_Nq
+        for (int k = 0; k < p_Nq; ++k)
+          r_Un[k] = 0.f;
+      }
+    }
+
+    @barrier();
+
+    // read and multiply in k
+    for (int j = 0; j < p_Nq; ++j; @inner(1)) {
+      for (int i = 0; i < p_Nq; ++i; @inner(0)) {
+#pragma unroll p_Nq
+        for (int k = 0; k < p_Nq; ++k) {
+          const dlong id = e * p_Np + k * p_Nq * p_Nq + j * p_Nq + i;
+          const dfloat uc = U[id];
+
+          // Could be hold for less global reads
+          r_U[k] = uc;
+
+#pragma unroll p_Nq
+          for (int n = 0; n < p_Nq; ++n) {
+            const dfloat Ik = s_FT[k][n];
+            r_Un[n] += Ik * uc;
+          }
+        }
+      }
+    }
+
+    @barrier();
+
+// loop around slices
+#pragma unroll p_Nq
+    for (int k = 0; k < p_Nq; ++k) {
+      // load slice to @shared
+      for (int j = 0; j < p_Nq; ++j; @inner(1))
+        for (int i = 0; i < p_Nq; ++i; @inner(0))
+          s_U[j][i] = r_Un[k];
+
+      @barrier();
+
+      for (int j = 0; j < p_Nq; ++j; @inner(1)) {
+        for (int i = 0; i < p_Nq; ++i; @inner(0)) {
+          r_Un[k] = 0.f;
+#pragma unroll p_Nq
+          for (int n = 0; n < p_Nq; n++) {
+            const dfloat Ii = s_FT[n][i];
+            r_Un[k] += Ii * s_U[j][n];
+          }
+        }
+      }
+
+      @barrier();
+      // load multiplied data to shared
+      for (int j = 0; j < p_Nq; ++j; @inner(1))
+        for (int i = 0; i < p_Nq; ++i; @inner(0))
+          s_U[j][i] = r_Un[k];
+
+      @barrier();
+
+      for (int j = 0; j < p_Nq; ++j; @inner(1)) {
+        for (int i = 0; i < p_Nq; ++i; @inner(0)) {
+          r_Un[k] = 0.f;
+
+#pragma unroll p_Nq
+          for (int n = 0; n < p_Nq; n++) {
+            const dfloat Ij = s_FT[n][j];
+            r_Un[k] += Ij * s_U[n][i];
+          }
+        }
+      }
+
+      @barrier();
+    }
+
+    for (int j = 0; j < p_Nq; ++j; @inner(1)) {
+      for (int i = 0; i < p_Nq; ++i; @inner(0)) {
+#pragma unroll p_Nq
+        for (int k = 0; k < p_Nq; ++k) {
+          const dlong id = e * p_Np + k * p_Nq * p_Nq + j * p_Nq + i;
+          U[id] = r_Un[k];
+        }
+      }
+    }
+
+  } // loop e
+} // func
