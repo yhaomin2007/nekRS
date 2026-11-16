@@ -2,15 +2,17 @@ void udfDirichlet(bcData *bc)
 {
   dfloat alphaInlet=p_ALPHA_INLET;
   dfloat gasInlet=p_UG_INLET;
-#if p_STARTUP_MODE == 1
+#if p_STARTUP_MODE == 1 || p_STARTUP_MODE == 2
   const dfloat elapsed=bc->time-p_INLET_RAMP_START;
   const dfloat ta=elapsed/p_ALPHA_RAMP_DURATION;
-  const dfloat tg=elapsed/p_UG_RAMP_DURATION;
   const dfloat sa=(ta<0.0)?0.0:((ta>1.0)?1.0:ta);
-  const dfloat sg=(tg<0.0)?0.0:((tg>1.0)?1.0:tg);
   // Quintic smoothstep: value, slope and curvature match the endpoint plateaus.
   alphaInlet*=sa*sa*sa*(10.0+sa*(-15.0+6.0*sa));
+#if p_STARTUP_MODE == 1
+  const dfloat tg=elapsed/p_UG_RAMP_DURATION;
+  const dfloat sg=(tg<0.0)?0.0:((tg>1.0)?1.0:tg);
   gasInlet*=sg*sg*sg*(10.0+sg*(-15.0+6.0*sg));
+#endif
 #endif
   if (isField("fluid velocity")) {
     if (bc->id == 1) {

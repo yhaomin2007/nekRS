@@ -7,17 +7,27 @@ No NekRS core files are changed.
 
 ## Initial condition and inlet ramp
 
-The supplied par defaults to a fresh zero-field startup:
+The supplied par defaults to uniform gas velocity with zero initial alpha:
 
 ```ini
 [CASEDATA]
-startupMode = 1
+startupMode = 2
+gasInitialVelocity = 0.3
 inletRampStartTime = 0.0
 alphaInletRampDuration = 0.1
 gasInletRampDuration = 0.1
 alphaInlet = 0.016667
 gasInletVelocity = 0.3
 ```
+
+`startupMode=2` initializes alpha and UM to zero and UG to
+(0,0,gasInitialVelocity). The inlet UGz is constant at gasInletVelocity,
+while inlet alpha alone ramps from zero to alphaInlet. Reconstructed UL is
+initially zero. The existing zero-velocity wall BCs remain in effect, so the
+uniform gas field applies to the unconstrained domain interior. UG then
+evolves under the momentum equation; this is not a frozen-velocity test.
+Set gasInitialVelocity equal to gasInletVelocity to match their initial values.
+If omitted, gasInitialVelocity defaults to gasInletVelocity.
 
 `startupMode=1` initializes alpha, all UG components and UM to exactly zero;
 reconstructed UL is zero as well. At the inlet, alpha and vertical gas
@@ -36,8 +46,9 @@ values are diagnostic settings, not a calibrated physical injection model.
 
 The inlet liquid remains stationary. Native UM uses the same instantaneous
 alpha and UG through UMz_in=alpha_in*rhoG*UGz_in/rhoM_in, including the same
-velocity mask. With equal durations the injected gas volume flux scales as
-r(t)^2; alpha and UG are both ramped, rather than the flux alone.
+velocity mask. In mode 2 the gas flux scales as r_alpha(t); gas ramp duration
+is ignored. In mode 1 with equal durations it scales as r(t)^2, because both
+alpha and UG are ramped.
 
 Set `startupMode=0` to restore the original tanh plume and constant inlet.
 `initialPlumeHeight` and `initialPlumeThickness` retain their original meanings;
@@ -46,7 +57,7 @@ also retains the original mode for older par files.
 
 Restart preserves the checkpoint fields and uses absolute simulation time
 for the inlet ramp; it does not zero the solution or restart the ramp clock.
-Use a fresh run to test the zero-field startup. UG still evolves everywhere
+Use a fresh run to test either new startup mode. UG still evolves everywhere
 under the existing gas momentum equation even in regions with alpha=0.
 
 ## Liquid velocity and gas momentum

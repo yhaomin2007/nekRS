@@ -26,8 +26,8 @@ int main(){
   b.time=t;b.id=1;b.idxVol=1;
   b.fieldName="scalar alpha";udfDirichlet(&b);double a=b.sScalar;
   b.fieldName="scalar ugz";udfDirichlet(&b);double g=b.sScalar;
-  double expectA=p_ALPHA_INLET*(p_STARTUP_MODE?smooth(t,.4):1.);
-  double expectG=p_UG_INLET*(p_STARTUP_MODE?smooth(t,.1):1.);
+  double expectA=p_ALPHA_INLET*(p_STARTUP_MODE!=0?smooth(t,.4):1.);
+  double expectG=p_UG_INLET*(p_STARTUP_MODE==1?smooth(t,.1):1.);
   assert(std::abs(a-expectA)<1e-14 && std::abs(g-expectG)<1e-14);
   assert(a>=previousAlpha-1e-14 && g>=previousGas-1e-14);
   previousAlpha=a;previousGas=g;
@@ -49,15 +49,17 @@ int main(){
 '''
 with tempfile.TemporaryDirectory() as t:
  p=Path(t);(p/'test.cpp').write_text('#include <initializer_list>\n'+pre+boundary+main)
- for mode in [0,1]:
+ for mode in [0,1,2]:
   subprocess.run(['g++','-std=c++17',f'-Dp_STARTUP_MODE={mode}',str(p/'test.cpp'),'-o',str(p/'test')],check=True)
   subprocess.run([str(p/'test')],check=True)
 par=configparser.ConfigParser(inline_comment_prefixes=('#',))
 par.read_string('[ROOT]\n'+(case/'bubbleColumn.par').read_text())
-assert par['CASEDATA'].getint('startupMode')==1
+assert par['CASEDATA'].getint('startupMode')==2
 assert par['CASEDATA'].getfloat('alphaInletRampDuration')>0
 assert par['CASEDATA'].getfloat('gasInletRampDuration')>0
 udf=(case/'bubbleColumn.udf').read_text()
 assert 'if (platform->options.getArgs("RESTART FILE NAME").empty())' in udf
-assert 'if (p.startupMode==1)' in udf and 'initializePlumeKernel' in udf
-print('Actual BCs: legacy steady inlet, delayed quintic ramps, unequal alpha/UG durations, zero startup, monotonicity, final plateaus, synchronized mass-weighted UM, stationary liquid and wall/rim precedence passed.')
+assert 'if (p.startupMode==1 || p.startupMode==2)' in udf and 'initializePlumeKernel' in udf
+assert 'fill(nrs->fieldOffset,p.ugInitial,nrs->scalar->o_solution("ugz"))' in udf
+assert 'read("gasinitialvelocity",p.ugInitial)' in udf
+print('Actual BCs: all three modes, constant UG in uniform-start mode, delayed quintic ramps, unequal alpha/UG durations, zero startup, monotonicity, final plateaus, synchronized mass-weighted UM, stationary liquid and wall/rim precedence passed.')

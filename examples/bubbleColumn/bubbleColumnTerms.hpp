@@ -22,7 +22,7 @@ struct Parameters {
   dfloat ugInitial = 0.0;
   dfloat initialPlumeHeight = 0.05;
   dfloat initialPlumeThickness = 0.01;
-  int startupMode = 0; // 0: original plume/steady inlet, 1: zero fields/ramped inlet
+  int startupMode = 0; // 0: plume, 1: zero/ramp both, 2: uniform UG/ramp alpha
   dfloat inletRampStartTime = 0.0;
   dfloat alphaInletRampDuration = 0.1;
   dfloat gasInletRampDuration = 0.1;
