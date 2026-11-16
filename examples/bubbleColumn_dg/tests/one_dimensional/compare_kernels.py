@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Compile actual production kernels and compare against reference.py outputs."""
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -13,21 +14,27 @@ repo = case.parents[1]
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--results", type=Path, default=Path("results"))
+    parser.add_argument("--results", type=Path, default=Path("reference-results"))
     parser.add_argument("--ranks", type=int, nargs="+", default=[1, 2])
     parser.add_argument("--device", default="{mode: 'Serial'}",
                         help="OCCA device properties; e.g. {mode: 'CUDA', device_id: 0}")
     args = parser.parse_args()
-    configs = sorted(args.results.resolve().glob("*/config.json"))
+    configs = sorted(args.results.resolve().glob("*/*/config.json"))
     if not configs:
-        parser.error("No reference results found. Run reference.py first.")
+        parser.error("No reference results found. Run generate_reference.py first.")
     if min(args.ranks)<1:
         parser.error("MPI ranks must be positive.")
     occa = Path(os.environ.get("OCCA_DIR", repo/"3rd_party/occa")).resolve()
     if not (occa/"lib/libocca.so").exists():
         parser.error("Set OCCA_DIR to a built OCCA installation (lib/libocca.so).")
+    reference_hash = hashlib.sha256((here/"reference.py").read_bytes()).hexdigest()
     for file in configs:
         c = json.loads(file.read_text())
+        if (c.get("source_id")!="user-supplied-dg1d-2026-11-16"
+                or c.get("reference_sha256")!=reference_hash
+                or c.get("form")!="conservative"
+                or c.get("velocity")!="constant-one"):
+            parser.error("Stale or incompatible fixture; rerun generate_reference.py.")
         if c["degree"]!=3 or any(c["elements"]%n for n in args.ranks):
             parser.error("Kernel comparison requires p=3 and elements divisible by every rank count.")
     build = args.results.resolve()/"kernel-build"

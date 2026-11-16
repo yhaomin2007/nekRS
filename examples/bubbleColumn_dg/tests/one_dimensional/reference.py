@@ -1,188 +1,347 @@
 #!/usr/bin/env python3
-"""Periodic conservative DGSEM reference; no NekRS/OCCA dependency.
+"""
+Periodic 1D DGSEM + classical RK4.
 
-Reconstructed from the documented 1D method, not the recovered historical file.
-See README.md for exact initial conditions and reproducibility limits.
+Conservative: s_t + (u*s)_x = 0
+Advective:    s_t + u*s_x   = 0
+
+GLL collocation; no limiter, clipping, filtering or added diffusion.
+Independent mathematical reference, not a NekRS/OOGS test.
+
+Outputs:
+  profiles.png : time evolution and exact solution
+  errors.png   : final nodal errors
+  metrics.csv  : error, extrema and mass balance
+  *.npz        : numerical snapshots
+
+Dependencies: numpy, matplotlib
 """
 import argparse
 import csv
-import json
 from pathlib import Path
+
 import numpy as np
 from numpy.polynomial.legendre import Legendre
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
-def operators(p):
+
+def gll_operators(p):
+    """GLL nodes, weights and nodal differentiation matrix."""
     P = Legendre.basis(p)
-    z = np.r_[-1., P.deriv().roots(), 1.]
-    w = 2. / (p * (p + 1) * P(z)**2)
-    b = np.array([1. / np.prod(z[i] - np.delete(z, i))
-                  for i in range(p + 1)])
+    r = np.r_[-1.0, P.deriv().roots(), 1.0]
+    w = 2.0 / (p * (p + 1) * P(r)**2)
+
+    bary = np.array([
+        1.0 / np.prod(r[i] - np.delete(r, i))
+        for i in range(p + 1)
+    ])
     D = np.zeros((p + 1, p + 1))
     for i in range(p + 1):
         for j in range(p + 1):
             if i != j:
-                D[i, j] = b[j] / (b[i] * (z[i] - z[j]))
+                D[i, j] = bary[j] / bary[i] / (r[i] - r[j])
         D[i, i] = -D[i].sum()
-    return z, w, D
 
-
-def common_flux(left, right, ul, ur, kind, global_speed):
-    if kind == "center":
-        kind = "central"
-    a = .5 * (ul + ur)
-    lam = {"central": 0., "upwind": np.abs(a),
-           "lf": global_speed}[kind]
-    return .5 * a * (left + right) - .5 * lam * (right - left)
-
-
-def rhs(s, u, h, w, D, kind):
-    # Each row is a distinct element; no averaging of shared endpoint states.
-    face = common_flux(s[:, -1], np.roll(s[:, 0], -1),
-                       u[:, -1], np.roll(u[:, 0], -1),
-                       kind, np.max(np.abs(u)))
-    # Weak conservative form: M^-1 (D^T W (u*s) - B*fhat).
-    r = ((u * s * w) @ D) / w
-    r[:, 0] += np.roll(face, 1) / w[0]
-    r[:, -1] -= face / w[-1]
-    return (2. / h) * r
-
-
-def rk4(s, dt, evaluate):
-    k1 = evaluate(s)
-    k2 = evaluate(s + .5 * dt * k1)
-    k3 = evaluate(s + .5 * dt * k2)
-    k4 = evaluate(s + dt * k3)
-    return s + dt * (k1 + 2*k2 + 2*k3 + k4) / 6.
-
-
-def profile(x, name, delta):
-    x = np.mod(x, 1.)
-    if name == "sine":
-        return .5 + .25 * np.sin(2*np.pi*x)
-    if name == "square":
-        return ((x > .25) & (x < .75)).astype(float)
-    # Periodic sum of smooth top-hat packets. The image terms avoid a seam.
-    s = np.zeros_like(x)
-    for shift in (-1, 0, 1):
-        s += .5 * (np.tanh((x - .25 + shift)/delta)
-                   - np.tanh((x - .75 + shift)/delta))
-    return s
-
-
-def self_check(p):
-    z, w, D = operators(p)
     B = np.zeros_like(D)
-    B[0, 0], B[-1, -1] = -1., 1.
-    np.testing.assert_allclose(w[:, None]*D + D.T*w, B, atol=2e-13)
-    rng = np.random.default_rng(20261116)
-    s = rng.random((5, p+1))
-    u = 1. + .2*rng.random(s.shape)
-    for flux in ("central", "center", "upwind", "lf"):
-        r = rhs(s, u, .2, w, D, flux)
-        assert abs(np.sum(r*w)*.1) < 2e-12
-        face = common_flux(s[:, -1], np.roll(s[:, 0], -1),
-                           u[:, -1], np.roll(u[:, 0], -1),
-                           flux, np.max(np.abs(u)))
-        strong = -(s*u) @ D.T
-        strong[:, 0] += (np.roll(face, 1) - s[:, 0]*u[:, 0])/w[0]
-        strong[:, -1] -= (face - s[:, -1]*u[:, -1])/w[-1]
-        np.testing.assert_allclose(r, 10*strong, atol=2e-11)
-        np.testing.assert_allclose(rhs(np.ones_like(s), np.ones_like(s),
-                                      .2, w, D, flux), 0., atol=2e-12)
-    np.testing.assert_allclose(rhs(s, np.ones_like(s), .2, w, D, "lf"),
-                               rhs(s, np.ones_like(s), .2, w, D, "upwind"))
-    # Time accuracy isolated from spatial truncation.
-    errs = []
-    for n in (10, 20, 40):
-        value = 1.
-        for _ in range(n):
-            value = rk4(value, 1./n, lambda a: -a)
-        errs.append(abs(value-np.exp(-1.)))
-    assert min(errs[i]/errs[i+1] for i in (0, 1)) > 14.
+    B[0, 0], B[-1, -1] = -1.0, 1.0
+    defect = w[:, None] * D + D.T * w[None, :] - B
+    if np.max(np.abs(defect)) > 1e-10:
+        raise RuntimeError("GLL summation-by-parts check failed")
+    return r, w, D
 
 
-def run(ne, p, flux, name, periods, cfl, delta, output):
-    z, w, D = operators(p)
-    h = 1./ne
-    x = (np.arange(ne)[:, None] + .5*(z+1)) * h
-    u = np.ones_like(x)
-    initial = profile(x, name, delta)
-    s = initial.copy()
-    evaluate = lambda a: rhs(a, u, h, w, D, flux)
-    initial_rhs = evaluate(s)
-    mass = lambda a: float(.5*h*np.sum(a*w))
-    m0 = mass(s)
-    # dt*|u|/(h/2)/min(w) <= cfl; every snapshot hits its time exactly.
-    nominal = cfl*.5*h*w.min()
-    segments = 4*periods
-    per_segment = int(np.ceil(.25/nominal))
-    dt = .25/per_segment
-    steps = segments*per_segment
-    tag = f"{name}_{flux}_n{ne}_p{p}"
-    folder = output/tag
-    folder.mkdir(parents=True, exist_ok=True)
-    history = []
-    for segment in range(segments+1):
-        time = .25*segment
-        exact = profile(x-time, name, delta)
-        rel = float(np.sqrt(np.sum(w*(s-exact)**2)/np.sum(w*exact**2)))
-        history.append(dict(time=time, mass=mass(s), mass_drift=mass(s)-m0,
-                            relative_l2=rel, minimum=float(s.min()), maximum=float(s.max())))
-        np.savetxt(folder/f"profile_{segment:03d}.csv",
-                   np.column_stack((x.ravel(), s.ravel(), exact.ravel())),
-                   delimiter=",", header="x,scalar,exact", comments="")
-        if segment < segments:
-            for _ in range(per_segment):
-                s = rk4(s, dt, evaluate)
-            assert np.isfinite(s).all()
-            assert abs(mass(s)-m0) < 1e-10
-    # Whitespace-separated exchange file, one row per ELEMENT-LOCAL 1D node.
-    # The production 3D kernel harness checks every transverse copy.
-    np.savetxt(folder/"reference.dat",
-               np.column_stack((x.ravel(), initial.ravel(),
-                                initial_rhs.ravel(), s.ravel())), fmt="%.17e")
-    with (folder/"history.csv").open("w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=list(history[0]))
-        writer.writeheader()
-        writer.writerows(history)
-    metadata = dict(elements=ne, degree=p, flux=flux, profile=name, delta=delta,
-                    periods=periods, dt=dt, steps=steps, cfl=cfl,
-                    initial_mass=m0, final=history[-1])
-    (folder/"config.json").write_text(json.dumps(metadata, indent=2)+"\n")
-    print(json.dumps(metadata))
-    return metadata
+class DG1D:
+    def __init__(self, elements, degree, flux, form="conservative",
+                 variable_velocity=False):
+        self.K = elements
+        self.p = degree
+        self.h = 1.0 / elements
+        self.r, self.w, self.D = gll_operators(degree)
+        self.x = (
+            np.arange(elements)[:, None]
+            + 0.5 * (self.r[None, :] + 1.0)
+        ) * self.h
+        self.mass = np.broadcast_to(
+            0.5 * self.h * self.w, self.x.shape
+        )
+        self.u = np.ones_like(self.x)
+        if variable_velocity:
+            self.u += 0.2 * np.sin(2 * np.pi * self.x)
+        self.flux = flux
+        self.form = form
+
+    def integral(self, s):
+        return np.sum(self.mass * s)
+
+    def rhs(self, s):
+        # Shared +x-oriented interface flux: e right -> e+1 left.
+        sm = s[:, -1]
+        sp = np.roll(s[:, 0], -1)
+        a = 0.5 * (
+            self.u[:, -1] + np.roll(self.u[:, 0], -1)
+        )
+
+        if self.flux == "central":
+            lam = np.zeros_like(a)
+        elif self.flux == "upwind":
+            lam = np.abs(a)
+        elif self.flux == "lf":
+            lam = np.full_like(a, np.max(np.abs(self.u)))
+        else:
+            raise ValueError(self.flux)
+
+        fhat = 0.5 * a * (sm + sp) - 0.5 * lam * (sp - sm)
+        f = self.u * s
+
+        if self.form == "conservative":
+            result = -(2.0 / self.h) * (f @ self.D.T)
+        else:
+            result = -(2.0 / self.h) * self.u * (s @ self.D.T)
+
+        # Strong DG surface correction, using LOCAL mass.
+        result[:, 0] += (
+            2.0 / (self.h * self.w[0])
+            * (np.roll(fhat, 1) - f[:, 0])
+        )
+        result[:, -1] -= (
+            2.0 / (self.h * self.w[-1])
+            * (fhat - f[:, -1])
+        )
+        return result
+
+    def evolve(self, s, duration, cfl):
+        # This is a script-specific CFL, NOT the NekRS CFL.
+        dt_limit = (
+            cfl * self.h * self.w.min()
+            / np.max(np.abs(self.u))
+        )
+        steps = max(1, int(np.ceil(duration / dt_limit)))
+        dt = duration / steps
+        s = s.copy()
+
+        for _ in range(steps):
+            k1 = self.rhs(s)
+            k2 = self.rhs(s + 0.5 * dt * k1)
+            k3 = self.rhs(s + 0.5 * dt * k2)
+            k4 = self.rhs(s + dt * k3)
+            s += dt * (k1 + 2*k2 + 2*k3 + k4) / 6.0
+
+            if not np.all(np.isfinite(s)):
+                raise RuntimeError("Nonfinite solution; reduce CFL")
+        return s
+
+
+def exact_profile(x, time, kind, delta):
+    z = np.mod(np.asarray(x) - time, 1.0)
+
+    if kind == "sine":
+        return np.sin(2 * np.pi * z)
+
+    if kind == "step":
+        return ((z >= 0.25) & (z < 0.5)).astype(float)
+
+    # Periodized tanh pulse; delta <= 0.1.
+    result = np.zeros_like(z)
+    for k in range(-4, 5):
+        result += 0.5 * (
+            np.tanh((z - 0.25 - k) / delta)
+            - np.tanh((z - 0.5 - k) / delta)
+        )
+    return result
+
+
+def initial_state(dg, kind, delta):
+    if kind != "step":
+        return exact_profile(dg.x, 0, kind, delta)
+
+    # Jump-aligned mesh: each element receives its interior trace.
+    # Opposite sides of a discontinuity intentionally have different values.
+    centers = (np.arange(dg.K) + 0.5) * dg.h
+    values = ((centers >= 0.25) & (centers < 0.5)).astype(float)
+    return np.broadcast_to(values[:, None], dg.x.shape).copy()
+
+
+def self_tests():
+    """Distinguish conservative transport from pure advective transport."""
+    rng = np.random.default_rng(42)
+
+    for flux in ("central", "upwind", "lf"):
+        dg = DG1D(8, 3, flux)
+        assert np.max(np.abs(dg.rhs(np.ones_like(dg.x)))) < 1e-10
+        random_state = rng.random(dg.x.shape)
+        assert abs(dg.integral(dg.rhs(random_state))) < 1e-10
+
+        cons = DG1D(8, 3, flux, variable_velocity=True)
+        assert np.max(np.abs(cons.rhs(1.0 / cons.u))) < 1e-10
+        assert abs(cons.integral(cons.rhs(random_state))) < 1e-10
+
+        adv = DG1D(
+            8, 3, flux, form="advective", variable_velocity=True
+        )
+        assert np.max(np.abs(adv.rhs(np.ones_like(adv.x)))) < 1e-10
+
+    print("PASS: SBP, constant preservation, mass cancellation, "
+          "variable-velocity steady states")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--elements", type=int, nargs="+", default=[16, 32, 64])
+    parser.add_argument("--elements", type=int, default=16)
     parser.add_argument("--degree", type=int, default=3)
-    parser.add_argument("--flux", nargs="+", choices=["central", "center", "upwind", "lf"],
-                        default=["central", "upwind", "lf"])
-    parser.add_argument("--profile", nargs="+", choices=["sine", "square", "tanh"],
-                        default=["sine", "square", "tanh"])
     parser.add_argument("--periods", type=int, default=1)
-    parser.add_argument("--cfl", type=float, default=.1)
-    parser.add_argument("--delta", type=float, default=.025)
+    parser.add_argument("--cfl", type=float, default=0.2)
+    parser.add_argument("--delta", type=float, default=0.025)
+    parser.add_argument(
+        "--profile", choices=("sine", "step", "smooth"),
+        default="smooth"
+    )
     parser.add_argument("--output", type=Path, default=Path("results"))
     args = parser.parse_args()
-    if (min(args.elements)<2 or args.degree<1 or args.periods<1
-            or not 0<args.cfl<=.5 or not 0<args.delta<=.1):
-        parser.error("Require elements>=2, degree>=1, periods>=1, 0<cfl<=.5, 0<delta<=.1")
-    self_check(args.degree)
-    summaries = [run(n, args.degree, f, name, args.periods, args.cfl,
-                     args.delta, args.output)
-                 for name in args.profile for f in args.flux for n in args.elements]
-    (args.output/"summary.json").write_text(json.dumps(summaries, indent=2)+"\n")
-    # Convergence is meaningful for smooth profiles; square-wave boundedness
-    # and historical percent errors are deliberately not acceptance criteria.
-    for name in ("sine", "tanh"):
-        rows = sorted((r for r in summaries if r["profile"]==name and r["flux"]=="upwind"),
-                      key=lambda r:r["elements"])
-        for coarse, fine in zip(rows, rows[1:]):
-            if coarse["elements"] != fine["elements"]:
-                assert fine["final"]["relative_l2"] < coarse["final"]["relative_l2"]
+
+    if min(args.elements, args.degree, args.periods) < 1:
+        parser.error("elements, degree and periods must be positive")
+    if not np.isfinite(args.cfl) or args.cfl <= 0:
+        parser.error("CFL must be finite and positive")
+    if not 0 < args.delta <= 0.1:
+        parser.error("delta must be in (0, 0.1]")
+    if args.profile == "step" and args.elements % 4:
+        parser.error("step test requires elements divisible by 4")
+
+    self_tests()
+    args.output.mkdir(parents=True, exist_ok=True)
+
+    times = np.linspace(0.0, float(args.periods), 5)
+    fluxes = ("central", "upwind", "lf")
+    colors = ("#2468b4", "#d15b24", "#238965")
+    fig, axes = plt.subplots(
+        5, 3, figsize=(12, 11), sharex=True, sharey=True
+    )
+    error_fig, error_ax = plt.subplots(figsize=(9, 4))
+    records = []
+    all_values = []
+
+    for column, (flux, color) in enumerate(zip(fluxes, colors)):
+        dg = DG1D(args.elements, args.degree, flux)
+        state = initial_state(dg, args.profile, args.delta)
+        initial_mass = dg.integral(state)
+        snapshots = []
+
+        # Polynomial interpolation for plotting each element independently.
+        rq = np.linspace(-1, 1, 101)
+        interpolation = (
+            np.polynomial.legendre.legvander(rq, dg.p)
+            @ np.linalg.inv(
+                np.polynomial.legendre.legvander(dg.r, dg.p)
+            )
+        )
+        xplot = (
+            np.arange(dg.K)[:, None] + 0.5*(rq[None, :] + 1)
+        ) * dg.h
+
+        for row, time in enumerate(times):
+            if row:
+                state = dg.evolve(
+                    state, time - times[row - 1], args.cfl
+                )
+            snapshots.append(state.copy())
+
+            exact = exact_profile(
+                dg.x, time, args.profile, args.delta
+            )
+            dense_state = state @ interpolation.T
+            all_values.extend([
+                float(dense_state.min()), float(dense_state.max())
+            ])
+            mass_error = dg.integral(state) - initial_mass
+
+            # A step's value at its exact jump is convention-dependent.
+            # Report L2 only for smooth profiles.
+            relative_l2 = ""
+            if args.profile != "step":
+                relative_l2 = np.sqrt(
+                    dg.integral((state-exact)**2)
+                    / dg.integral(exact**2)
+                )
+
+            records.append(dict(
+                flux=flux, time=time,
+                relativeL2=relative_l2,
+                nodalMin=state.min(), nodalMax=state.max(),
+                sampledMin=dense_state.min(),
+                sampledMax=dense_state.max(),
+                massError=mass_error
+            ))
+
+            ax = axes[row, column]
+            xx = np.linspace(0, 1, 4001)
+            ax.plot(
+                xx, exact_profile(xx, time, args.profile, args.delta),
+                "k-", lw=1.3, label="Exact"
+            )
+            for e in range(dg.K):
+                ax.plot(
+                    xplot[e], dense_state[e], color=color, lw=1.1,
+                    label="DG" if e == 0 else None
+                )
+            ax.grid(alpha=0.2)
+            ax.set_xlim(0, 1)
+            if row == 0:
+                ax.set_title(flux.upper())
+                ax.legend(fontsize=8)
+            if column == 0:
+                ax.set_ylabel(f"t = {time:g}\nscalar s")
+            if row == 4:
+                ax.set_xlabel("x")
+
+        np.savez(
+            args.output / f"{flux}.npz",
+            x=dg.x, times=times, solution=np.array(snapshots)
+        )
+        error_ax.plot(
+            dg.x.ravel(), (state-exact).ravel(),
+            ":" if flux == "lf" else "-",
+            label=flux, color=color
+        )
+        print(records[-1])
+
+    lo, hi = min(all_values), max(all_values)
+    margin = 0.08 * max(hi-lo, 1)
+    axes[0, 0].set_ylim(lo-margin, hi+margin)
+
+    fig.suptitle(
+        f"1D DGSEM: {args.profile} | u=1 | "
+        f"{args.elements} elements | p={args.degree}\n"
+        f"Classical RK4 | CFL={args.cfl} | no limiter or added diffusion"
+    )
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    fig.savefig(args.output / "profiles.png", dpi=180)
+    plt.close(fig)
+
+    error_ax.set(
+        xlabel="x", ylabel="DG - exact",
+        title=f"Final nodal error at t={times[-1]:g}"
+    )
+    error_ax.legend()
+    error_ax.grid(alpha=0.2)
+    error_fig.tight_layout()
+    error_fig.savefig(args.output / "errors.png", dpi=180)
+    plt.close(error_fig)
+
+    with (args.output / "metrics.csv").open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=records[0].keys())
+        writer.writeheader()
+        writer.writerows(records)
+
+    largest_balance_error = max(abs(r["massError"]) for r in records)
+    print(f"Maximum mass-balance error: {largest_balance_error:.3e}")
+    print(f"Results saved to: {args.output.resolve()}")
+    print("LF equals upwind here because u=1.")
+    print("For step data, nodal error at the exact jump depends on "
+          "the chosen point-value convention.")
+    print("This reference does not validate NekRS/OOGS/GPU execution.")
 
 
 if __name__ == "__main__":
