@@ -3,6 +3,7 @@
 namespace bubbleColumn { namespace phaseMomentum {
 static int interval=10;
 static deviceMemory<dfloat> mixtureDivergence,alphaHistory;
+static deviceMemory<dfloat> gasDivergenceLocal,gasDivergenceAverage,gasCompression;
 static deviceMemory<dfloat> mixtureExtrapolated,mixtureAlphaAdvection;
 static std::vector<int> activeScalars;
 inline bool due()
@@ -34,6 +35,9 @@ inline void allocate()
   platform->linAlg->fill(2*offset,0.0,mixtureDivergence);
   mixtureExtrapolated.resize(3*offset); mixtureAlphaAdvection.resize(offset);
   alphaHistory.resize(offset);
+  gasDivergenceLocal.resize(offset);
+  gasDivergenceAverage.resize(offset);
+  gasCompression.resize(offset);
   activeScalars=nrs->scalar->compute;
   activeScalars[nrs->scalar->nameToIndex.at("alpha")]=0;
   nekrsCheck(interval<0,comm,EXIT_FAILURE,"%s","diagnosticInterval must be nonnegative.\n");
@@ -123,5 +127,27 @@ inline void diagnostics(double time)
   nrs->writeToFile("diag",time,nrs->meshV,
       {{"velocity",{o_gradPStrong.slice(0,N),o_gradPStrong.slice(offset,N),o_gradPStrong.slice(2*offset,N)}},
        {"scalar00",{target}},{"scalar01",{actual}}},true,true);
+
+  // ExecuteStep has reconstructed the current UG from the solved scalars.
+  // Use dedicated buffers: do not overwrite any transport/coupling workspace.
+  opSEM::strongDivergence(nrs->meshV,offset,o_ug,gasDivergenceLocal,false);
+  opSEM::strongDivergence(nrs->meshV,offset,o_ug,gasDivergenceAverage,true);
+  platform->linAlg->axmyz(N,-1.0,alphaDG::solution,gasDivergenceLocal,gasCompression);
+  // This product is a diagnostic of material compression, NOT an extra DG
+  // source or an exact decomposition of the collocated discrete DG residual.
+  nrs->writeToFile("gasDiag",time,nrs->meshV,
+      {{"velocity",{o_ug.slice(0,N),o_ug.slice(offset,N),o_ug.slice(2*offset,N)}},
+       {"scalar00",{gasDivergenceLocal.slice(0,N)}},
+       {"scalar01",{gasDivergenceAverage.slice(0,N)}},
+       {"scalar02",{gasCompression.slice(0,N)}},
+       {"scalar03",{alphaDG::solution.slice(0,N)}}},true,true);
+  const auto comm=platform->comm.mpiComm();
+  const dfloat lo=platform->linAlg->min(N,gasDivergenceLocal,comm);
+  const dfloat hi=platform->linAlg->max(N,gasDivergenceLocal,comm);
+  const dfloat clo=platform->linAlg->min(N,gasCompression,comm);
+  const dfloat chi=platform->linAlg->max(N,gasCompression,comm);
+  if(platform->comm.mpiRank()==0)
+    printf("gasDiag time=%.9e divUG[min,max]=[%.9e,%.9e] "
+           "minusAlphaDivUG[min,max]=[%.9e,%.9e]\n",time,lo,hi,clo,chi);
 }
 } } // namespace bubbleColumn::phaseMomentum

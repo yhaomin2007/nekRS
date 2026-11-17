@@ -150,6 +150,31 @@ s1, written element-wise without averaging. Disable visualization smoothing
 when examining interface jumps. Existing `diag` output retains grad(P) and
 target/actual div(UM).
 
+At every checkpoint, the separate `gasDiag` field file also contains:
+
+| VisIt field | Quantity | Units |
+| --- | --- | --- |
+| velocity | Current solved gas velocity UG | m/s |
+| s1 (scalar00) | Element-local strong div(UG), no interface averaging | 1/s |
+| s2 (scalar01) | Strong div(UG) with native interface averaging | 1/s |
+| s3 (scalar02) | -alphaDG * element-local div(UG) | 1/s |
+| s4 (scalar03) | Raw element-local DG alpha | dimensionless |
+
+These diagnostics use dedicated buffers and do not change the solution.
+Output follows the existing checkpoint schedule; `diagnosticInterval`
+does not control field-file frequency. The log reports global extrema of
+local div(UG) and -alphaDG*div(UG) at the same output times.
+Disable visualization smoothing when inspecting s1, s3 and s4.
+
+Compare s1/s3/s4 and the z velocity component along the same line and at
+successive times, including before stripes develop. For positive alpha,
+negative div(UG) gives positive material compression -alpha*div(UG);
+positive div(UG) gives dilution. This is the full three-dimensional
+divergence, not just d(UGz)/dz. Spatial coincidence alone does not establish
+causality. The compression product is a continuum diagnostic, not an extra
+source and not an exact split of the collocated DG residual (which also
+contains numerical face fluxes and polynomial product aliasing).
+
 `alphaDG` log entries report substeps, estimated CFL, raw DG alpha min/max,
 gas volume, per-step and cumulative gas-volume balance, projection volume
 error and the count of limited element-stages. Boundary fluxes are integrated
