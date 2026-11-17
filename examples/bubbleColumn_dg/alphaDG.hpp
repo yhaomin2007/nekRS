@@ -4,8 +4,8 @@
 #include <cctype>
 
 namespace bubbleColumn { namespace alphaDG {
-static dfloat cfl=0.1,backflow=0.0;
-static int maxSubsteps=10000,limiter=0,fluxType=1,ignoreDivUg=0;
+static dfloat cfl=0.1,backflow=0.0,alphaFilterStrength=0.0;
+static int maxSubsteps=10000,limiter=0,fluxType=1,ignoreDivUg=0,alphaFilterModes=1;
 static int divUgFilterModes=1;
 static dfloat divUgFilterStrength=0;
 static deviceMemory<dfloat> filteredDivUg,divUgCorrection;
@@ -13,10 +13,10 @@ static std::string fluxName="upwind";
 static dlong nf=0;
 static ogs_t *faceOgs=nullptr;
 static deviceMemory<dfloat> solution,old,increment,flux,rhs,trace,traceSum,surface,boundary;
-static deviceMemory<dfloat> rate,badMean,limited,divUg,compressionCorrection;
+static deviceMemory<dfloat> rate,badMean,limited,divUg,compressionCorrection,elementMean;
 static deviceMemory<dlong> incidence;
 static deviceMemory<int> boundaryIds;
-static occa::kernel volumeKernel,traceKernel,surfaceKernel,liftKernel,rkKernel,rateKernel,limitKernel;
+static occa::kernel volumeKernel,traceKernel,surfaceKernel,liftKernel,rkKernel,rateKernel,limitKernel,filterMeanKernel,filterRestoreMeanKernel;
 static dfloat initialVolume=0,boundaryIntegral=0,lastBalance=0,lastProjectionError=0;
 static dfloat lastCfl=0,lastLimited=0;
 static dfloat sourceRate=0,sourceIntegral=0,lastSourceIntegral=0;
@@ -31,6 +31,8 @@ inline void configure()
       divUgFilterStrength>1 || (ignoreDivUg && divUgFilterStrength>0),
       platform->comm.mpiComm(),EXIT_FAILURE,"%s",
       "divUG filter strength must be in [0,1]; cannot combine with ignoreDivUg.\n");
+  platform->par->extract("casedata","alphadgfilterstrength",alphaFilterStrength);
+  platform->par->extract("casedata","alphadgfiltermodes",alphaFilterModes);
   platform->par->extract("casedata","alphadgcfl",cfl);
   platform->par->extract("casedata","alphadgmaxsubsteps",maxSubsteps);
   platform->par->extract("casedata","alphadglimiter",limiter);
@@ -42,7 +44,7 @@ inline void configure()
   const auto comm=platform->comm.mpiComm();
   nekrsCheck(fluxType<0,comm,EXIT_FAILURE,"%s","alphaDGFlux must be central (or center), upwind, or lf.\n");
   nekrsCheck(!std::isfinite(cfl) || cfl<=0 || cfl>0.5 || maxSubsteps<1 ||
-      (ignoreDivUg!=0 && ignoreDivUg!=1) || (limiter!=0 && limiter!=1) || !std::isfinite(backflow) || backflow<0 || backflow>1,
+      (ignoreDivUg!=0 && ignoreDivUg!=1) || !std::isfinite(alphaFilterStrength) || alphaFilterStrength<0 || alphaFilterStrength>1 || (limiter!=0 && limiter!=1) || !std::isfinite(backflow) || backflow<0 || backflow>1,
       comm,EXIT_FAILURE,"%s","Invalid alpha DG parameters.\n");
   nekrsCheck(!platform->options.compareArgs("BDF ORDER","1"),comm,EXIT_FAILURE,
       "%s","First DG prototype requires tombo1/BDF1 for consistent split pressure target.\n");
@@ -65,6 +67,8 @@ inline void registerKernels(deviceKernelProperties &info)
     rkKernel=platform->kernelRequests.load(request,"dgRK");
     rateKernel=platform->kernelRequests.load(request,"dgRate");
     limitKernel=platform->kernelRequests.load(request,"dgLimit");
+    filterMeanKernel=platform->kernelRequests.load(request,"dgFilterMean");
+    filterRestoreMeanKernel=platform->kernelRequests.load(request,"dgFilterRestoreMean");
   }
 }
 inline dfloat volume(const occa::memory &a)
@@ -101,6 +105,8 @@ inline void allocate()
   nekrsCheck(divUgFilterStrength>0 && (divUgFilterModes<1 || divUgFilterModes>m->N-1),
       comm,EXIT_FAILURE,"%s","divUG filter requires 1<=modes<=N-1.\n");
   rate.resize(offset);badMean.resize(m->Nelements);limited.resize(m->Nelements);
+  elementMean.resize(m->Nelements);
+  nekrsCheck(alphaFilterStrength>0 && (alphaFilterModes<1 || alphaFilterModes>m->N-1),comm,EXIT_FAILURE,"%s","Alpha DG filter requires 1<=modes<=N-1.\\n");
   boundaryIds.resize(m->Nelements*6);boundaryIds.copyFrom(m->EToB,m->Nelements*6);
   // Face-interior expanded-grid IDs distinguish the different faces sharing
   // a vertex/edge. Ordinary globalIds would incorrectly mix 4 or 8 traces.
@@ -231,6 +237,11 @@ inline void advance(double endTime)
   }
   boundaryIntegral+=integrated;
   sourceIntegral+=lastSourceIntegral;
+  if(alphaFilterStrength>0) {
+    filterMeanKernel(m->Nelements,m->o_LMM,solution,elementMean);
+    userExplicitFilter::explicitFilterApply("alphaDG-alpha",m,alphaFilterModes,alphaFilterStrength,solution);
+    filterRestoreMeanKernel(m->Nelements,m->o_LMM,solution,elementMean);
+  }
   lastBalance=volume(solution)-before+integrated-lastSourceIntegral;
   project();
 }

@@ -130,3 +130,25 @@
     }
   }
 }
+
+
+@kernel void dgFilterMean(const dlong NE, @ restrict const dfloat *mass,
+    @ restrict const dfloat *a, @ restrict dfloat *mean)
+{
+  for(dlong e=0;e<NE;++e; @tile(p_blockSize,@outer,@inner)) {
+    dfloat v=0.0, av=0.0;
+    for(int j=0;j<p_Np;++j) { const dlong n=e*p_Np+j; v+=mass[n]; av+=mass[n]*a[n]; }
+    mean[e]=av/v;
+  }
+}
+
+@kernel void dgFilterRestoreMean(const dlong NE, @ restrict const dfloat *mass,
+    @ restrict dfloat *a, @ restrict const dfloat *mean)
+{
+  for(dlong e=0;e<NE;++e; @tile(p_blockSize,@outer,@inner)) {
+    dfloat v=0.0, av=0.0;
+    for(int j=0;j<p_Np;++j) { const dlong n=e*p_Np+j; v+=mass[n]; av+=mass[n]*a[n]; }
+    const dfloat shift=mean[e]-av/v;
+    for(int j=0;j<p_Np;++j) a[e*p_Np+j]+=shift;
+  }
+}

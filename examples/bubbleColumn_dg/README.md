@@ -296,3 +296,16 @@ still responds to the modified alpha increment. At checkpoints after step 0,
 divUGFilter exports s1=d, s2=df, s3=d-df (all 1/s), using exactly the frozen
 fields used in that step. gasDiag retains its existing meanings, including
 unfiltered compression. Compare identical fresh runs with strength 0 and 0.5.
+
+## Optional DG alpha modal filter
+
+Set `alphaDGFilterStrength` in [CASEDATA] to a value in [0,1] (default 0).
+`alphaDGFilterModes` selects the highest bubble modes (1..polynomialOrder).
+After each complete fluid-step DG advance, the existing explicit Legendre-bubble
+filter is applied to alpha within each element. A correction restores the
+pre-filter physical quadrature-weighted mean of every element, preserving
+element gas volume to roundoff. This does not average across element faces.
+Filtering adds dissipation and changes the DG solution, while retaining local
+mass; it may damp front detail. Start with strength 0.1–0.25 and modes=1,
+then compare against strength=0 at matching time steps. This filter acts on
+alpha itself and is separate from alphaDGDivUgFilterStrength.
