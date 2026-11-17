@@ -9,8 +9,8 @@ import shlex
 import subprocess
 
 here = Path(__file__).resolve().parent
-case = here.parents[1]
-repo = case.parents[1]
+repo = here.parents[1]
+case = repo / "examples" / "bubbleColumn_dg"
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)

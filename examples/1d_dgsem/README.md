@@ -1,4 +1,4 @@
-# User-supplied periodic 1D DGSEM reference
+# 1d_dgsem — periodic 1D DGSEM example
 
 `reference.py` is the complete Python script supplied by the user on
 2026-11-16, retained without algorithm or CLI changes. It replaces the
@@ -33,11 +33,17 @@ The reference also contains an advective-form option at the Python class
 level and variable-velocity self-tests. The CLI transport runs and production
 comparison are **conservative and constant-speed only**.
 
+This example lives at `examples/1d_dgsem`, independently of the
+bubble-column test directory. Python transport needs only NumPy and Matplotlib.
+The optional kernel comparison deliberately uses
+`../bubbleColumn_dg/alphaDG.okl` so it tests the production implementation.
+
 ## Run the original script
 
 Requires Python 3, NumPy and Matplotlib. From this directory:
 
 ```sh
+cd examples/1d_dgsem
 python3 reference.py --profile smooth --elements 16 --output results/smooth16
 python3 reference.py --profile step --elements 16 --output results/step16
 python3 reference.py --profile sine --periods 5 --output results/sine5
@@ -129,20 +135,21 @@ coupling. Neither core nor production bubble-column files are modified.
 
 ## Validation status
 
-The execution host was unavailable when this update was made. The supplied
-Python script, C++ compilation, OCCA, MPI and GPU tests were **not executed**.
+After relocation to `examples/1d_dgsem`, the actual Python suite was run
+successfully: sine, step and smooth profiles; 16/32/64 elements; all three
+fluxes (27 fixtures). It generated plots, metrics and comparison inputs.
+The maximum absolute final mass drift across all fixtures was 6.94e-16.
 
-A separate JavaScript arithmetic transcription of the supplied p=3,
-CFL=0.2, delta=0.025, one-period upwind smooth test was executed:
+Actual Python upwind smooth-profile errors (p=3, CFL=0.2, delta=0.025,
+one period):
 
-| Elements | Steps | Relative L2 | Absolute mass drift |
-| --- | --- | --- | --- |
-| 16 | 480 | 5.54770008% | 5.6e-17 |
-| 32 | 960 | 1.03037443% | 0 |
-| 64 | 1920 | 0.07927838% | 2.8e-16 |
+| Elements | Steps | Relative L2 |
+| --- | --- | --- |
+| 16 | 480 | 5.54770008% |
+| 32 | 960 | 1.03037443% |
+| 64 | 1920 | 0.07927838% |
 
 These recover the historical rounded 5.55%, 1.03%, 0.0793% values.
-An independent arithmetic strong/weak RHS comparison with nonuniform
-velocity and discontinuous nodal data differed by at most 5.7e-14 across
-central/upwind/LF; the tested mass and steady-state identities were within
-1.5e-14. These are **arithmetic checks**, not Python/OCCA execution results.
+The relocated production comparison driver found its reference inputs and
+OCCA library, but C++ compilation stopped because the environment lacks
+`mpi.h`. Production OCCA/MPI and GPU execution therefore remain unverified.

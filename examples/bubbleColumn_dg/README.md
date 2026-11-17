@@ -207,3 +207,9 @@ No full coupled MPI/GPU validation is claimed for this revision.
 The lightweight arithmetic audit can be repeated with `node tests/arithmetic.cjs`.
 It extracts the RK4 and surface-flux bodies from `alphaDG.okl`; it does not
 validate OCCA compilation, device execution, or the full DG spatial operator.
+
+## Standalone 1D DGSEM example
+
+The periodic reference script and production-kernel comparison now live in
+[`../1d_dgsem`](../1d_dgsem/README.md). Run them from `examples/1d_dgsem`.
+The comparison continues to use this case's `alphaDG.okl` directly.
