@@ -45,7 +45,7 @@ int rank,size;MPI_Comm_rank(MPI_COMM_WORLD,&rank);MPI_Comm_size(MPI_COMM_WORLD,&
   const int fluxType=std::stoi(argv[4]),steps=std::stoi(argv[5]);
   const double dt=std::stod(argv[6]);
   const int nx=std::stoi(argv[3]),ne=nx/size,N=ne*np,NF=ne*6*nfp,GN=nx*nfp;
-  if(nx%size || ne<1 || nq!=4 || fluxType<0 || fluxType>2 || steps<4 || steps%4 || !std::isfinite(dt) || dt<=0) MPI_Abort(MPI_COMM_WORLD,2);
+  if(nx%size || ne<1 || nq<2 || fluxType<0 || fluxType>2 || steps<4 || steps%4 || !std::isfinite(dt) || dt<=0) MPI_Abort(MPI_COMM_WORLD,2);
   V refX(nx*nq),refInitial(nx*nq),refRhs(nx*nq),refFinal(nx*nq);
   std::ifstream input(argv[7]);
   for(int q=0;q<nx*nq;++q) {

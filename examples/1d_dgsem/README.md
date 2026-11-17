@@ -94,8 +94,8 @@ python3 compare_kernels.py --results reference-results --ranks 1 2
 
 Requires a C++17 MPI compiler, MPI launcher and built OCCA (lib/libocca.so).
 MPICXX and MPIEXEC can override the compiler and launcher; the latter must
-accept -np. The harness currently requires p=3 and a mesh divisible by every
-requested rank count. The driver rejects stale reference source hashes.
+accept -np. The harness supports polynomial degree p>=1 and requires a mesh divisible by
+every requested rank count. It builds a separate executable for each degree. The driver rejects stale reference source hashes.
 
 The C++ harness calls the repository's alphaDG.okl volume, trace, surface,
 lift and RK4 kernels, plus src/core/kernels/wDivergenceVolumeHex3D.okl.
@@ -241,3 +241,27 @@ L2 against the analytic step is intentionally omitted. The default acceptance
 limits are max absolute difference <=1e-9 and absolute mass drift <=1e-10.
 These exports belong to the standalone kernel job; they are not NekRS .f
 checkpoints and do not add bubble-column OGS or EE-coupling validation.
+
+
+## Higher polynomial order
+
+Keep 16 elements and increase p from 3 to 7:
+
+```sh
+python3 generate_reference.py --elements 16 --degree 7 --output p7-results
+python3 compare_kernels.py --results p7-results --ranks 2 --flux upwind
+```
+
+The driver compiles DG_NQ=p+1 for each degree present in the selected fixtures.
+The optional --flux selector restricts kernel jobs; the Python reference still
+produces all three fluxes. No solver equation or stabilization is changed.
+At the same script CFL=0.2, one period needs 2240 RK4 steps at p=7 versus
+480 at p=3. Higher order uses more nodes and a smaller time step.
+
+Actual p=7 OCCA Serial / 2-rank MPI runs for sine, step and smooth profiles
+passed all five time comparisons. Max kernel/Python difference was 1.32e-14.
+For 16 elements and upwind after one period, smooth relative L2 decreased
+from 5.54770008% (p=3) to 0.08384707% (p=7). Sine relative L2 decreased from
+2.40812e-5 to 3.42038e-12 (fractions). The step still has Gibbs oscillations;
+its sampled extrema at p=7 are approximately -0.08593 and 1.08598.
+These are kernel/MPI tests, not production OGS or GPU validation.

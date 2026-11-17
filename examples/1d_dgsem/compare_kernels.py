@@ -20,10 +20,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--results", type=Path, default=Path("reference-results"))
     parser.add_argument("--ranks", type=int, nargs="+", default=[1, 2])
+    parser.add_argument("--flux", nargs="+", choices=["central", "upwind", "lf"],
+                        default=["central", "upwind", "lf"])
     parser.add_argument("--device", default="{mode: 'Serial'}",
                         help="OCCA device properties; e.g. {mode: 'CUDA', device_id: 0}")
     args = parser.parse_args()
     configs = sorted(args.results.resolve().glob("*/*/config.json"))
+    configs = [file for file in configs if json.loads(file.read_text())["flux"] in args.flux]
     if not configs:
         parser.error("No reference results found. Run generate_reference.py first.")
     if min(args.ranks)<1:
@@ -39,21 +42,25 @@ def main():
                 or c.get("form")!="conservative"
                 or c.get("velocity")!="constant-one"):
             parser.error("Stale or incompatible fixture; rerun generate_reference.py.")
-        if c["degree"]!=3 or any(c["elements"]%n for n in args.ranks):
-            parser.error("Kernel comparison requires p=3 and elements divisible by every rank count.")
+        if c["degree"]<1 or any(c["elements"]%n for n in args.ranks):
+            parser.error("Kernel comparison requires p>=1 and elements divisible by every rank count.")
     build = args.results.resolve()/"kernel-build"
     build.mkdir(parents=True, exist_ok=True)
-    exe = build/"kernel_reference"
-    subprocess.run(shlex.split(os.environ.get("MPICXX", "mpicxx")) + [
-        "-std=c++17", "-O2", "-DDG_NQ=4", str(here/"kernel_reference.cpp"),
-        "-I"+str(occa/"include"), "-L"+str(occa/"lib"),
-        "-Wl,-rpath,"+str(occa/"lib"), "-locca", "-o", str(exe)], check=True)
+    executables = {}
+    for degree in sorted({json.loads(file.read_text())["degree"] for file in configs}):
+        exe = build/f"kernel_reference_p{degree}"
+        subprocess.run(shlex.split(os.environ.get("MPICXX", "mpicxx")) + [
+            "-std=c++17", "-O2", f"-DDG_NQ={degree+1}", str(here/"kernel_reference.cpp"),
+            "-I"+str(occa/"include"), "-L"+str(occa/"lib"),
+            "-Wl,-rpath,"+str(occa/"lib"), "-locca", "-o", str(exe)], check=True)
+        executables[degree] = exe
     env = dict(os.environ)
     env.setdefault("OCCA_CACHE_DIR", str(build/"occa-cache"))
     # Honor the user's scheduler/MPI setup; do not silently grant root execution.
     launcher = shlex.split(os.environ.get("MPIEXEC", "mpirun"))
     for file in configs:
         c = json.loads(file.read_text())
+        exe = executables[c["degree"]]
         flux = {"central": 0, "center": 0, "upwind": 1, "lf": 2}[c["flux"]]
         for ranks in args.ranks:
             stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
