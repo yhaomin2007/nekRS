@@ -52,7 +52,7 @@ Here lambda is zero for central, |un| for upwind, and
 max(|unM|,|unP|) for local Lax-Friedrichs. LF and upwind coincide for
 continuous normal velocity. All three fluxes cancel on paired faces. Local
 mass inversion uses **element** `mesh->o_LMM`, not assembled `o_invLMM`.
-There is no additional alpha*div(UG) source: it is already in conservative
+By default there is no additional alpha*div(UG) source: it is already in conservative
 div(alpha*UG). Nonzero div(UG) is supported.
 
 `mesh->globalFaceIds` identifies paired face nodes, including their orientation
@@ -141,6 +141,7 @@ original numerical diffusion/HPF settings, explicitly visible in the par.
 | alphaDGCfl | 0.1 | Substep stability scale |
 | alphaDGMaxSubsteps | 10000 | Abort if more substeps are required |
 | alphaDGFlux | upwind | central (alias center), upwind, or lf |
+| alphaDGIgnoreDivUg | 0 | Diagnostic compression cancellation (1=on) |
 | alphaDGLimiter | 0 | Element-mean-preserving nodal bounds limiter |
 | alphaDGBackflowValue | 0 | Top inflow alpha |
 
@@ -178,7 +179,7 @@ contains numerical face fluxes and polynomial product aliasing).
 `alphaDG` log entries report substeps, estimated CFL, raw DG alpha min/max,
 gas volume, per-step and cumulative gas-volume balance, projection volume
 error and the count of limited element-stages. Boundary fluxes are integrated
-with the same SSP-RK3 weights (1/6,1/3,1/3,1/6), at times (0,1/2,1/2,1) of each substep. With no mass source,
+with the same classical RK4 weights (1/6,1/3,1/3,1/6), at times (0,1/2,1/2,1) of each substep. With no mass source,
 `Vnew - Vold + integrated_outward_boundary_flux` should be near roundoff.
 
 **Fresh starts only:** this first version rejects restart files. Ordinary
@@ -238,3 +239,31 @@ validate OCCA compilation, device execution, or the full DG spatial operator.
 The periodic reference script and production-kernel comparison now live in
 [`../1d_dgsem`](../1d_dgsem/README.md). Run them from `examples/1d_dgsem`.
 The comparison continues to use this case's `alphaDG.okl` directly.
+
+## Diagnostic test: suppress gas-velocity compression
+
+Set `alphaDGIgnoreDivUg = 1` in [CASEDATA] (default 0). Each RK4 RHS then
+adds +alphaDG*div(UG) to the conservative DG residual, targeting
+
+    alpha_t + div(alpha*UG) = alpha*div(UG)
+
+which is pure advective transport at the continuum level. UG divergence
+is computed once per fluid step from the newly solved, frozen UG using
+element-local strongDivergence(avg=false); alpha is recomputed at every
+RK stage. Flux selection, boundary fluxes, limiter and zero diffusion
+remain unchanged. This cancels the volume compression contribution;
+collocated polynomial product aliasing and DG face terms mean it is not
+an exact discrete replacement by UG dot grad(alpha) for general fields.
+
+This is a diagnostic nonconservative model, not gas-volume conservation.
+Logs report sourceStep and sourceCumulative using the RK4 weights, and
+stepBalance/cumulativeBalance subtract those source integrals. With the
+switch off, sources are zero and the original conservative update remains.
+gasDiag s3 still shows -alphaDG*div(UG), i.e. the compression term being
+cancelled, not a source applied in the switched equation.
+
+The Method1 pressure target continues to use the actual projected alpha
+increment. Thus the altered alpha also affects the coupled pressure/velocity
+response: an improvement implicates compression/coupling but does not alone
+prove that div(UG) was the original cause. Compare fresh runs with identical
+settings except this switch; existing DG restart limitations still apply.

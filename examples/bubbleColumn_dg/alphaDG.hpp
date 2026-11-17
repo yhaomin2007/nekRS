@@ -5,21 +5,23 @@
 
 namespace bubbleColumn { namespace alphaDG {
 static dfloat cfl=0.1,backflow=0.0;
-static int maxSubsteps=10000,limiter=0,fluxType=1;
+static int maxSubsteps=10000,limiter=0,fluxType=1,ignoreDivUg=0;
 static std::string fluxName="upwind";
 static dlong nf=0;
 static ogs_t *faceOgs=nullptr;
 static deviceMemory<dfloat> solution,old,increment,flux,rhs,trace,traceSum,surface,boundary;
-static deviceMemory<dfloat> rate,badMean,limited;
+static deviceMemory<dfloat> rate,badMean,limited,divUg,compressionCorrection;
 static deviceMemory<dlong> incidence;
 static deviceMemory<int> boundaryIds;
 static occa::kernel volumeKernel,traceKernel,surfaceKernel,liftKernel,rkKernel,rateKernel,limitKernel;
 static dfloat initialVolume=0,boundaryIntegral=0,lastBalance=0,lastProjectionError=0;
 static dfloat lastCfl=0,lastLimited=0;
+static dfloat sourceRate=0,sourceIntegral=0,lastSourceIntegral=0;
 static int lastSubsteps=0;
 
 inline void configure()
 {
+  platform->par->extract("casedata","alphadgignoredivug",ignoreDivUg);
   platform->par->extract("casedata","alphadgcfl",cfl);
   platform->par->extract("casedata","alphadgmaxsubsteps",maxSubsteps);
   platform->par->extract("casedata","alphadglimiter",limiter);
@@ -31,7 +33,7 @@ inline void configure()
   const auto comm=platform->comm.mpiComm();
   nekrsCheck(fluxType<0,comm,EXIT_FAILURE,"%s","alphaDGFlux must be central (or center), upwind, or lf.\n");
   nekrsCheck(!std::isfinite(cfl) || cfl<=0 || cfl>0.5 || maxSubsteps<1 ||
-      (limiter!=0 && limiter!=1) || !std::isfinite(backflow) || backflow<0 || backflow>1,
+      (ignoreDivUg!=0 && ignoreDivUg!=1) || (limiter!=0 && limiter!=1) || !std::isfinite(backflow) || backflow<0 || backflow>1,
       comm,EXIT_FAILURE,"%s","Invalid alpha DG parameters.\n");
   nekrsCheck(!platform->options.compareArgs("BDF ORDER","1"),comm,EXIT_FAILURE,
       "%s","First DG prototype requires tombo1/BDF1 for consistent split pressure target.\n");
@@ -83,6 +85,7 @@ inline void allocate()
       comm,EXIT_FAILURE,"%s","DG alpha diffusion must be zero; no DG viscous operator is implemented.\n");
   solution.resize(offset);old.resize(offset);increment.resize(offset);rhs.resize(offset);flux.resize(3*offset);
   trace.resize(2*nf);traceSum.resize(2*nf);surface.resize(nf);boundary.resize(nf);
+  if(ignoreDivUg) { divUg.resize(offset); compressionCorrection.resize(offset); }
   rate.resize(offset);badMean.resize(m->Nelements);limited.resize(m->Nelements);
   boundaryIds.resize(m->Nelements*6);boundaryIds.copyFrom(m->EToB,m->Nelements*6);
   // Face-interior expanded-grid IDs distinguish the different faces sharing
@@ -121,9 +124,9 @@ inline void allocate()
   project();
   nrs->scalar->compute[nrs->scalar->nameToIndex.at("alpha")]=0;
   if(platform->comm.mpiRank()==0)
-    printf("alphaDG: face-pair communication validated; LD OFF; RK4, flux=%s, CFL=%g, limiter=%d.\n"
+    printf("alphaDG: face-pair communication validated; LD OFF; RK4, flux=%s, CFL=%g, limiter=%d, ignoreDivUg=%d.\n"
            "Native alpha solve OFF. Native alpha scalar stores only the conservative CG projection.\n",
-        fluxName.c_str(),cfl,limiter);
+        fluxName.c_str(),cfl,limiter,ignoreDivUg);
 }
 inline dfloat inletValue(double time)
 {
@@ -144,6 +147,15 @@ inline dfloat evaluate(double time)
   surfaceKernel(nf,inletValue(time),backflow,fluxType,boundaryIds,m->o_sgeo,
       trace,traceSum,surface,boundary);
   liftKernel(N,incidence,m->o_LMM,surface,rhs);
+  sourceRate=0;
+  if(ignoreDivUg) {
+    // Cancel the continuum compression term with +alpha*div(UG).
+    // Use this RK stage's raw DG alpha and element-local strong divergence.
+    // The collocated discrete product rule is not exact for general fields.
+    platform->linAlg->axmyz(N,1.0,solution,divUg,compressionCorrection);
+    platform->linAlg->axpby(N,1.0,compressionCorrection,1.0,rhs);
+    sourceRate=volume(compressionCorrection);
+  }
   return platform->linAlg->sum(nf,boundary,platform->comm.mpiComm());
 }
 inline void limit()
@@ -161,6 +173,7 @@ inline void advance(double endTime)
   const dlong N=m->Nlocal,O=nrs->fieldOffset;
   const dfloat dt=nrs->dt[0];
   reconstructGasVelocity(); // newly solved CG gas velocity, frozen in this step
+  if(ignoreDivUg) opSEM::strongDivergence(m,O,o_ug,divUg,false);
   const dfloat minWeight=*std::min_element(m->gllw,m->gllw+m->Nq);
   rateKernel(N,O,1.0/minWeight,m->o_vgeo,o_ug,rate);
   const dfloat maxRate=platform->linAlg->max(N,rate,comm);
@@ -172,22 +185,29 @@ inline void advance(double endTime)
   lastCfl=h*maxRate;lastLimited=0;
   const dfloat before=volume(solution);
   dfloat integrated=0;
+  lastSourceIntegral=0;
   for(int s=0;s<lastSubsteps;++s) {
     const double t=endTime-dt+s*h;
     old.copyFrom(solution,N);
     // Classical RK4: stages at 0, 1/2, 1/2, 1; UG stays frozen.
     const dfloat b0=evaluate(t);
+    const dfloat q0=sourceRate;
     rkKernel(N,0,h,old,rhs,increment,solution);limit();
     const dfloat b1=evaluate(t+0.5*h);
+    const dfloat q1=sourceRate;
     rkKernel(N,1,h,old,rhs,increment,solution);limit();
     const dfloat b2=evaluate(t+0.5*h);
+    const dfloat q2=sourceRate;
     rkKernel(N,2,h,old,rhs,increment,solution);limit();
     const dfloat b3=evaluate(t+h);
+    const dfloat q3=sourceRate;
     rkKernel(N,3,h,old,rhs,increment,solution);limit();
     integrated+=h*(b0+2.0*b1+2.0*b2+b3)/6.0;
+    lastSourceIntegral+=h*(q0+2.0*q1+2.0*q2+q3)/6.0;
   }
   boundaryIntegral+=integrated;
-  lastBalance=volume(solution)-before+integrated;
+  sourceIntegral+=lastSourceIntegral;
+  lastBalance=volume(solution)-before+integrated-lastSourceIntegral;
   project();
 }
 inline void diagnostics(double time)
@@ -198,9 +218,9 @@ inline void diagnostics(double time)
   const dfloat v=volume(solution);
   if(platform->comm.mpiRank()==0)
     printf("alphaDG RK4 time=%.9e substeps=%d CFL=%.6g min=%.9e max=%.9e V=%.12e "
-           "stepBalance=%.3e cumulativeBalance=%.3e projectionDeltaV=%.3e limitedStages=%.0f\n",
-        time,lastSubsteps,lastCfl,lo,hi,v,lastBalance,v-initialVolume+boundaryIntegral,
-        lastProjectionError,lastLimited);
+           "stepBalance=%.3e cumulativeBalance=%.3e projectionDeltaV=%.3e limitedStages=%.0f sourceStep=%.9e sourceCumulative=%.9e ignoreDivUg=%d\n",
+        time,lastSubsteps,lastCfl,lo,hi,v,lastBalance,v-initialVolume+boundaryIntegral-sourceIntegral,
+        lastProjectionError,lastLimited,lastSourceIntegral,sourceIntegral,ignoreDivUg);
 }
 inline void write(double time)
 {

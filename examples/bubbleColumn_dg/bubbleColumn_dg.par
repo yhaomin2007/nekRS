@@ -90,13 +90,15 @@ liftEnabled = 1
 liftCoefficient = 0.5
 # 0: latest strong grad(p); 1: native fluid EXT of strong gradient history.
 gasPressureGradientExtrapolation = 0
-# DG always transports the complete conservative alpha*UG flux.
+# DG defaults to conservative alpha*UG transport.
 # First step, every N steps, and checkpoints; 0: first/checkpoints only.
 diagnosticInterval = 10
 
 # Explicit DG alpha: classical RK4 substeps, frozen newly solved UG.
 # central (alias center), upwind, or local Lax-Friedrichs (lf).
 alphaDGFlux = upwind
+# Diagnostic: 1 adds +alpha*div(UG) to suppress continuum compression; 0 is conservative.
+alphaDGIgnoreDivUg = 0
 alphaDGCfl = 0.1
 alphaDGMaxSubsteps = 10000
 alphaDGLimiter = 0

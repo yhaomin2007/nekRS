@@ -66,7 +66,7 @@ void UDF_Setup0(MPI_Comm,setupAide &)
   read("liftenabled",p.liftEnabled);
   read("liftcoefficient",p.liftCoefficient);
   read("gaspressuregradientextrapolation",p.gasPressureGradientExtrapolation);
-  p.alphaCompressionEnabled=1; // DG always transports conservative alpha*UG.
+  p.alphaCompressionEnabled=1; // Legacy CG helpers; DG mode is configured separately.
   bubbleColumn::alphaDG::configure();
   read("diagnosticinterval",bubbleColumn::phaseMomentum::interval);
   nekrsCheck(!(std::isfinite(p.rhoLiquid) && p.rhoLiquid>0 &&
