@@ -106,7 +106,8 @@ the step's independent element endpoint values.
 
 Acceptance: absolute max RHS/final difference <=1e-9 and absolute mass drift
 <=1e-10; global RHS balance is checked at every stage. Failure exits nonzero.
-Each rank writes CSV data; each MPI run has a saved log in its flux directory.
+Each rank writes CSV data. Each MPI run has a unique job directory, a live log,
+and automatic postprocessing as described below.
 
 For a configured GPU OCCA installation, a single-rank example is:
 
@@ -150,6 +151,93 @@ one period):
 | 64 | 1920 | 0.07927838% |
 
 These recover the historical rounded 5.55%, 1.03%, 0.0793% values.
-The relocated production comparison driver found its reference inputs and
-OCCA library, but C++ compilation stopped because the environment lacks
-`mpi.h`. Production OCCA/MPI and GPU execution therefore remain unverified.
+The time-export update was compiled and run with OCCA Serial and Open MPI 5.
+Matching MPI development headers were supplied through MPICXX. All 18 runs
+passed: 16 elements, sine/step/smooth, central/upwind/LF, 1 and 2 MPI ranks,
+and all five output times. Maximum all-node difference from Python was
+1.36e-14; maximum absolute mass drift was 1.66e-16. GPU and production OGS
+execution remain unverified. The harness still uses test-only MPI exchange.
+
+Postprocessing also correctly rejected missing rank files, duplicate nodes
+and wrong times, detected a 1e-4 scalar perturbation, and labeled an incomplete
+four-snapshot job PARTIAL rather than passed.
+
+
+## Time exports and postprocessing
+
+Run the reference suite and then the kernel jobs:
+
+```sh
+cd examples/1d_dgsem
+python3 generate_reference.py
+export OCCA_DIR=/path/to/built/occa
+python3 compare_kernels.py --ranks 1 2
+```
+
+For a shorter first run, generate only one mesh/profile in a separate folder:
+
+```sh
+python3 generate_reference.py --elements 16 --profile smooth --output quick-results
+python3 compare_kernels.py --results quick-results --ranks 1 2
+```
+
+Every kernel job exports at t=0, T/4, T/2, 3T/4, T, exactly matching the
+reference script's five snapshots. T is the requested number of periods
+because the domain length and speed are both one. No interpolation in time
+is used. Each rank exports all its local nodes, preserving separate traces
+at the same physical interface coordinate. Never average those traces.
+
+Each run gets a distinct directory, for example:
+`reference-results/smooth_n16_p3/upwind/kernel_np2/run_<timestamp>_<id>/`.
+The driver prints this full path before launching MPI. This avoids mixing
+snapshots from different jobs or silently overwriting an earlier result.
+
+Files inside each job directory:
+
+| File | Contents |
+| --- | --- |
+| run.json | Exact configuration, reference source hash, MPI ranks, device, running/completed/failed status |
+| reference.npz | A private copy of that job's Python reference snapshots |
+| job.log | Live solver log, including EXPORT time, step, mass and mass drift |
+| kernel.snapshot0.rank0.csv, etc. | Snapshot indices 0..4 for each MPI rank |
+| kernel.rank0.csv, etc. | Original final-state and initial-RHS audit |
+| postprocess/profiles.png | Kernel vs Python vs exact profiles at all exported times, plus nodal differences |
+| postprocess/diagnostics.png | Mass drift and maximum kernel/Python difference vs time |
+| postprocess/metrics.csv | All-node max/L2 differences, mass, extrema and transverse consistency |
+| postprocess/comparison.npz | Element-local 1D slices and reference arrays for further analysis |
+| postprocess/summary.json | Completeness, tolerance status and maximum errors |
+
+Snapshot CSV columns are `step,time,element,i,j,k,x,mass,scalar`.
+Element IDs are global for this Cartesian test mesh; i/j/k are local GLL
+indices; mass is the 3D local quadrature weight. CSV precision is 17 digits.
+A temporary file is renamed only after a full rank snapshot is written.
+This permits reading completed times while the job continues.
+
+Postprocessing runs automatically after each successful kernel job. To
+regenerate plots or verify all stored jobs manually:
+
+```sh
+python3 postprocess.py --results reference-results --check
+```
+
+To inspect one running or failed job (replace the directory below with the
+printed job path):
+
+```sh
+python3 postprocess.py --run path/to/run_directory --allow-partial
+```
+
+Only time instants with all rank files present are read. Partial results are
+explicitly labeled PARTIAL and never reported as passed. Adding `--check`
+requires all five snapshots, a completed job and agreement within tolerance.
+If the scheduler kills the driver abruptly, run.json may remain running;
+`--allow-partial` still permits inspection of completed exports.
+
+The postprocessor verifies time/step agreement, reference source hash,
+complete unique element/node IDs, coordinates and local masses. It compares
+**every 3D node**, then selects j=k=0 for plots without averaging x traces.
+Max and L2 kernel/Python differences are valid for all profiles; relative
+L2 against the analytic step is intentionally omitted. The default acceptance
+limits are max absolute difference <=1e-9 and absolute mass drift <=1e-10.
+These exports belong to the standalone kernel job; they are not NekRS .f
+checkpoints and do not add bubble-column OGS or EE-coupling validation.

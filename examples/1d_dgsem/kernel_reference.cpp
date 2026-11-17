@@ -12,6 +12,7 @@
 #include <iomanip>
 #include <cstdlib>
 #include <stdexcept>
+#include <cstdio>
 using V=std::vector<double>;
 #ifndef DG_NQ
 #define DG_NQ 4
@@ -44,7 +45,7 @@ int rank,size;MPI_Comm_rank(MPI_COMM_WORLD,&rank);MPI_Comm_size(MPI_COMM_WORLD,&
   const int fluxType=std::stoi(argv[4]),steps=std::stoi(argv[5]);
   const double dt=std::stod(argv[6]);
   const int nx=std::stoi(argv[3]),ne=nx/size,N=ne*np,NF=ne*6*nfp,GN=nx*nfp;
-  if(nx%size || ne<1 || nq!=4 || fluxType<0 || fluxType>2 || steps<1 || dt<=0) MPI_Abort(MPI_COMM_WORLD,2);
+  if(nx%size || ne<1 || nq!=4 || fluxType<0 || fluxType>2 || steps<4 || steps%4 || !std::isfinite(dt) || dt<=0) MPI_Abort(MPI_COMM_WORLD,2);
   V refX(nx*nq),refInitial(nx*nq),refRhs(nx*nq),refFinal(nx*nq);
   std::ifstream input(argv[7]);
   for(int q=0;q<nx*nq;++q) {
@@ -106,9 +107,31 @@ int rank,size;MPI_Comm_rank(MPI_COMM_WORLD,&rank);MPI_Comm_size(MPI_COMM_WORLD,&
     int n=e*np+i+nq*(j+nq*k),q=(rank*ne+e)*nq+i;
     rhsError=std::max(rhsError,std::abs(initialRhs[n]-refRhs[q]));
   }
+  // Export each rank independently; preserve every element-local trace.
+  // Publish by rename only after the complete snapshot has reached disk.
+  auto snapshot=[&](int step){
+    A.copyTo(a.data());
+    const int index=step/(steps/4);
+    const std::string file=std::string(argv[8])+".snapshot"+std::to_string(index)+".rank"+std::to_string(rank)+".csv";
+    const std::string temporary=file+".tmp";
+    std::ofstream out(temporary);
+    if(!out) MPI_Abort(MPI_COMM_WORLD,9);
+    out<<"step,time,element,i,j,k,x,mass,scalar\n"<<std::setprecision(17);
+    for(int e=0;e<ne;++e)for(int k=0;k<nq;++k)for(int j=0;j<nq;++j)for(int i=0;i<nq;++i){
+      const int n=e*np+i+nq*(j+nq*k);
+      out<<step<<","<<step*dt<<","<<rank*ne+e<<","<<i<<","<<j<<","<<k<<","<<x[n]<<","<<mass[n]<<","<<a[n]<<"\n";
+    }
+    out.close();
+    if(!out || std::rename(temporary.c_str(),file.c_str())) MPI_Abort(MPI_COMM_WORLD,9);
+    const double currentMass=vol();
+    if(rank==0)std::cout<<std::setprecision(17)<<"EXPORT snapshot="<<index<<" step="<<step<<" time="<<step*dt
+      <<" mass="<<currentMass<<" massDrift="<<currentMass-initial<<std::endl;
+  };
+  snapshot(0);
   for(int step=0;step<steps;++step){
     Old.copyFrom(A);
     for(int stage=0;stage<4;++stage){eval();rk(N,stage,dt,Old,R,Increment,A);}
+    if((step+1)%(steps/4)==0) snapshot(step+1);
   }
   double final=vol(),finalError=0;
   std::ofstream out(std::string(argv[8])+".rank"+std::to_string(rank)+".csv");

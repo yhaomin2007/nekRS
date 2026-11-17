@@ -7,6 +7,10 @@ import os
 from pathlib import Path
 import shlex
 import subprocess
+import shutil
+import sys
+import uuid
+from datetime import datetime, timezone
 
 here = Path(__file__).resolve().parent
 repo = here.parents[1]
@@ -52,17 +56,37 @@ def main():
         c = json.loads(file.read_text())
         flux = {"central": 0, "center": 0, "upwind": 1, "lf": 2}[c["flux"]]
         for ranks in args.ranks:
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            run = file.parent/f"kernel_np{ranks}"/f"run_{stamp}_{uuid.uuid4().hex[:8]}"
+            run.mkdir(parents=True)
+            shutil.copy2(file.parent.parent/f"{c['flux']}.npz", run/"reference.npz")
+            metadata = dict(config=c, ranks=ranks, device=args.device, status="running",
+                            created_utc=stamp)
+            def save_status(status):
+                metadata["status"] = status
+                temporary = run/"run.json.tmp"
+                temporary.write_text(json.dumps(metadata, indent=2)+"\n")
+                temporary.replace(run/"run.json")
+            save_status("running")
             command = launcher + ["-np", str(ranks), str(exe),
                 str(case/"alphaDG.okl"),
                 str(repo/"src/core/kernels/wDivergenceVolumeHex3D.okl"),
                 str(c["elements"]), str(flux), str(c["steps"]), repr(c["dt"]),
                 str(file.parent/"reference.dat"),
-                str(file.parent/f"kernel_np{ranks}"), args.device]
-            completed = subprocess.run(command, env=env, text=True,
-                                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-            (file.parent/f"kernel_np{ranks}.log").write_text(completed.stdout)
-            print(completed.stdout, end="")
-            completed.check_returncode()
+                str(run/"kernel"), args.device]
+            print(f"Job output: {run}", flush=True)
+            try:
+                # Persist stdout during the job, including each EXPORT event.
+                with (run/"job.log").open("w", buffering=1) as log:
+                    completed = subprocess.run(command, env=env, text=True,
+                                               stdout=log, stderr=subprocess.STDOUT)
+                completed.check_returncode()
+            except BaseException:
+                save_status("failed")
+                raise
+            save_status("completed")
+            subprocess.run([sys.executable, str(here/"postprocess.py"),
+                            "--run", str(run), "--check"], check=True)
     print("PASS: production OKL RHS/final states match Python on every 3D node.")
     print("Trace exchange uses test-only MPI_Allreduce, NOT production OGS.")
 
