@@ -6,6 +6,9 @@
 namespace bubbleColumn { namespace alphaDG {
 static dfloat cfl=0.1,backflow=0.0;
 static int maxSubsteps=10000,limiter=0,fluxType=1,ignoreDivUg=0;
+static int divUgFilterModes=1;
+static dfloat divUgFilterStrength=0;
+static deviceMemory<dfloat> filteredDivUg,divUgCorrection;
 static std::string fluxName="upwind";
 static dlong nf=0;
 static ogs_t *faceOgs=nullptr;
@@ -22,6 +25,12 @@ static int lastSubsteps=0;
 inline void configure()
 {
   platform->par->extract("casedata","alphadgignoredivug",ignoreDivUg);
+  platform->par->extract("casedata","alphadgdivugfilterstrength",divUgFilterStrength);
+  platform->par->extract("casedata","alphadgdivugfiltermodes",divUgFilterModes);
+  nekrsCheck(!std::isfinite(divUgFilterStrength) || divUgFilterStrength<0 ||
+      divUgFilterStrength>1 || (ignoreDivUg && divUgFilterStrength>0),
+      platform->comm.mpiComm(),EXIT_FAILURE,"%s",
+      "divUG filter strength must be in [0,1]; cannot combine with ignoreDivUg.\n");
   platform->par->extract("casedata","alphadgcfl",cfl);
   platform->par->extract("casedata","alphadgmaxsubsteps",maxSubsteps);
   platform->par->extract("casedata","alphadglimiter",limiter);
@@ -85,7 +94,12 @@ inline void allocate()
       comm,EXIT_FAILURE,"%s","DG alpha diffusion must be zero; no DG viscous operator is implemented.\n");
   solution.resize(offset);old.resize(offset);increment.resize(offset);rhs.resize(offset);flux.resize(3*offset);
   trace.resize(2*nf);traceSum.resize(2*nf);surface.resize(nf);boundary.resize(nf);
-  if(ignoreDivUg) { divUg.resize(offset); compressionCorrection.resize(offset); }
+  if(ignoreDivUg || divUgFilterStrength>0) {
+    divUg.resize(offset); compressionCorrection.resize(offset);
+    divUgCorrection.resize(offset); filteredDivUg.resize(offset);
+  }
+  nekrsCheck(divUgFilterStrength>0 && (divUgFilterModes<1 || divUgFilterModes>m->N-1),
+      comm,EXIT_FAILURE,"%s","divUG filter requires 1<=modes<=N-1.\n");
   rate.resize(offset);badMean.resize(m->Nelements);limited.resize(m->Nelements);
   boundaryIds.resize(m->Nelements*6);boundaryIds.copyFrom(m->EToB,m->Nelements*6);
   // Face-interior expanded-grid IDs distinguish the different faces sharing
@@ -148,11 +162,11 @@ inline dfloat evaluate(double time)
       trace,traceSum,surface,boundary);
   liftKernel(N,incidence,m->o_LMM,surface,rhs);
   sourceRate=0;
-  if(ignoreDivUg) {
-    // Cancel the continuum compression term with +alpha*div(UG).
+  if(ignoreDivUg || divUgFilterStrength>0) {
+    // Cancel all compression (ignore mode), or only its filtered-out part.
     // Use this RK stage's raw DG alpha and element-local strong divergence.
     // The collocated discrete product rule is not exact for general fields.
-    platform->linAlg->axmyz(N,1.0,solution,divUg,compressionCorrection);
+    platform->linAlg->axmyz(N,1.0,solution,divUgCorrection,compressionCorrection);
     platform->linAlg->axpby(N,1.0,compressionCorrection,1.0,rhs);
     sourceRate=volume(compressionCorrection);
   }
@@ -173,7 +187,17 @@ inline void advance(double endTime)
   const dlong N=m->Nlocal,O=nrs->fieldOffset;
   const dfloat dt=nrs->dt[0];
   reconstructGasVelocity(); // newly solved CG gas velocity, frozen in this step
-  if(ignoreDivUg) opSEM::strongDivergence(m,O,o_ug,divUg,false);
+  if(ignoreDivUg || divUgFilterStrength>0) {
+    opSEM::strongDivergence(m,O,o_ug,divUg,false);
+    divUgCorrection.copyFrom(divUg,N);
+    if(divUgFilterStrength>0) {
+      filteredDivUg.copyFrom(divUg,N);
+      userExplicitFilter::explicitFilterApply("alphaDG-divUG",m,
+          divUgFilterModes,divUgFilterStrength,filteredDivUg);
+      // RHS correction +alpha*(divUG-filteredDivUG), after local mass inversion.
+      platform->linAlg->axpby(N,-1.0,filteredDivUg,1.0,divUgCorrection);
+    }
+  }
   const dfloat minWeight=*std::min_element(m->gllw,m->gllw+m->Nq);
   rateKernel(N,O,1.0/minWeight,m->o_vgeo,o_ug,rate);
   const dfloat maxRate=platform->linAlg->max(N,rate,comm);

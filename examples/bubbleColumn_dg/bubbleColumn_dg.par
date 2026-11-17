@@ -99,6 +99,9 @@ diagnosticInterval = 10
 alphaDGFlux = upwind
 # Diagnostic: 1 adds +alpha*div(UG) to suppress continuum compression; 0 is conservative.
 alphaDGIgnoreDivUg = 0
+# Explicit div(UG) filter for alpha: strength 0 disables; try 0.5.
+alphaDGDivUgFilterStrength = 0.5
+alphaDGDivUgFilterModes = 1
 alphaDGCfl = 0.1
 alphaDGMaxSubsteps = 10000
 alphaDGLimiter = 0

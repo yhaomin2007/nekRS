@@ -141,6 +141,11 @@ inline void diagnostics(double time)
        {"scalar01",{gasDivergenceAverage.slice(0,N)}},
        {"scalar02",{gasCompression.slice(0,N)}},
        {"scalar03",{alphaDG::solution.slice(0,N)}}},true,true);
+  if(alphaDG::divUgFilterStrength>0 && nrs->tstep>0)
+    nrs->writeToFile("divUGFilter",time,nrs->meshV,
+        {{"scalar00",{alphaDG::divUg.slice(0,N)}},
+         {"scalar01",{alphaDG::filteredDivUg.slice(0,N)}},
+         {"scalar02",{alphaDG::divUgCorrection.slice(0,N)}}},true,true);
   const auto comm=platform->comm.mpiComm();
   const dfloat lo=platform->linAlg->min(N,gasDivergenceLocal,comm);
   const dfloat hi=platform->linAlg->max(N,gasDivergenceLocal,comm);

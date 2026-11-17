@@ -267,3 +267,32 @@ increment. Thus the altered alpha also affects the coupled pressure/velocity
 response: an improvement implicates compression/coupling but does not alone
 prove that div(UG) was the original cause. Compare fresh runs with identical
 settings except this switch; existing DG restart limitations still apply.
+
+## Explicit div(UG) filter in the alpha equation
+
+The supplied par enables the requested trial with:
+
+    alphaDGIgnoreDivUg = 0
+    alphaDGDivUgFilterStrength = 0.5
+    alphaDGDivUgFilterModes = 1
+
+Omitting the strength parameter defaults to 0 (off). Strength is in [0,1];
+modes must be in [1,N-1] when enabled. Filtering and ignoreDivUg cannot
+be enabled together.
+
+Once per fluid step, compute element-local strong d=div(UG) from the frozen
+new UG and apply the existing explicit tensor-product Legendre-bubble filter
+to a separate copy, obtaining df. Each RK stage adds alphaDG*(d-df) after
+local mass inversion. Continuum target: alpha_t + UG.grad(alpha) + alpha*df=0.
+UG, alpha itself, and DG face fluxes are not filtered. This preserves the
+existing discrete product-rule/aliasing limitations of compression cancellation.
+The filter damps selected high bubble modes, preserves constant/linear fields
+and element corner values, and does not smooth jumps between elements or
+guarantee preservation of the quadrature mean.
+
+The correction is included in sourceStep/sourceCumulative and the RK4 balance
+checks. This is a nonconservative diagnostic modification; the pressure target
+still responds to the modified alpha increment. At checkpoints after step 0,
+divUGFilter exports s1=d, s2=df, s3=d-df (all 1/s), using exactly the frozen
+fields used in that step. gasDiag retains its existing meanings, including
+unfiltered compression. Compare identical fresh runs with strength 0 and 0.5.
