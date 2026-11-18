@@ -141,7 +141,7 @@ inline void allocate()
   project();
   nrs->scalar->compute[nrs->scalar->nameToIndex.at("alpha")]=0;
   if(platform->comm.mpiRank()==0)
-    printf("alphaDG: face-pair communication validated; LD OFF; RK4, flux=%s, CFL=%g, limiter=%d, ignoreDivUg=%d.\n"
+    printf("alphaDG: face-pair communication validated; LD set by Method1 momentum config; RK4, flux=%s, CFL=%g, limiter=%d, ignoreDivUg=%d.\n"
            "Native alpha solve OFF. Native alpha scalar stores only the conservative CG projection.\n",
         fluxName.c_str(),cfl,limiter,ignoreDivUg);
 }
