@@ -50,9 +50,6 @@ inline void configure()
       "%s","First DG prototype requires tombo1/BDF1 for consistent split pressure target.\n");
   nekrsCheck(!platform->options.getArgs("RESTART FILE NAME").empty(),comm,EXIT_FAILURE,
       "%s","DG prototype requires a fresh start: CG checkpoints do not contain DG state.\n");
-  int requestedLD=0;
-  platform->par->extract("casedata","laminardispersionenabled",requestedLD);
-  nekrsCheck(requestedLD!=0,comm,EXIT_FAILURE,"%s","LD is disabled in bubbleColumn_dg.\n");
 }
 inline void registerKernels(deviceKernelProperties &info)
 {
