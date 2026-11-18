@@ -54,6 +54,16 @@ c-----------------------------------------------------------------------
       end
 c-----------------------------------------------------------------------
       subroutine usrdat2
+      include 'SIZE'
+      include 'TOTAL'
+
+      do iel=1,nelt
+      do ifc=1,2*ndim
+         if (boundaryID(ifc,iel).eq.4) boundaryID(ifc,iel) = 0
+         if (boundaryID(ifc,iel).eq.5) boundaryID(ifc,iel) = 0
+      enddo
+      enddo
+
       return
       end
 c-----------------------------------------------------------------------
