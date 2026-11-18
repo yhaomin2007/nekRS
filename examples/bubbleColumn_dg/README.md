@@ -105,7 +105,7 @@ used by CG momentum are gradients of this projection. LD acts in gas momentum
 through the existing Method1 closure, using the projected CG alpha gradient; it does
 not add a diffusion term to the DG alpha equation. The coefficient can be changed
 or disabled in [CASEDATA].
-cannot be enabled by the input file in this prototype.
+
 
 The native pressure target uses the actual projected alpha increment:
 
@@ -149,6 +149,13 @@ original numerical diffusion/HPF settings, explicitly visible in the par.
 | alphaDGIgnoreDivUg | 0 | Diagnostic compression cancellation (1=on) |
 | alphaDGLimiter | 0 | Element-mean-preserving nodal bounds limiter |
 | alphaDGBackflowValue | 0 | Top inflow alpha |
+| outletViscosityRampStartZ | 0.90 m | Start of smooth UM viscosity ramp |
+| outletViscosityRampEndZ | 0.95 m | End of smooth UM viscosity ramp |
+| outletMixtureViscosityFactor | 10 | UM mixture-viscosity multiplier at and above ramp end |
+
+The outlet ramp modifies only the implicit mixture viscosity used by the UM solve.
+It leaves alpha/UG scalar diffusivities and the explicit gas stress unchanged.
+Set the multiplier to 1 to disable the ramp.
 
 Default checkpoint s1 is **projected CG alpha**; s2–s4 are CG UG components.
 The separate `alphaDG` output contains the actual discontinuous solution in
