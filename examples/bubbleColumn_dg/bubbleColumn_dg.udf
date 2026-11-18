@@ -34,14 +34,14 @@ void UDF_Setup0(MPI_Comm,setupAide &)
     platform->kernelInfo["headers"]+=header;
   }
   auto &p=bubbleColumn::p;
-  // Fixed Method1 choices. Old experimental limiter/ramp/filter switches are
-  // deliberately not read from .par in this case.
+  // Fixed Method1 choices. Legacy alpha limiter/filter switches remain fixed;
+  // the outlet UM viscosity ramp is configurable through CASEDATA.
   p.rhoLiquid=998.2; p.rhoGas=1.2; p.muLiquid=1e-3; p.muGas=1.8e-5;
   p.alphaInlet=0.016667; p.ugInlet=0.3;
   p.gravity[2]=-9.81;
   p.alphaFloor=1e-6; p.alphaClippingEnabled=0;
   p.alphaMinimum=0; p.alphaMaximum=1;
-  p.zRampBottom=0.9; p.zRampTop=0.95; p.outletDampingFactor=1;
+  p.zRampBottom=0.9; p.zRampTop=0.95; p.outletDampingFactor=10;
   p.gasMomentumCutoff=1e-4; p.gasMomentumFullyActive=1e-3;
   p.gasPressureEnabled=1; p.dragEnabled=1; p.bubbleDiameter=3e-3;
   p.driftStressEnabled=1; p.virtualMassEnabled=1; p.virtualMassCoefficient=0.5;
@@ -61,6 +61,9 @@ void UDF_Setup0(MPI_Comm,setupAide &)
   read("gasinletrampduration",p.gasInletRampDuration);
   read("gravityz",p.gravity[2]); read("bubblediameter",p.bubbleDiameter);
   read("virtualmasscoefficient",p.virtualMassCoefficient);
+  read("outletviscosityrampstartz",p.zRampBottom);
+  read("outletviscosityrampendz",p.zRampTop);
+  read("outletmixtureviscosityfactor",p.outletDampingFactor);
   read("laminardispersionenabled",p.laminarDispersionEnabled);
   read("laminardispersioncoefficient",p.laminarDispersionCoefficient);
 
