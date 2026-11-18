@@ -83,8 +83,9 @@ initialPlumeThickness = 0.01
 gravityZ = -9.81
 bubbleDiameter = 3e-3
 virtualMassCoefficient = 0.5
-# LD deliberately disabled for this DG feasibility experiment.
-laminarDispersionEnabled = 0
+# Panicker/Fazeli laminar-dispersion closure; same setting as the CG case.
+laminarDispersionEnabled = 1
+laminarDispersionCoefficient = 4.545
 # Classic constant lift: F_g = -Cl*rhoL*alpha*((UG-UL) x curl(UL)).
 liftEnabled = 1
 liftCoefficient = 0.5

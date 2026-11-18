@@ -61,7 +61,8 @@ void UDF_Setup0(MPI_Comm,setupAide &)
   read("gasinletrampduration",p.gasInletRampDuration);
   read("gravityz",p.gravity[2]); read("bubblediameter",p.bubbleDiameter);
   read("virtualmasscoefficient",p.virtualMassCoefficient);
-  p.laminarDispersionEnabled=0; // Disabled in this DG experiment.
+  read("laminardispersionenabled",p.laminarDispersionEnabled);
+  read("laminardispersioncoefficient",p.laminarDispersionCoefficient);
 
   read("liftenabled",p.liftEnabled);
   read("liftcoefficient",p.liftCoefficient);

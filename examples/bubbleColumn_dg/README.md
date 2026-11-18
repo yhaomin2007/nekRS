@@ -1,7 +1,8 @@
 # Method1 with DG alpha and CG phase/mixture momentum
 
 Independent feasibility prototype based on `examples/bubbleColumn` at
-`1e05aacd`. LD is disabled. No NekRS core changes are required.
+`1e05aacd`. The existing Method1 laminar-dispersion (LD) force is enabled by
+ default with the same coefficient as the CG case. No NekRS core changes are required.
 
 The sequence is **CG UG → DG alpha → conservative CG projection → native
 CG pressure/UM**. UL remains reconstructed. The gas/mixture momentum model,
@@ -100,7 +101,10 @@ After each completed alpha update:
 This projection conserves the quadrature-integrated gas volume and provides
 a single-valued field for density, reconstructed UL, drag/lift/VM coefficients
 and the Method1 divergence target. It does not overwrite alphaDG. Gradients
-used by CG momentum are gradients of this projection. LD is disabled and
+used by CG momentum are gradients of this projection. LD acts in gas momentum
+through the existing Method1 closure, using the projected CG alpha gradient; it does
+not add a diffusion term to the DG alpha equation. The coefficient can be changed
+or disabled in [CASEDATA].
 cannot be enabled by the input file in this prototype.
 
 The native pressure target uses the actual projected alpha increment:
@@ -137,8 +141,8 @@ original numerical diffusion/HPF settings, explicitly visible in the par.
 
 | CASEDATA parameter | Default | Meaning |
 | --- | --- | --- |
-| laminarDispersionEnabled | 0 | Required; LD disabled |
-| alphaDGCfl | 0.1 | Substep stability scale |
+| laminarDispersionEnabled | 1 | Enable the existing explicit LD force in gas momentum |
+| laminarDispersionCoefficient | 4.545 | LD closure coefficient; matches the CG case |\n| alphaDGCfl | 0.1 | Substep stability scale |
 | alphaDGMaxSubsteps | 10000 | Abort if more substeps are required |
 | alphaDGFlux | upwind | central (alias center), upwind, or lf |
 | alphaDGIgnoreDivUg | 0 | Diagnostic compression cancellation (1=on) |
