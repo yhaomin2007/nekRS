@@ -2,11 +2,11 @@
 
 Independent feasibility prototype based on `examples/bubbleColumn` at
 `1e05aacd`. The existing Method1 laminar-dispersion (LD) force is enabled by
- default with the same coefficient as the CG case. No NekRS core changes are required.
+default with the same coefficient as the CG case. No NekRS core changes are required.
 
 The sequence is **CG UG → DG alpha → conservative CG projection → native
-CG pressure/UM**. UL remains reconstructed. The gas/mixture momentum model,
-drag, VM, lift, and native pressure coupling retain Method1's formulation.
+CG pressure/UM**. UL remains reconstructed. The gas/mixture momentum model, drag, VM, lift, LD, and native pressure coupling
+retain Method1's formulation.
 This case does not use the Fazeli internal injection source or its geometry.
 
 ## Run
