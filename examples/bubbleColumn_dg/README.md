@@ -142,7 +142,8 @@ original numerical diffusion/HPF settings, explicitly visible in the par.
 | CASEDATA parameter | Default | Meaning |
 | --- | --- | --- |
 | laminarDispersionEnabled | 1 | Enable the existing explicit LD force in gas momentum |
-| laminarDispersionCoefficient | 4.545 | LD closure coefficient; matches the CG case |\n| alphaDGCfl | 0.1 | Substep stability scale |
+| laminarDispersionCoefficient | 4.545 | LD closure coefficient; matches the CG case |
+| alphaDGCfl | 0.1 | Substep stability scale |
 | alphaDGMaxSubsteps | 10000 | Abort if more substeps are required |
 | alphaDGFlux | upwind | central (alias center), upwind, or lf |
 | alphaDGIgnoreDivUg | 0 | Diagnostic compression cancellation (1=on) |
