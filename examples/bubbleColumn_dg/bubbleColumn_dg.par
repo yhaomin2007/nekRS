@@ -83,6 +83,10 @@ initialPlumeThickness = 0.01
 gravityZ = -9.81
 bubbleDiameter = 3e-3
 virtualMassCoefficient = 0.5
+# Ramp the implicit UM mixture viscosity smoothly near the top outlet (z in m).
+outletViscosityRampStartZ = 0.90
+outletViscosityRampEndZ = 0.95
+outletMixtureViscosityFactor = 10
 # Panicker/Fazeli laminar-dispersion closure; same setting as the CG case.
 laminarDispersionEnabled = 1
 laminarDispersionCoefficient = 4.545
