@@ -139,7 +139,6 @@ static int divergenceHistoryCount = 0;
 static deviceMemory<dfloat> o_alphaDiffusionFlux;
 static deviceMemory<dfloat> o_alphaDiffusionDivergence;
 static deviceMemory<dfloat> o_ugDiffusionDivergence;
-static deviceMemory<dfloat> o_scalarDiffusionBase;
 static deviceMemory<dfloat> o_outletRampFactor;
 static deviceMemory<dfloat> o_alphaNativeMaterialAdvection;
 static deviceMemory<dfloat> o_driftStress;
@@ -478,7 +477,6 @@ inline void allocate()
   o_alphaDiffusionFlux.resize(3 * offset);
   o_alphaDiffusionDivergence.resize(offset);
   o_ugDiffusionDivergence.resize(3 * offset);
-  o_scalarDiffusionBase.resize(4 * offset);
   o_outletRampFactor.resize(offset);
   o_alphaNativeMaterialAdvection.resize(nrs->scalar->fieldOffsetSum);
   o_driftStress.resize(9 * offset);
@@ -512,14 +510,6 @@ inline void allocate()
   o_inletBoundaryID.copyFrom(std::vector<int>{1});
   o_scalarFieldOffsetScan.resize(1);
   o_scalarFieldOffsetScan.copyFrom(std::vector<dlong>{0});
-  const char *scalarNames[4] = {"alpha", "ugx", "ugy", "ugz"};
-  for (int i = 0; i < 4; ++i) {
-    o_scalarDiffusionBase.copyFrom(
-        nrs->scalar->o_diffusionCoeff(scalarNames[i]),
-        nrs->meshV->Nlocal,
-        i * offset,
-        0);
-  }
   o_surfaceOne.resize(nrs->meshV->Nlocal);
   o_surfaceScalar.resize(nrs->meshV->Nlocal);
   o_outletBoundaryID.resize(1);
@@ -738,11 +728,9 @@ inline void evaluatePointwiseTerms()
         p.liftEnabled,p.liftCoefficient,alpha,o_ug,o_ul,o_gradAlpha,o_gradUl,o_ugSource);
   evaluateAlphaTransport();
 
-  // Smoothly increase the implicit mixture viscosity and all implicit scalar
-  // diffusion coefficients near the outlet. Do not scale the explicit gas
-  // viscous-stress source, which would tighten its timestep restriction.
-  // Restore scalar coefficients from their original .par values first so
-  // repeated userProperties() calls cannot compound the ramp factor.
+  // Smoothly increase only the implicit mixture (UM) viscosity near the
+  // outlet. Keep alpha/UG scalar diffusivities unchanged; this is not an
+  // alpha-equation stabilization term. Do not scale the explicit gas stress.
   buildOutletRampFactorKernel(mesh->Nlocal,
                               p.zRampBottom,
                               p.zRampTop,
@@ -750,14 +738,6 @@ inline void evaluatePointwiseTerms()
                               mesh->o_z,
                               o_outletRampFactor);
   platform->linAlg->axmy(mesh->Nlocal, 1.0, o_outletRampFactor, o_muM);
-  const char *scalarNames[4] = {"alpha", "ugx", "ugy", "ugz"};
-  for (int i = 0; i < 4; ++i) {
-    auto diffusion = nrs->scalar->o_diffusionCoeff(scalarNames[i]);
-    diffusion.copyFrom(o_scalarDiffusionBase, mesh->Nlocal, 0, i * offset);
-    platform->linAlg->axmy(
-        mesh->Nlocal, 1.0, o_outletRampFactor, diffusion);
-  }
-
   for (int i = 0; i < 3; ++i) {
     auto stressRow = o_gasStress.slice(3 * i * offset, 3 * offset);
     auto stressDivergence = o_divGasStress.slice(i * offset, offset);
