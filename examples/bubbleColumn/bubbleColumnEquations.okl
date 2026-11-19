@@ -518,13 +518,13 @@
 }
 
 // Fazeli et al. (2026), Eqs. (7),(8),(10): Panicker LD with SN drag.
-// h(alpha) below is H(alpha)/(alpha*(1-alpha)) in their notation.
-// F_LD,g = -alpha*(3/4)*Cd*Cdis*rhoL*h*|ur|^2*grad(alpha).
+// H(alpha)=alpha*(1-alpha)*(1-1.166*alpha+0.5*alpha^2).
+// F_LD,d = -(3/4)*Cd*Cdis*rhoL*|ur|^2*H(alpha)*grad(alpha).
 // Classic constant-coefficient lift: F_L,g = -Cl*rhoL*alpha*(ur x curl(UL)).
 // Equal/opposite liquid reactions cancel in mixture momentum. This kernel
 // adds gas accelerations after division by alpha*(rhoG+Cvm*rhoL), consistent
 // with the existing semi-implicit gas VM equation. The alpha factor cancels
-// analytically, so no alpha division or low-alpha cutoff is introduced.
+// analytically; the remaining (1-alpha) factor must be retained.
 @kernel void addDispersionLift(const dlong N, const dlong offset,
     const dfloat rhoL, const dfloat rhoG, const dfloat muL,
     const dfloat diameter, const dfloat cvm,
@@ -547,7 +547,7 @@
     const dfloat cdSpeed2=cdRe*muL*speed/(rhoL*diameter);
     const dfloat inertia=rhoG+cvm*rhoL;
     const dfloat ldScale=ldEnabled*0.75*cdis*rhoL*
-        (1.0-1.166*a+0.5*a*a)*cdSpeed2/inertia;
+        (1.0-a)*(1.0-1.166*a+0.5*a*a)*cdSpeed2/inertia;
     const dfloat liftScale=-liftEnabled*cl*rhoL/inertia;
     // gradUl[(3*i+j)*offset+n] = derivative of UL_i with respect to x_j.
     const dfloat wx=gradUl[n+7*offset]-gradUl[n+5*offset];
