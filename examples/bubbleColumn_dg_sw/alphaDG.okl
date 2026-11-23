@@ -1,0 +1,154 @@
+// Collocated weak DGSEM. All volume arrays remain element-local.
+@kernel void dgVolumeFlux(const dlong N, const dlong offset,
+    @ restrict const dfloat *a, @ restrict const dfloat *u,
+    @ restrict dfloat *flux)
+{
+  for(dlong n=0;n<N;++n; @tile(p_blockSize,@outer,@inner))
+    for(int c=0;c<3;++c) flux[n+c*offset]=a[n]*u[n+c*offset];
+}
+
+@kernel void dgTrace(const dlong NF, const dlong offset,
+    @ restrict const dlong *map, @ restrict const dfloat *sgeo,
+    @ restrict const dfloat *a, @ restrict const dfloat *u,
+    @ restrict dfloat *trace)
+{
+  for(dlong f=0;f<NF;++f; @tile(p_blockSize,@outer,@inner)) {
+    const dlong n=map[f],sg=f*p_Nsgeo;
+    trace[f]=a[n];
+    trace[f+NF]=sgeo[sg+p_NXID]*u[n]+sgeo[sg+p_NYID]*u[n+offset]
+        +sgeo[sg+p_NZID]*u[n+2*offset];
+  }
+}
+
+@kernel void dgSurfaceFlux(const dlong NF, const dfloat inletAlpha,
+    const dfloat backflowAlpha, const int fluxType,
+    @ restrict const int *bid, @ restrict const dfloat *sgeo,
+    @ restrict const dfloat *local, @ restrict const dfloat *sum,
+    @ restrict dfloat *surface, @ restrict dfloat *boundary)
+{
+  for(dlong f=0;f<NF;++f; @tile(p_blockSize,@outer,@inner)) {
+    const int b=bid[f/p_Nfp];
+    const dfloat am=local[f];
+    const dfloat unM=local[f+NF];
+    dfloat ap=am,un=unM,lambda=(unM<0.0)?-unM:unM;
+    if(b<=0) {
+      // Paired sum minus own trace gives the opposite element's trace.
+      ap=sum[f]-am;
+      // Opposite outward normals: canonical normal speed is (unM-unP)/2.
+      const dfloat unP=sum[f+NF]-unM;
+      un=0.5*(unM-unP);
+      const dfloat absP=(unP<0.0)?-unP:unP;
+      lambda=(lambda>absP)?lambda:absP;
+    } else if(b==1 && un<0.0) ap=inletAlpha;
+    else if(b==2 && un<0.0) ap=backflowAlpha;
+    else if(b==3 || b==4) {un=0.0;lambda=0.0;} // impermeable wall, independent of roundoff in UG.n
+    // Shared normal speed gives equal/opposite flux on the paired face.
+    // LF uses max(|unM|,|unP|); upwind uses |(unM-unP)/2|.
+    const dfloat dissipation=(fluxType==0)?0.0:
+        ((fluxType==1)?((un<0.0)?-un:un):lambda);
+    const dfloat fhat=0.5*(un*(am+ap)+dissipation*(am-ap));
+    surface[f]=sgeo[f*p_Nsgeo+p_WSJID]*fhat;
+    boundary[f]=(b>0)?surface[f]:0.0;
+  }
+}
+
+@kernel void dgLift(const dlong N,
+    @ restrict const dlong *incidence, @ restrict const dfloat *mass,
+    @ restrict const dfloat *surface, @ restrict dfloat *weakRhs)
+{
+  for(dlong n=0;n<N;++n; @tile(p_blockSize,@outer,@inner)) {
+    dfloat load=weakRhs[n]; // +D^T M (alpha UG), before face flux subtraction
+    for(int f=0;f<6;++f) {
+      const dlong sid=incidence[6*n+f];
+      if(sid>=0) load-=surface[sid];
+    }
+    // LOCAL diagonal mass, never the assembled CG inverse mass.
+    weakRhs[n]=load/mass[n];
+  }
+}
+
+@kernel void dgRK(const dlong N,const int stage,const dfloat h,
+    @ restrict const dfloat *old, @ restrict const dfloat *rhs,
+    @ restrict dfloat *increment, @ restrict dfloat *a)
+{
+  for(dlong n=0;n<N;++n; @tile(p_blockSize,@outer,@inner)) {
+    if(stage==0) increment[n]=h*rhs[n]/6.0;
+    else increment[n]+=h*rhs[n]*((stage==3)?1.0/6.0:1.0/3.0);
+    if(stage==3) a[n]=old[n]+increment[n];
+    else a[n]=old[n]+((stage==2)?h:0.5*h)*rhs[n];
+  }
+}
+
+@kernel void dgRate(const dlong N,const dlong offset,const dfloat inverseMinWeight,
+    @ restrict const dfloat *vgeo, @ restrict const dfloat *u,
+    @ restrict dfloat *rate)
+{
+  for(dlong n=0;n<N;++n; @tile(p_blockSize,@outer,@inner)) {
+    const dlong e=n/p_Np,l=n%p_Np,base=e*p_Np*p_Nvgeo+l;
+    dfloat value=0.0;
+    for(int c=0;c<3;++c) {
+      const dfloat speed=vgeo[base+(3*c)*p_Np]*u[n]
+          +vgeo[base+(3*c+1)*p_Np]*u[n+offset]
+          +vgeo[base+(3*c+2)*p_Np]*u[n+2*offset];
+      value+=(speed<0.0)?-speed:speed;
+    }
+    // Conservative initial estimate; this is not a sharp spectral bound.
+    rate[n]=2.0*inverseMinWeight*value;
+  }
+}
+
+@kernel void dgLimit(const dlong NE,const int enabled,
+    @ restrict const dfloat *mass, @ restrict dfloat *a,
+    @ restrict dfloat *badMean, @ restrict dfloat *limited)
+{
+  // Deliberately simple first implementation: one thread per element.
+  for(dlong e=0;e<NE;++e; @tile(p_blockSize,@outer,@inner)) {
+    dfloat volume=0.0,total=0.0,lo=1e30,hi=-1e30;
+    int finite=1;
+    for(int j=0;j<p_Np;++j) {
+      const dlong n=e*p_Np+j;
+      const dfloat v=a[n];
+      if(!(v>=-1e30 && v<=1e30)) finite=0;
+      volume+=mass[n];total+=mass[n]*v;
+      lo=(v<lo)?v:lo;hi=(v>hi)?v:hi;
+    }
+    const dfloat mean=total/volume;
+    badMean[e]=(!finite || (enabled && (mean < -1e-12 || mean > 1.0+1e-12)))?1.0:0.0;
+    dfloat theta=1.0;
+    if(enabled && mean>=0.0 && mean<=1.0) {
+      if(lo<0.0) theta=mean/(mean-lo);
+      if(hi>1.0) {
+        const dfloat upper=(1.0-mean)/(hi-mean);
+        theta=(upper<theta)?upper:theta;
+      }
+    }
+    limited[e]=(theta<1.0)?1.0:0.0;
+    // Preserve the quadrature-weighted element average. Do not clip means.
+    for(int j=0;j<p_Np;++j) {
+      const dlong n=e*p_Np+j;
+      if(theta<1.0) a[n]=mean+theta*(a[n]-mean);
+    }
+  }
+}
+
+
+@kernel void dgFilterMean(const dlong NE, @ restrict const dfloat *mass,
+    @ restrict const dfloat *a, @ restrict dfloat *mean)
+{
+  for(dlong e=0;e<NE;++e; @tile(p_blockSize,@outer,@inner)) {
+    dfloat v=0.0, av=0.0;
+    for(int j=0;j<p_Np;++j) { const dlong n=e*p_Np+j; v+=mass[n]; av+=mass[n]*a[n]; }
+    mean[e]=av/v;
+  }
+}
+
+@kernel void dgFilterRestoreMean(const dlong NE, @ restrict const dfloat *mass,
+    @ restrict dfloat *a, @ restrict const dfloat *mean)
+{
+  for(dlong e=0;e<NE;++e; @tile(p_blockSize,@outer,@inner)) {
+    dfloat v=0.0, av=0.0;
+    for(int j=0;j<p_Np;++j) { const dlong n=e*p_Np+j; v+=mass[n]; av+=mass[n]*a[n]; }
+    const dfloat shift=mean[e]-av/v;
+    for(int j=0;j<p_Np;++j) a[e*p_Np+j]+=shift;
+  }
+}
