@@ -321,3 +321,11 @@ Filtering adds dissipation and changes the DG solution, while retaining local
 mass; it may damp front detail. Start with strength 0.1–0.25 and modes=1,
 then compare against strength=0 at matching time steps. This filter acts on
 alpha itself and is separate from alphaDGDivUgFilterStrength.
+
+## Four-boundary mesh and side-wall slip
+
+The generated mesh uses boundary IDs 1=inlet, 2=outlet, 3=wallx (normal x),
+4=wally (normal y). The case-specific `usrdat2` does not remap IDs 4 or 5;
+this preserves wally as ID 4. The tracked `.oudf` include chain supplies the
+custom Dirichlet callback, which applies zero mixture velocity on both side walls.
+Gas velocity free slip is set component-wise in the scalar maps in the `.par` file.
