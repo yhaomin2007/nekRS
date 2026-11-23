@@ -1,0 +1,119 @@
+userSections = CASEDATA
+
+[GENERAL]
+polynomialOrder = 3
+cubaturePolynomialOrder = 6
+stopAt = numSteps
+numSteps = 100000
+dt = 1e-5
+timeStepper = tombo1
+checkpointInterval = 1000
+scalars = ALPHA, UGX, UGY, UGZ
+# ALPHA scalar is CG coupling/output storage only; alphaDG owns the DG solution.
+# Fresh starts only: CG checkpoints cannot restore the DG state.
+# Target div(UM) is explicit from solved alpha and native extrapolated UM.
+
+[MESH]
+file = bubbleColumn_dg_sw.re2
+
+[FLUID PRESSURE]
+initialGuess = previous
+residualTol = 1e-6
+
+[FLUID VELOCITY]
+initialGuess = previous
+boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet, udfDirichlet
+residualTol = 1e-6
+rho = 998.2
+viscosity = 1e-3
+regularization = hpfrt + nModes=1 + scalingCoeff=10.0
+
+[SCALAR ALPHA]
+initialGuess = previous
+boundaryTypeMap = udfDirichlet, zeroNeumann, zeroNeumann, zeroNeumann
+residualTol = 1e-6
+transportCoeff = 1
+diffusionCoeff = 0
+
+# Side-wall IDs: 3=wallx (normal x), 4=wally (normal y).
+# Free-slip UG maps: zero normal component, zero-normal-gradient tangential components.
+[SCALAR UGX]
+initialGuess = previous
+boundaryTypeMap = udfDirichlet, zeroNeumann, udfDirichlet, zeroNeumann
+residualTol = 1e-6
+transportCoeff = 1
+# Additional numerical diffusivity; physical stress is supplied by the UDF.
+diffusionCoeff = 1e-5
+regularization = hpfrt + nModes=1 + scalingCoeff=10.0
+
+[SCALAR UGY]
+initialGuess = previous
+boundaryTypeMap = udfDirichlet, zeroNeumann, zeroNeumann, udfDirichlet
+residualTol = 1e-6
+transportCoeff = 1
+# Additional numerical diffusivity; physical stress is supplied by the UDF.
+diffusionCoeff = 1e-5
+regularization = hpfrt + nModes=1 + scalingCoeff=10.0
+
+[SCALAR UGZ]
+initialGuess = previous
+boundaryTypeMap = udfDirichlet, zeroNeumann, zeroNeumann, zeroNeumann
+residualTol = 1e-6
+transportCoeff = 1
+# Additional numerical diffusivity; physical stress is supplied by the UDF.
+diffusionCoeff = 1e-5
+regularization = hpfrt + nModes=1 + scalingCoeff=10.0
+
+[CASEDATA]
+rhoLiquid = 998.2
+rhoGas = 1.2
+muLiquid = 1e-3
+muGas = 1.8e-5
+alphaInlet = 0.016667
+gasInletVelocity = 0.3
+# 0: plume/steady inlet; 1: zero fields/ramp alpha+UG; 2: uniform UG/ramp alpha.
+startupMode = 2
+# Initial uniform UGz in mode 2 (also plume UG amplitude in mode 0).
+gasInitialVelocity = 0.3
+# Physical times in seconds; gas duration applies only to mode 1.
+inletRampStartTime = 0.0
+alphaInletRampDuration = 0.1
+gasInletRampDuration = 0.1
+# Used only when startupMode=0.
+initialPlumeHeight = 0.05
+initialPlumeThickness = 0.01
+gravityZ = -9.81
+bubbleDiameter = 3e-3
+virtualMassCoefficient = 0.5
+# Ramp the implicit UM mixture viscosity smoothly near the top outlet (z in m).
+outletViscosityRampStartZ = 0.90
+outletViscosityRampEndZ = 0.95
+outletMixtureViscosityFactor = 10
+# Panicker/Fazeli laminar-dispersion closure; same setting as the CG case.
+laminarDispersionEnabled = 1
+laminarDispersionCoefficient = 4.545
+# Classic constant lift: F_g = -Cl*rhoL*alpha*((UG-UL) x curl(UL)).
+liftEnabled = 1
+liftCoefficient = 0.5
+# 0: latest strong grad(p); 1: native fluid EXT of strong gradient history.
+gasPressureGradientExtrapolation = 0
+# DG defaults to conservative alpha*UG transport.
+# First step, every N steps, and checkpoints; 0: first/checkpoints only.
+diagnosticInterval = 10
+
+# Explicit DG alpha: classical RK4 substeps, frozen newly solved UG.
+# central (alias center), upwind, or local Lax-Friedrichs (lf).
+alphaDGFlux = upwind
+# Diagnostic: 1 adds +alpha*div(UG) to suppress continuum compression; 0 is conservative.
+alphaDGIgnoreDivUg = 0
+# Explicit div(UG) filter for alpha: strength 0 disables; try 0.5.
+alphaDGDivUgFilterStrength = 0
+alphaDGDivUgFilterModes = 1
+alphaDGCfl = 0.1
+alphaDGMaxSubsteps = 10000
+alphaDGLimiter = 0
+# Optional element-local modal filter on DG alpha; disabled by default.
+alphaDGFilterStrength = 0
+alphaDGFilterModes = 1
+# Alpha imposed only on top BACKFLOW (outflow takes the interior state).
+alphaDGBackflowValue = 0
